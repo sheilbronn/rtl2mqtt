@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# A simple script that will receive events from a RTL433 SDR
+# A shell script that receives events from a RTL433 SDR and forwards them to a MQTT broker
 
-# Author: Marco Verleun <marco@marcoach.nl>
-# Version 2.0: Adapted for the new output format of rtl_433
-# Adapted and enhanced for flexibility by sheilbronn 
+# Original Author: Marco Verleun <marco@marcoach.nl>
+# Fork of version from "IT-Berater"
+# Adapted and enhanced for flexibility by "sheilbronn"
 
 set -o noglob     # file name globbing is neither needed or nor wanted
 set -o noclobber  # disable for security reasons
@@ -70,7 +70,6 @@ done
 shift "$((OPTIND-1))"   # Discard options processed by getopts, any remaining options will be passed to mosquitto_sub
 
 [ "$( command -v jq )" ] || { echo "$scriptname: jq is required!" ; exit 1 ; }
-
 
 log "$scriptname starting at $( date )"
 mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m '{ event:starting }'
