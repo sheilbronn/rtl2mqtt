@@ -11,18 +11,30 @@ set -o noclobber  # disable for security reasons
 scriptname="${0##*/}"
 
 # Set Host
-mqtthost="test.mosquitto.org"
-# Set Topic
-topic="Data/Rtl/433"
+mqtthost="test.mosquitto.org" # 
+topic="Data/Rtl/433" # default topic (base)
 
-remove_unwanted_chars() {
-     tr -d ':()"^%$ \r\000-\011\013-\037' "$@"
+export LANG=C
+PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+
+# Log file base name, if it is an existing dir a file inside will be created
+logbase="/tmp/rtl_433.log"
+
+log () {
+    local - ; set +x
+    [ "$sDoLog" ] || return
+    if [ "$sDoLog" = "dir" ] ; then
+        logfile="$logbase/$( date "+%H" )"
+        echo "$*" >> "$logfile"
+    else
+        echo "$*" >> "$logbase"
+    fi
 }
 
-while getopts "?htrCnavx" opt      
+while getopts "?h:t:rlC:navx" opt      
 do
     case "$opt" in
-    \?) echo "Usage: $scriptname -m host -t topic" 1>&2
+    \?) echo "Usage: $scriptname -m host -t topic -r -l -a -v" 1>&2
         exit 1
         ;;
     h)  mqtthost="$OPTARG" # configure broker host here or in $HOME/.config/mosquitto_sub
@@ -30,19 +42,25 @@ do
             mqtthost="-h test.mosquitto.org"
         fi
         ;;
-    t)  topic="$( echo "$OPTARG" )"
+    t)  topic="$OPTARG" # base topic for MQTT
         ;;
-    a)  bAlways="yes"
+    r)  bRewrite="yes"  # rewrite and simplify output
         ;;
-    r)  bReduce="yes"
+    l)  if [ -f $logbase ] ; then  # do logging
+            sDoLog="file"
+        else
+            mkdir -p "$logbase"       || exit 1
+            mkdir -p "$logbase/model" || exit 1
+            sDoLog="dir"
+        fi
         ;;
-    C)  maxcount="-C $( echo "$OPTARG" | remove_unwanted_chars )" # clean up for sec purposes
+    C)  maxcount="$OPTARG" # currently unused
         ;;
-    n)  bNoColor="yes"
+    n)  bNoColor="yes" # currently unused
         ;;
-    a)  bAlways="yes"
+    a)  bAlways="yes" # do not delete duplicate receptions
         ;;
-    v)  bVerbose="yes"
+    v)  bVerbose="yes" # more output for debugging purposes
         ;;
     x)  set -x # turn on shell debugging from here on
         ;;
@@ -51,25 +69,37 @@ done
 
 shift "$((OPTIND-1))"   # Discard options processed by getopts, any remaining options will be passed to mosquitto_sub
 
-export LANG=C
-PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+[ "$( command -v jq )" ] || { echo "$scriptname: jq is required!" ; exit 1 ; }
+
+
+log "$scriptname starting at $( date )"
+mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m '{ event:starting }'
+trap 'log "$scriptname stopping at $( date )" ; mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:stopping }"' INT QUIT TERM EXIT  
 
 # Start the listener and enter an endless loop
 /usr/local/bin/rtl_433 -C si -F json | while read line
 do
-    # Log to file if file exists.
-    # Create file with touch /tmp/rtl_433.log if logging is needed
-    [ -w /tmp/rtl_433.log ] && echo $line >> rtl_433.log
+    log "$line"
 
-    # line="$( echo "$line" | sed -e 's/ : /:/g' -e 's/{"time":[^,]*, /{/')"
-    line="$( echo "$line" | jq -c . | sed -e 's/{"time":[^,]*,/{/' )"
-    line="$( echo "$line" | jq -c . | sed -e 's/,"mic":"CHECKSUM"//' )"    
+    # line="$( echo "$line" | sed -e 's/" : /":/g'    -e 's/, "/,"/g'  )"
+    # line="$( echo "$line" | jq -c . )"
+    # line="$( echo "$line" | sed -e 's/{"time":[^,]*,/{/'  -e  's/,"mic":"CHECKSUM"//'  -e 's/,"channel":[0-9]*//'   )"
+    line="$( echo "$line" | jq -c "del(.time) | del(.mic) | del(.channel)" )"
 
-    # Raw message to MQTT
+    if [ "$bRewrite" ] ; then
+        model="$( echo "$line" | jq -r .model )"    
+        id="$(    echo "$line" | jq -r .id )"
+        line="$(  echo "$line" | jq -c "del(.model) | del(.id)" )"
+
+        [ "$sDoLog" = "dir" -a "$model" ] && echo "$line" >> "$logbase/model/${_model}_$id"
+        { cd "$logbase/model" && find . -type f -mtime +1 -exec mv '{}' '{}'.old \; ; }
+    fi
+
+    # Send message to MQTT
     if [ "$bAlways" -o "$line" != "$prevline" ] ; then
         [ "$bVerbose" ] && echo "$line"
         # Raw message to MQTT
-        mosquitto_pub -h $mqtthost -i RTL_433 -t $topic -m "$line"
+        mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic${model:+/}$model${id:+/}$id" -m "$line"
         prevline="$line"
     fi
 done

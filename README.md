@@ -4,6 +4,9 @@ This is an enhanced version of rtl2mqtt script from https://github.com/roflmao/r
 
 Modifications/enhancements are:
  * Introduced command line options allowing for more flexibility
- * Streamline MQTT mesg contect, e.g. no time stamp
+ * Temperature output is transformed to SI units, e.g. Celsius.
+ * Streamline some contect for MQTT msg, e.g. no time stamp or checksum code.
+ * Suppress duplicate messages
+ * Enhance logging into a subdirectory structure to ease later analysis.
 
-PS The Dockerfile is untouched and not checked since I don't run Docker. It might work or not.
+PS: The Dockerfile is untouched and not checked since I don't run Docker. It might work or not.
