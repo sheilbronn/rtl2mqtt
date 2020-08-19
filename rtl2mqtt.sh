@@ -76,7 +76,7 @@ mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m '{ event:starting }'
 trap 'log "$scriptname stopping at $( date )" ; mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:stopping }"' INT QUIT TERM EXIT  
 
 # Start the listener and enter an endless loop
-/usr/local/bin/rtl_433 -C si -F json | while read line
+/usr/local/bin/rtl_433 -G 4 -M protocol -C si -F json | while read line
 do
     log "$line"
 
@@ -86,11 +86,16 @@ do
     line="$( echo "$line" | jq -c "del(.time) | del(.mic) | del(.channel)" )"
 
     if [ "$bRewrite" ] ; then
+        [ "$bVerbose" ] && echo "$line"
         model="$( echo "$line" | jq -r .model )"    
         id="$(    echo "$line" | jq -r .id )"
+        temp="$(  echo "$line" | jq -r .temperature_C | awk '{ printf "%.1f", $1 }' )"
+        if [ "$temp" ] ; then
+            line="$(  echo "$line" | sed -e "s/\(\"temperature_C\":\)[0-9]*.[0-9]*/\1$temp/" )"
+        fi
         line="$(  echo "$line" | jq -c "del(.model) | del(.id)" )"
 
-        [ "$sDoLog" = "dir" -a "$model" ] && echo "$line" >> "$logbase/model/${_model}_$id"
+        [ "$sDoLog" = "dir" -a "$model" ] && echo "$line" >> "$logbase/model/${model}_$id"
         { cd "$logbase/model" && find . -type f -mtime +1 -exec mv '{}' '{}'.old \; ; }
     fi
 
