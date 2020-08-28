@@ -13,6 +13,9 @@ scriptname="${0##*/}"
 # Set Host
 mqtthost="test.mosquitto.org" # 
 topic="Data/Rtl/433" # default topic (base)
+rtl_433_opts="-G 4 -M protocol -C si"
+declare -i nMqttLines=0
+declare -i nReceiveCount=0
 
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
@@ -72,14 +75,15 @@ shift "$((OPTIND-1))"   # Discard options processed by getopts, any remaining op
 [ "$( command -v jq )" ] || { echo "$scriptname: jq is required!" ; exit 1 ; }
 
 log "$scriptname starting at $( date )"
-mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m '{ event:starting }'
-trap 'log "$scriptname stopping at $( date )" ; mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:stopping }"' INT QUIT TERM EXIT  
+mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:\"starting\",additional_rtl_433_opts:\"$rtl_433_opts\" }"
+trap 'log "$scriptname stopping at $( date )" ; mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:\"stopping\",receivecount:\"$nReceiveCount\",mqttlinecount:\"$nMqttLines\" }"' EXIT # INT QUIT TERM 
 
 # Start the listener and enter an endless loop
-/usr/local/bin/rtl_433 -G 4 -M protocol -C si -F json | while read line
+[ "$bVerbose" ] && echo "options for rtl_433 are: $rtl_433_opts"
+/usr/local/bin/rtl_433 $rtl_433_opts -F json | while read -r line
 do
     log "$line"
-
+    nReceiveCount+=1
     # line="$( echo "$line" | sed -e 's/" : /":/g'    -e 's/, "/,"/g'  )"
     # line="$( echo "$line" | jq -c . )"
     # line="$( echo "$line" | sed -e 's/{"time":[^,]*,/{/'  -e  's/,"mic":"CHECKSUM"//'  -e 's/,"channel":[0-9]*//'   )"
@@ -91,19 +95,20 @@ do
         id="$(    echo "$line" | jq -r .id )"
         temp="$(  echo "$line" | jq -r .temperature_C | awk '{ printf "%.1f", $1 }' )"
         if [ "$temp" ] ; then
-            line="$(  echo "$line" | sed -e "s/\(\"temperature_C\":\)[0-9]*.[0-9]*/\1$temp/" )"
+            line="$(  echo "$line" | sed -e "s/\(\"temperature_C\":\)[-0-9]*.[0-9]*/\1$temp/" )" # quick hack for neative temperatures
         fi
         line="$(  echo "$line" | jq -c "del(.model) | del(.id)" )"
 
         [ "$sDoLog" = "dir" -a "$model" ] && echo "$line" >> "$logbase/model/${model}_$id"
-        { cd "$logbase/model" && find . -type f -mtime +1 -exec mv '{}' '{}'.old \; ; }
+        { cd "$logbase/model" && find . -type f -mtime +1 -size +1k "!" -name "*.old" -exec mv '{}' '{}'.old ";"   ; }
     fi
 
     # Send message to MQTT
     if [ "$bAlways" -o "$line" != "$prevline" ] ; then
-        [ "$bVerbose" ] && echo "$line"
+        [ "$bVerbose" ] && [ ! "$bRewrite" ] && echo "$line"
         # Raw message to MQTT
         mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic${model:+/}$model${id:+/}$id" -m "$line"
+        nMqttLines+=1
         prevline="$line"
     fi
 done
