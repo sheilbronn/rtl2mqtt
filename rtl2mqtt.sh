@@ -13,9 +13,10 @@ scriptname="${0##*/}"
 # Set Host
 mqtthost="test.mosquitto.org" # 
 topic="Data/Rtl/433" # default topic (base)
-rtl_433_opts="-G 4 -M protocol -C si"
+rtl_433_opts="-G 4 -M protocol -C si -R -162"
 declare -i nMqttLines=0
-declare -i nReceiveCount=0
+declare -i nReceivedCount=0
+declare -A aLastValues
 
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
@@ -27,35 +28,41 @@ log () {
     local - ; set +x
     [ "$sDoLog" ] || return
     if [ "$sDoLog" = "dir" ] ; then
+        find . -maxdepth 1 -regex '.*/[0-9][0-9]' -size +100k -exec mv '{}' '{}'.old ";" 
         logfile="$logbase/$( date "+%H" )"
         echo "$*" >> "$logfile"
     else
         echo "$*" >> "$logbase"
     fi
+    
 }
 
-while getopts "?h:t:rlC:navx" opt      
+while getopts "?h:t:rlf:C:navx" opt      
 do
     case "$opt" in
     \?) echo "Usage: $scriptname -m host -t topic -r -l -a -v" 1>&2
         exit 1
         ;;
     h)  mqtthost="$OPTARG" # configure broker host here or in $HOME/.config/mosquitto_sub
-        if [ "$mqtthost" = "test" ] ; then
-            mqtthost="-h test.mosquitto.org"
-        fi
+        [ "$mqtthost" = "test" ] && mqtthost="-h test.mosquitto.org" # abbreviation
         ;;
     t)  topic="$OPTARG" # base topic for MQTT
         ;;
-    r)  bRewrite="yes"  # rewrite and simplify output
+    r)  # rewrite and simplify output
+        if [ "$bRewrite" ] ; then
+            bRewriteMore="yes" && [ "$bVerbose" ] && echo "... rewriting even more ..."
+        else
+            bRewrite="yes"  # rewrite and simplify output
+        fi
         ;;
     l)  if [ -f $logbase ] ; then  # do logging
             sDoLog="file"
         else
-            mkdir -p "$logbase"       || exit 1
             mkdir -p "$logbase/model" || exit 1
             sDoLog="dir"
         fi
+        ;;
+    f)  replayfile="$OPTARG" # file to replay (e.g. for debugging), instead of rtl_433 output
         ;;
     C)  maxcount="$OPTARG" # currently unused
         ;;
@@ -72,43 +79,65 @@ done
 
 shift "$((OPTIND-1))"   # Discard options processed by getopts, any remaining options will be passed to mosquitto_sub
 
-[ "$( command -v jq )" ] || { echo "$scriptname: jq is required!" ; exit 1 ; }
+[ "$( command -v jq )" ] || { echo "$scriptname: jq is required!" 1>&2 ; exit 1 ; }
+
+trap_function() { 
+    log "$scriptname stopping at $( date )" 
+    mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:\"stopping\",receivedcount:\"$nReceivedCount\",mqttlinecount:\"$nMqttLines\" }"
+ }
 
 log "$scriptname starting at $( date )"
 mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:\"starting\",additional_rtl_433_opts:\"$rtl_433_opts\" }"
-trap 'log "$scriptname stopping at $( date )" ; mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:\"stopping\",receivecount:\"$nReceiveCount\",mqttlinecount:\"$nMqttLines\" }"' EXIT # INT QUIT TERM 
+trap 'trap_function' EXIT # previously also: INT QUIT TERM 
 
 # Start the listener and enter an endless loop
 [ "$bVerbose" ] && echo "options for rtl_433 are: $rtl_433_opts"
-/usr/local/bin/rtl_433 $rtl_433_opts -F json | while read -r line
+{ [ "$replayfile" ] && cat "$replayfile" ; [ "$replayfile" ] || /usr/local/bin/rtl_433 $rtl_433_opts -F json ; } | while read -r line
 do
+    line="$( echo "$line" | jq -c "del(.mic)" )"
     log "$line"
-    nReceiveCount+=1
-    # line="$( echo "$line" | sed -e 's/" : /":/g'    -e 's/, "/,"/g'  )"
-    # line="$( echo "$line" | jq -c . )"
-    # line="$( echo "$line" | sed -e 's/{"time":[^,]*,/{/'  -e  's/,"mic":"CHECKSUM"//'  -e 's/,"channel":[0-9]*//'   )"
-    line="$( echo "$line" | jq -c "del(.time) | del(.mic) | del(.channel)" )"
+    nReceivedCount+=1
+    line="$( echo "$line" | jq -c "del(.time)" )"
 
     if [ "$bRewrite" ] ; then
+        # Rewrite and clean the line from less interesting information....
         [ "$bVerbose" ] && echo "$line"
-        model="$( echo "$line" | jq -r .model )"    
-        id="$(    echo "$line" | jq -r .id )"
-        temp="$(  echo "$line" | jq -r .temperature_C | awk '{ printf "%.1f", $1 }' )"
-        if [ "$temp" ] ; then
-            line="$(  echo "$line" | sed -e "s/\(\"temperature_C\":\)[-0-9]*.[0-9]*/\1$temp/" )" # quick hack for neative temperatures
-        fi
-        line="$(  echo "$line" | jq -c "del(.model) | del(.id)" )"
+        model="$( echo "$line" | jq -r '.model // empty' )"    
+        id="$(    echo "$line" | jq -r '.id    // empty'   )"
 
+        temp="$(  echo "$line" | jq -e -r 'if .temperature_C then .temperature_C*10 + 0.5 | floor / 10 else empty end'  )"
+        [ "$temp" ]  &&  line="$( echo "$line" | jq -cer ".temperature_C = $temp" )" 
+
+        line="$(  echo "$line" | jq -c "del(.model) | del(.id) | del(.protocol) | del(.subtype) | del(.channel)" )"
+
+        if [ "$bRewriteMore" ] ; then
+            line="$( echo "$line" | jq -c "if .button == 0     then del(.button    ) else . end" )"
+            line="$( echo "$line" | jq -c "if .battery_ok == 1 then del(.battery_ok) else . end" )"
+
+            line="$(  echo "$line" | jq -c "del(.transmit)" )"        
+
+            # humidity="$( echo "$line" | jq -e -r 'if .humidity then .humidity + 0.5 | floor else empty end'  )"
+            bSkipLine="$( echo "$line" | jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50)  then "yes" else empty end'  )"
+            # [ "$humidity" ] && humidity=$( printf "%.*f\n" 0 "$humidity" )
+            # tempint=$( printf "%.*f\n" 0 "$temp" )
+            # (( humidity > 100 || tempint < -50)) && bSkipLine="yes"
+        fi
+set +x
         [ "$sDoLog" = "dir" -a "$model" ] && echo "$line" >> "$logbase/model/${model}_$id"
-        { cd "$logbase/model" && find . -type f -mtime +1 -size +1k "!" -name "*.old" -exec mv '{}' '{}'.old ";"   ; }
+        { cd "$logbase/model" && find . -maxdepth 1 -type f -size +10k "!" -name "*.old" -exec mv '{}' '{}'.old ";"   ; }
     fi
 
-    # Send message to MQTT
-    if [ "$bAlways" -o "$line" != "$prevline" ] ; then
+    # Send message to MQTT or skip it ...
+    if [ "$bSkipLine" ] ; then
+        [ "$bVerbose" ] && echo "SKIPPING: $line"
+        bSkipLine=""
+    elif [ "$bAlways" -o "$line" != "$prevline" ] ; then
         [ "$bVerbose" ] && [ ! "$bRewrite" ] && echo "$line"
         # Raw message to MQTT
         mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic${model:+/}$model${id:+/}$id" -m "$line"
         nMqttLines+=1
         prevline="$line"
+        aLastValues[${model}_${id}]="$line"
+        # echo test: ${aLastValues[${model}_${id}]}
     fi
 done
