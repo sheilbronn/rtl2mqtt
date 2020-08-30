@@ -20,16 +20,16 @@ PS: The Dockerfile is untouched and not checked since I don't run Docker. It mig
 A technique to make it after each reboot is adding the following line to the crontab file 
 (The IP adress is the MQTT broker):
 
-<code>
+```
 @reboot /usr/local/bin/rtl2mqtt.sh -h 192.168.178.72 -r -r
-</code>
+```
 
 ## Sample MQTT output
 
 This output is from a typical suburb with different weather stations (inside or outside)
 and movement sensors, smoke sensors, blind switches etc...
 
-<code>
+```
 45:35 Data/Rtl/433 { event:"starting",additional_rtl_433_opts:"-G 4 -M protocol -C si -R -162" }
 ...
 54:46 Data/Rtl/433/Smoke-GS558/25612 {"unit":15,"learn":0,"code":"7c818f"}
@@ -40,4 +40,4 @@ and movement sensors, smoke sensors, blind switches etc...
 58:36 Data/Rtl/433/inFactory-TH/12 {"temperature_C":15.3,"humidity":79}
 59:04 Data/Rtl/433/Prologue-TH/107 {"temperature_C":24.2,"humidity":14}
 ...
-</code>
+```
