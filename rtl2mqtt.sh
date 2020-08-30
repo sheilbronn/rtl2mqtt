@@ -14,8 +14,8 @@ scriptname="${0##*/}"
 mqtthost="test.mosquitto.org" # 
 topic="Data/Rtl/433" # default topic (base)
 rtl_433_opts="-G 4 -M protocol -C si -R -162"
-declare -i nMqttLines=0
-declare -i nReceivedCount=0
+declare -i nMqttLines=0     # trap_function doesn't work yet
+declare -i nReceivedCount=0 # trap_function doesn't work yet
 declare -A aLastValues
 
 export LANG=C

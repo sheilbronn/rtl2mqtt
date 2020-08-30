@@ -2,9 +2,8 @@
 
 This is an heavily modified and enhanced version of the *Rtl2MQTT* script originally derived from https://github.com/roflmao/rtl2mqtt.
 
-It transforms the data from a SDR receiving software (rtl_433) to MQTT messages.
-It cleans the data, reduces unnecessary field and duplicates.
-Logging eases search for problems.
+It transforms the data from a SDR receiving software ([rtl_433](https://github.com/merbanan/rtl_433)) to MQTT messages.
+It cleans the data, reduces unnecessary field and duplicates. More logging facilities ease searching for problems.
 
 Main areas of modifications and enhancements are:
  * Introduced command line options allowing for more flexibility (See source code for usage)
@@ -23,6 +22,9 @@ A technique to make it after each reboot is adding the following line to the cro
 ```
 @reboot /usr/local/bin/rtl2mqtt.sh -h 192.168.178.72 -r -r
 ```
+
+rtl2mqtt.sh should run fine on all Linux versions that support rtl_433.
+However, prerequisites are bash, jq, and mosquitto_pub (from mosquitto). 
 
 ## Sample MQTT output
 
