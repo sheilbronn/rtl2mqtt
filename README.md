@@ -15,8 +15,29 @@ Main areas of modifications and enhancements are:
 
 PS: The Dockerfile is untouched and not checked since I don't run Docker. It might work or not.
 
+## Installation
+
 A technique to make it after each reboot is adding the following line to the crontab file 
-(The IP adress is the MQTT broker)
+(The IP adress is the MQTT broker):
+
 <code>
 @reboot /usr/local/bin/rtl2mqtt.sh -h 192.168.178.72 -r -r
+</code>
+
+## Sample MQTT output
+
+This output is from a typical suburb with different weather stations (inside or outside)
+and movement sensors, smoke sensors, blind switches etc...
+
+<code>
+45:35 Data/Rtl/433 { event:"starting",additional_rtl_433_opts:"-G 4 -M protocol -C si -R -162" }
+...
+54:46 Data/Rtl/433/Smoke-GS558/25612 {"unit":15,"learn":0,"code":"7c818f"}
+55:25 Data/Rtl/433/Generic-Remote/61825 {"cmd":62,"tristate":"110ZX00Z011X"}
+55:59 Data/Rtl/433/Smoke-GS558/25612 {"unit":15,"learn":0,"code":"7c818f"}
+56:44 Data/Rtl/433/Prologue-TH/107 {"temperature_C":24.2,"humidity":14}
+57:05 Data/Rtl/433/Nexus-TH/35 {"temperature_C":15,"humidity":99}
+58:36 Data/Rtl/433/inFactory-TH/12 {"temperature_C":15.3,"humidity":79}
+59:04 Data/Rtl/433/Prologue-TH/107 {"temperature_C":24.2,"humidity":14}
+...
 </code>
