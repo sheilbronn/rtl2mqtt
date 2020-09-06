@@ -111,16 +111,13 @@ do
         line="$(  echo "$line" | jq -c "del(.model) | del(.id) | del(.protocol) | del(.subtype) | del(.channel)" )"
 
         if [ "$bRewriteMore" ] ; then
-            line="$( echo "$line" | jq -c "if .button == 0     then del(.button    ) else . end" )"
-            line="$( echo "$line" | jq -c "if .battery_ok == 1 then del(.battery_ok) else . end" )"
-
             line="$(  echo "$line" | jq -c "del(.transmit)" )"        
 
-            # humidity="$( echo "$line" | jq -e -r 'if .humidity then .humidity + 0.5 | floor else empty end'  )"
+            line="$( echo "$line" | jq -c "if .button     == 0 then del(.button    ) else . end" )"
+            line="$( echo "$line" | jq -c "if .battery_ok == 1 then del(.battery_ok) else . end" )"
+            line="$( echo "$line" | jq -c "if .unknown1   == 0 then del(.unknown1)   else . end" )"
+
             bSkipLine="$( echo "$line" | jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50)  then "yes" else empty end'  )"
-            # [ "$humidity" ] && humidity=$( printf "%.*f\n" 0 "$humidity" )
-            # tempint=$( printf "%.*f\n" 0 "$temp" )
-            # (( humidity > 100 || tempint < -50)) && bSkipLine="yes"
         fi
 set +x
         [ "$sDoLog" = "dir" -a "$model" ] && echo "$line" >> "$logbase/model/${model}_$id"
