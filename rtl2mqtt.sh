@@ -6,7 +6,7 @@
 # Fork of version from "IT-Berater"
 # Adapted and enhanced for flexibility by "sheilbronn"
 
-set -o noglob     # file name globbing is neither needed or nor wanted
+set -o noglob     # file name globbing is neither needed or nor wanted for security reasons
 set -o noclobber  # disable for security reasons
 scriptname="${0##*/}"
 
@@ -28,7 +28,7 @@ log () {
     local - ; set +x
     [ "$sDoLog" ] || return
     if [ "$sDoLog" = "dir" ] ; then
-        find . -maxdepth 1 -regex '.*/[0-9][0-9]' -size +100k -exec mv '{}' '{}'.old ";" 
+        rotate_logdir_sometimes "$logbase"
         logfile="$logbase/$( date "+%H" )"
         echo "$*" >> "$logfile"
     else
@@ -37,7 +37,16 @@ log () {
     
 }
 
-while getopts "?h:t:rlf:C:navx" opt      
+rotate_logdir_sometimes () {
+    # rotate logs files (sometimes)
+    [ "$msgSecond" != 44 ] && return 0 # rotate log file only when second is 44 to save some cpu, probalilty = 1/60
+    cd "$1" && _files="$( find . -maxdepth 2 -type f -size +200k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 )"
+    msgSecond=45
+    [ "$_files" ] && log "Rotated files: $_files"
+}
+
+
+while getopts "?h:t:rlf:C:avx" opt      
 do
     case "$opt" in
     \?) echo "Usage: $scriptname -m host -t topic -r -l -a -v" 1>&2
@@ -59,6 +68,7 @@ do
             sDoLog="file"
         else
             mkdir -p "$logbase/model" || exit 1
+            cd "$logbase" || exit 1
             sDoLog="dir"
         fi
         ;;
@@ -66,11 +76,10 @@ do
         ;;
     C)  maxcount="$OPTARG" # currently unused
         ;;
-    n)  bNoColor="yes" # currently unused
-        ;;
     a)  bAlways="yes" # do not delete duplicate receptions
         ;;
-    v)  bVerbose="yes" # more output for debugging purposes
+    v)  [ bVerbose = "yes" ] && bMoreVerbose="yes"
+        bVerbose="yes" # more output for debugging purposes
         ;;
     x)  set -x # turn on shell debugging from here on
         ;;
@@ -86,13 +95,20 @@ trap_function() {
     mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:\"stopping\",receivedcount:\"$nReceivedCount\",mqttlinecount:\"$nMqttLines\" }"
  }
 
-log "$scriptname starting at $( date )"
-mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:\"starting\",additional_rtl_433_opts:\"$rtl_433_opts\" }"
+if [ -t 1 ] ; then # probably terminal
+    log "$scriptname starting at $( date )"
+    mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:\"starting\",additional_rtl_433_opts:\"$rtl_433_opts\" }"
+else               # probably non-terminal
+    delayedStartSecs=10
+    log "$scriptname will start in $delayedStartSecs secs from $( date )"
+    sleep "$delayedStartSecs"
+    mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$topic" -m "{ event:\"starting\",note:\"delayed by $delayedStartSecs secs\",additional_rtl_433_opts:\"$rtl_433_opts\" }"
+fi
 trap 'trap_function' EXIT # previously also: INT QUIT TERM 
 
 # Start the listener and enter an endless loop
 [ "$bVerbose" ] && echo "options for rtl_433 are: $rtl_433_opts"
-{ [ "$replayfile" ] && cat "$replayfile" ; [ "$replayfile" ] || /usr/local/bin/rtl_433 $rtl_433_opts -F json ; } | while read -r line
+{ [ "$replayfile" ] && cat "$replayfile" ; [ "$replayfile" ] || nice -5 /usr/local/bin/rtl_433 $rtl_433_opts -F json ; } | while read -r line
 do
     line="$( echo "$line" | jq -c "del(.mic)" )"
     log "$line"
@@ -104,6 +120,7 @@ do
         [ "$bVerbose" ] && echo "$line"
         model="$( echo "$line" | jq -r '.model // empty' )"    
         id="$(    echo "$line" | jq -r '.id    // empty'   )"
+        msgSecond="${line[@]/\",*/}" && second="${second:(-2):2}"
 
         temp="$(  echo "$line" | jq -e -r 'if .temperature_C then .temperature_C*10 + 0.5 | floor / 10 else empty end'  )"
         [ "$temp" ]  &&  line="$( echo "$line" | jq -cer ".temperature_C = $temp" )" 
@@ -119,9 +136,9 @@ do
 
             bSkipLine="$( echo "$line" | jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50)  then "yes" else empty end'  )"
         fi
-set +x
+# set +x
         [ "$sDoLog" = "dir" -a "$model" ] && echo "$line" >> "$logbase/model/${model}_$id"
-        { cd "$logbase/model" && find . -maxdepth 1 -type f -size +10k "!" -name "*.old" -exec mv '{}' '{}'.old ";"   ; }
+        # rotate_logdir_sometimes "$logbase/model"
     fi
 
     # Send message to MQTT or skip it ...
