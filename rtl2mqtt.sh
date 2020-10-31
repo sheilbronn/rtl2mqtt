@@ -36,11 +36,15 @@ log () {
     if [ "$sDoLog" = "dir" ] ; then
         rotate_logdir_sometimes "$logbase"
         logfile="$logbase/$( date "+%H" )"
+        # set -x
         echo "$*" >> "$logfile"
     else
         echo "$*" >> "$logbase"
-    fi
-    
+    fi    
+}
+
+log_starred_json () {
+    log "$( echo "$1" | tr \" \' | tr "*" \" )"
 }
 
 rotate_logdir_sometimes () {
@@ -224,14 +228,24 @@ do
             publish_to_mqtt_starred "$topic${model:+/}$model${id:+/}$id" "${line//\"/*}"
         fi
 
-        _string="event:*log*,sensorcount:*${#aReadings[@]}*,mqttlinecount:*$nMqttLines*,receivedcount:*$nReceivedCount*"
+        _string="*event*:*log*,*sensorcount*:*${#aReadings[@]}*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*"
         if (( nPrevMax < ${#aReadings[@]}  )) ; then
             nPrevMax=${#aReadings[@]}
-            publish_to_mqtt_starred "$topic" "{$_string,note:*sensor added*, latest_sensor_model:*${model}*,latest_sensor_id:*${id}*}"
+            publish_to_mqtt_starred "$topic" "{$_string,note:*sensor added*, latest_model:*${model}*,latest_id:*${id}*}"
         elif (( nMqttLines % (${#aReadings[@]}*10) == 0 )) ; then   # good heuristic in a common neighbourhood
-            publish_to_mqtt_starred "$topic" "{$_string,note:*regular log*,collected_sensors:*${!aReadings[*]}*}"
-        elif (( ${#aReadings[@]} > 5 + $(date '+%I + %M + %S') || (nMqttLines % 9999 == 0) )) ; then # reset whole array to empty once in a while, starting over
+            _collection="$( 
+                echo -n "*sensorcollection*: [ true"
+                for KEY in "${!aReadings[@]}"; do
+                    _reading="${aReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
+                    echo ", { *model_id*:*$KEY*, ${_reading//\"/*} }"
+                done
+                echo -n " ]"
+            )"
+            log_starred_json "{ $_collection }"
+            publish_to_mqtt_starred "$topic" "{$_string,*note*:*regular log*,*collected_model_ids*:*${!aReadings[*]}*, $_collection }"
+        elif (( ${#aReadings[@]} > $(date '+%s') % 99999 || (nMqttLines % 9999 == 0) )) ; then # reset whole array to empty once in a while, starting over
             publish_to_mqtt_starred "$topic" "{$_string,note:*resetting saved values*,collected_sensors:*${!aReadings[*]}*}"
+            tr '' ' \n' <<<"${aReadings[@]}" > "/tmp/$scriptname.$$"
             unset aReadings && declare -A aReadings
             nPrevMax=$(( nPrevMax / 3 )) # to quite a lower number but not 0 to reduce log messages
             [ "$bRemoveAnnouncements" ] && hass_remove_announce
