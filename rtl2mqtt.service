@@ -1,0 +1,16 @@
+[Unit]
+Description=Rtl2MQTT service
+After=network.target 
+Wants=mosquitto.service
+Documentation=https://github.com/sheilbronn/Manage-Gluon-MQTT
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rtl2mqtt.sh -h localhost -r -r -l
+User=openhabian
+WorkingDirectory=/tmp
+StandardOutput=inherit
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

@@ -27,8 +27,8 @@ declare -A aReadings
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 
-# Log file base name, if it is an existing dir a file inside will be created
-logbase="/tmp/rtl_433.log"
+logbase="/tmp/rtl_433"
+# logbase="/var/log/rtl_433"
 
 log () {
     local - ; set +x
@@ -37,9 +37,9 @@ log () {
         rotate_logdir_sometimes "$logbase"
         logfile="$logbase/$( date "+%H" )"
         # set -x
-        echo "$*" >> "$logfile"
+        echo "$@" >> "$logfile"
     else
-        echo "$*" >> "$logbase"
+        echo "$@" >> "$logbase.log"
     fi    
 }
 
@@ -55,8 +55,8 @@ rotate_logdir_sometimes () {
     [ "$_files" ] && log "Rotated files: $_files"
   }
 
-publish_to_mqtt_starred() {		# publish_to_mqtt_starred(expandableTopic,message,moreMsoquittoOptions)
-	mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$1" -m "$( echo "$2" | sed -e 's,",'\'',g' -e 's,*,",g' )" $3 # ...  replace double quotes by single quotes and stars by double quotes
+publish_to_mqtt_starred () {		# publish_to_mqtt_starred(expandableTopic,message,moreMsoquittoOptions)
+	mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$1" -m "$( sed -e 's,",'\'',g' -e 's,*,",g' <<<"$2" )" $3 # ...  replace double quotes by single quotes and stars by double quotes
 	}
 
 #                    hass_announce "" "$topic" "${model}/${id}" "(${id}) Temp" "Rtl433 ${model}" "value_json.temperature_C" "temperature"
@@ -64,19 +64,25 @@ hass_announce() { # $sitecode "$nodename" "publicwifi/localclients" "Readable na
 	local _topicpart="${3%/set}"
 	local _topicword="$( basename "$_topicpart" )"
 	local _command_topic_string="$( [ "$3" != "$_topicpart" ] && echo ",*cmd_t*:*~/set*" ) "    # determined by suffix ".../set"
-	local _unit_string="$( [ "$3" != "$_topicpart" ] && echo ",*unit_of_measurement*:*C*" ) "
+    local _unit=""
+
+    case "${6#value_json.}" in
+    temperature_C) _unit="°C" ;;
+    humidity) _unit="%" ;;
+    esac
+
 #    local _configtopicpart="${5//[ \/-]/}${4//[ ()]/}"
     local _configtopicpart="$( echo "${3//[ \/-]/}" | tr "A-Z" "a-z" )"
 
 #	local _hassdevicestring="*device*:{*name*:*$5*, *mdl*:*RTL433 receiver*, *mf*:*RTL433*, *ids*: [*${scriptname}${1:+_$1}_RTL433*]}"
 #	local _hassdevicestring="*device*:{*name*:*$5 $_topicword*, *mdl*:*RTL433 source* }" # "mf" and "ids" not understood by OpenHab ?
-	local _hassdevicestring="*device*:{*name*:*$5*,*mdl*:*$5 sender*,*ids*:[*RTL433_$_configtopicpart*],*sw*:*$rtl433version* }"
+	local _hassdevicestring="*device*:{*name*:*$5 $4*,*mdl*:*$5 sender*,*ids*:[*RTL433_$_configtopicpart*],*sw*:*$rtl433version* }"
 	local _msg=""
 	# mdi icons: https://cdn.materialdesignicons.com/5.4.55/            # *friendly_name*:*${5:+$5 }$4*,
 
 	[ "$bDeleteAnnouncement" != "yes" ] &&
 	    _msg="{*name*:*$( echo ${5:+$5-}$4 | tr ' ' '-' | tr -d 'x' )*,  *unique_id*:*$_configtopicpart$7*,
-        ${_hassdevicestring:+$_hassdevicestring,} *json_attributes_topic*:*${1:+$1/}$2/$_topicpart*,         
+        ${_hassdevicestring:+$_hassdevicestring,} *json_attributes_topic*:*${1:+$1/}$2/$_topicpart*,${_unit:+*unit_of_meas*:*$_unit*,}         
 	*state_topic*:*${1:+$1/}$2/$_topicpart* ${6:+,*value_template*:*{{ $6 \}\}*}$_command_topic_string${7:+,*icon*:*mdi:mdi-$7*} }"
 	publish_to_mqtt_starred "$hassbasetopic/$_configtopicpart/config" "$_msg" "-r"
   }
@@ -86,11 +92,13 @@ hass_remove_announce() {
     publish_to_mqtt_starred "$topic" "{ event:*cleaned*,note:*removed all announcements starting with $hassbasetopic* }"
 }
 
-while getopts "?h:pt:drlf:C:aevx" opt      
+while getopts "?qh:pt:drlf:F:C:aevx" opt      
 do
     case "$opt" in
     \?) echo "Usage: $scriptname -m host -t topic -r -l -a -v" 1>&2
         exit 1
+        ;;
+    q)  bQuiet="yes"
         ;;
     h)  mqtthost="$OPTARG" # configure broker host here or in $HOME/.config/mosquitto_sub
         [ "$mqtthost" = "test" ] && mqtthost="-h test.mosquitto.org" # abbreviation
@@ -108,7 +116,7 @@ do
             bRewrite="yes"  # rewrite and simplify output
         fi
         ;;
-    l)  if [ -f $logbase ] ; then  # do logging
+    l)  if [ -f ${logbase}.log ] ; then  # one log file only
             sDoLog="file"
         else
             mkdir -p "$logbase/model" || exit 1
@@ -118,11 +126,17 @@ do
         ;;
     f)  replayfile="$OPTARG" # file to replay (e.g. for debugging), instead of rtl_433 output
         ;;
+    F)  if [ "$OPTARG" = "868" ] ; then
+            rtl_433_opts="$rtl_433_opts -f 868428000 -s 1024k" # frequency
+        else
+            rtl_433_opts="$rtl_433_opts -f $OPTARG" # 
+        fi
+        ;;
     C)  maxcount="$OPTARG" # currently unused
         ;;
     e)  bEliminateDups="yes" # do not delete duplicate receptions (ones immediately following each other)
         ;;
-    a)  bAlways="yes" # do not delete duplicate receptions (ones immediately following each other)
+    a)  bAlways="yes" 
         ;;
     v)  [ "$bVerbose" = "yes" ] && bMoreVerbose="yes"
         bVerbose="yes" # more output for debugging purposes
@@ -146,10 +160,10 @@ if [ -t 1 ] ; then # probably terminal
     log "$scriptname starting at $( date )"
     publish_to_mqtt_starred "$topic" "{ event:*starting*,additional_rtl_433_opts:*$rtl_433_opts* }"
 else               # probably non-terminal
-    delayedStartSecs=10
+    delayedStartSecs=5
     log "$scriptname will start in $delayedStartSecs secs from $( date )"
     sleep "$delayedStartSecs"
-    publish_to_mqtt_starred "$topic" "{ event:*starting*,note:*delayed by $delayedStartSecs secs*,additional_rtl_433_opts:*$rtl_433_opts* }"
+    publish_to_mqtt_starred "$topic" "{ event:*starting*,note:*delayed by $delayedStartSecs secs*,additional_rtl_433_opts:*$rtl_433_opts*,*user*:*$( id -nu )* }"
 fi
 trap 'trap_function' EXIT # previously also: INT QUIT TERM 
 
@@ -157,50 +171,49 @@ trap 'trap_function' EXIT # previously also: INT QUIT TERM
 [ "$bRemoveAnnouncements" ] && hass_remove_announce
 
 # Start the listener and enter an endless loop
-[ "$bVerbose" ] && echo "options for rtl_433 are: $rtl_433_opts"
+[ "$bVerbose" -o -t 1 ] && echo "options for rtl_433 are: $rtl_433_opts"
 # { [ "$replayfile" ] && cat "$replayfile" ; [ "$replayfile" ] || nice -5 /usr/local/bin/rtl_433 $rtl_433_opts -F json || rtl_433_ended=$?; } 
 if [ "$replayfile" ] ; then
     cat "$replayfile" 
 else
-    nice -5 /usr/local/bin/rtl_433 $rtl_433_opts -F json # options not double-quoted on purpose
-    # rtl_433_ended=$?
+    nice -5 /usr/local/bin/rtl_433 $rtl_433_opts -F json   # options not double-quoted on purpose
 fi | while read -r line
 do
-    line="$( echo "$line" | jq -c "del(.mic)" )"
+    line="$( jq -c "del(.mic)" <<< "$line" )"
     log "$line"
     nReceivedCount+=1
-    line="$( echo "$line" | jq -c "del(.time)" )"
+    line="$( jq -c "del(.time)" <<< "$line" )"
 
     if [ "$bRewrite" ] ; then
         # Rewrite and clean the line from less interesting information....
         [ "$bVerbose" ] && echo "$line"
-        model="$( echo "$line" | jq -r '.model // empty' )"    
-        id="$(    echo "$line" | jq -r '.id    // empty'   )"
+        model="$( jq -r '.model // empty' <<< "$line" )"    
+        id="$(    jq -r '.id    // empty' <<< "$line" )"
         msgSecond="${line[*]/\",*/}" && msgSecond="${msgSecond:(-2):2}"
 
-        temp="$(  echo "$line" | jq -e -r 'if .temperature_C then .temperature_C*10 + 0.5 | floor / 10 else empty end'  )"
+        temp="$( jq -e -r 'if .temperature_C then .temperature_C*10 + 0.5 | floor / 10 else empty end' <<< "$line" )"
         if [ "$temp" ] ; then
             _bHasTemperature="yes"
-            line="$( echo "$line" | jq -cer ".temperature_C = $temp" )"
+            line="$( jq -cer ".temperature_C = $temp" <<< "$line" )"
         else 
             _bHasTemperature=""
         fi
-        _bHasHumidity="$( echo "$line" | jq -e -r 'if (.humidity and .humidity<101) then "yes" else empty end'  )"
-        _bHasRain="$(     echo "$line" | jq -e -r 'if (.rain_mm  and .rain_mm >0  ) then "yes" else empty end'  )"
+        _bHasHumidity="$( jq -e -r 'if (.humidity and .humidity<101) then "yes" else empty end' <<< "$line" )"
+        _bHasRain="$(     jq -e -r 'if (.rain_mm  and .rain_mm >0  ) then "yes" else empty end' <<< "$line" )"
 
-        line="$(  echo "$line" | jq -c "del(.model) | del(.id) | del(.protocol) | del(.subtype) | del(.channel)" )"
+        line="$( jq -c "del(.model) | del(.id) | del(.protocol) | del(.subtype) | del(.channel)" <<< "$line" )"
 
         if [ "$bRewriteMore" ] ; then
-            line="$(  echo "$line" | jq -c "del(.transmit)" )"        
+            line="$( jq -c "del(.transmit)" <<< "$line" )"        
 
-            line="$( echo "$line" | jq -c "if .button     == 0 then del(.button    ) else . end" )"
-            line="$( echo "$line" | jq -c "if .battery_ok == 1 then del(.battery_ok) else . end" )"
-            line="$( echo "$line" | jq -c "if .unknown1   == 0 then del(.unknown1)   else . end" )"
+            line="$( jq -c "if .button     == 0 then del(.button    ) else . end" <<< "$line" )"
+            line="$( jq -c "if .battery_ok == 1 then del(.battery_ok) else . end" <<< "$line" )"
+            line="$( jq -c "if .unknown1   == 0 then del(.unknown1)   else . end" <<< "$line" )"
 
-            bSkipLine="$( echo "$line" | jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or .rain_mm>0 then "yes" else empty end'  )"
+            bSkipLine="$( jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or .rain_mm>0 then "yes" else empty end' <<<"$line"  )"
         fi
 
-        [ "$sDoLog" = "dir" -a "$model" ] && echo "$line" >> "$logbase/model/${model}_$id"
+        [[ $sDoLog = "dir" && $model ]] && echo "$line" >> "$logbase/model/${model}_$id"
         # rotate_logdir_sometimes "$logbase/model"
     fi
 
@@ -218,39 +231,35 @@ do
         if [ "$bMoreVerbose" ] ; then
             _prefix="SAME:  "
             [ "${aReadings[${model}_${id}]}" != "$prevval" ] && _prefix="CHANGE(${#aReadings[@]}):"
-            echo "$_prefix ${model}_${id} /${aReadings[${model}_${id}]}/$prevval/" | grep -E --color=auto '^[^/]*|/'
-            # echo "keys: ${!aReadings[*]}"
+            grep -E --color=auto '^[^/]*|/' <<< "$_prefix ${model}_${id} /${aReadings[${model}_${id}]}/$prevval/"
         fi
         if [ "${aReadings[${model}_${id}]}" != "$prevval" -o -z "$bEliminateDups" ] ; then
-            [ -z "$prevval" -a "$_bHasTemperature" ] && hass_announce "" "$topic" "${model}/${id}" "(${id}) Temp" "Rtl433 ${model}" "value_json.temperature_C" "temperature" # $sitecode "$nodename" "publicwifi/localclients" "Readable name" "$ad_devname" "value_json.count" "$icontype"
+            [[ -z $prevval && $_bHasTemperature ]] && hass_announce "" "$topic" "${model}/${id}" "(${id}) Temp" "Rtl433 ${model}" "value_json.temperature_C" "temperature" # $sitecode "$nodename" "publicwifi/localclients" "Readable name" "$ad_devname" "value_json.count" "$icontype"
             
-            [ -z "$prevval" -a "$_bHasHumidity"   ] && hass_announce "" "$topic" "${model}/${id}" "(${id}) Humid" "Rtl433 ${model}" "value_json.humidity" "humidity" # $sitecode "$nodename" "publicwifi/localclients" "Readable name" "$ad_devname" "value_json.count" "$icontype"
+            [[ -z $prevval && $_bHasHumidity    ]] && hass_announce "" "$topic" "${model}/${id}" "(${id}) Humid" "Rtl433 ${model}" "value_json.humidity" "humidity" # $sitecode "$nodename" "publicwifi/localclients" "Readable name" "$ad_devname" "value_json.count" "$icontype"
             publish_to_mqtt_starred "$topic${model:+/}$model${id:+/}$id" "${line//\"/*}"
         fi
 
         _string="*event*:*log*,*sensorcount*:*${#aReadings[@]}*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*"
-        if (( nPrevMax < ${#aReadings[@]}  )) ; then
+        if (( nPrevMax < ${#aReadings[@]} )) ; then
             nPrevMax=${#aReadings[@]}
             publish_to_mqtt_starred "$topic" "{$_string,note:*sensor added*, latest_model:*${model}*,latest_id:*${id}*}"
         elif (( nMqttLines % (${#aReadings[@]}*10) == 0 )) ; then   # good heuristic in a common neighbourhood
-            _collection="$( 
-                echo -n "*sensorcollection*: [ true"
+            _collection="*sensorcollection*: [ true $(  
                 for KEY in "${!aReadings[@]}"; do
                     _reading="${aReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
                     echo ", { *model_id*:*$KEY*, ${_reading//\"/*} }"
                 done
-                echo -n " ]"
-            )"
+            ) ]"
             log_starred_json "{ $_collection }"
             publish_to_mqtt_starred "$topic" "{$_string,*note*:*regular log*,*collected_model_ids*:*${!aReadings[*]}*, $_collection }"
         elif (( ${#aReadings[@]} > $(date '+%s') % 99999 || (nMqttLines % 9999 == 0) )) ; then # reset whole array to empty once in a while, starting over
             publish_to_mqtt_starred "$topic" "{$_string,note:*resetting saved values*,collected_sensors:*${!aReadings[*]}*}"
-            tr '' ' \n' <<<"${aReadings[@]}" > "/tmp/$scriptname.$$"
+            # tr '' ' \n' <<< "${aReadings[@]}" > "/tmp/$scriptname.$$"
             unset aReadings && declare -A aReadings
             nPrevMax=$(( nPrevMax / 3 )) # to quite a lower number but not 0 to reduce log messages
             [ "$bRemoveAnnouncements" ] && hass_remove_announce
         fi
-        set +x
     fi
 done
 
@@ -259,6 +268,5 @@ log "$_msg"
 publish_to_mqtt_starred "$topic" "{ event:*endloop*,note:*$_msg* }"
 # vars were modified in pipe (subshell) = not uable here - must transform to coproc
 # publish_to_mqtt_starred "$topic" "{ event:*ending*, receivedcount:*$nReceivedCount*,mqttlinecount:*$nMqttLines*,sensorcount:*${#aReadings[@]}*,collected_sensors:*${!aReadings[*]}* }"
-}"
 
 # now exit handler will be processed...
