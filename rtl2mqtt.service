@@ -6,7 +6,7 @@ Documentation=https://github.com/sheilbronn/Manage-Gluon-MQTT
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/rtl2mqtt.sh -h localhost -r -r -l
+ExecStart=/usr/local/bin/rtl2mqtt.sh -h localhost -r -r -l -q
 User=openhabian
 WorkingDirectory=/tmp
 StandardOutput=inherit
