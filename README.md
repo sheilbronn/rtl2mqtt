@@ -16,15 +16,42 @@ PS: The Dockerfile is untouched and not checked since I don't run Docker. It mig
 
 ## Installation
 
-A technique to make it after each reboot is adding the following line to the crontab file 
+rtl2mqtt.sh should run fine on all Linux versions that support rtl_433.
+However, prerequisites are bash, jq, and mosquitto_pub (from mosquitto). 
+
+A very simple technique to make it run after each reboot is adding the following line to the crontab file 
 (The IP adress is the MQTT broker):
 
-```
+```crontab
 @reboot /usr/local/bin/rtl2mqtt.sh -h 192.168.178.72 -r -r
 ```
 
-rtl2mqtt.sh should run fine on all Linux versions that support rtl_433.
-However, prerequisites are bash, jq, and mosquitto_pub (from mosquitto). 
+Another good way, especially on Raspbian, is copying the systemd service file "rtl2mqtt.service" to
+/etc/systemd/system/multi-user.target.wants:
+
+```YAML
+[Unit]
+Description=Rtl2MQTT service
+After=network.target
+After=syslog.target
+Wants=mosquitto.service
+Documentation=https://github.com/sheilbronn/Manage-Gluon-MQTT
+
+[Service]
+Type=simple
+Environment="LOGBASE=/var/log/rtl2mqtt"
+Environment="USER=openhabian"
+Environment="MQTTBROKER=localhost"
+ExecStartPre=+/bin/sh -c "/bin/mkdir -p $LOGBASE && chown $USER $LOGBASE && logger $LOGBASE in place"
+ExecStart=/usr/local/bin/rtl2mqtt.sh -l $LOGBASE -h $MQTTBROKER -r -r -q
+User=openhabian
+WorkingDirectory=$LOGBASE
+StandardOutput=inherit
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ## Sample MQTT output
 
