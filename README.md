@@ -1,33 +1,33 @@
 # rtl2mqtt
 
-This is an heavily modified and enhanced version of the *Rtl2MQTT* script originally derived from https://github.com/roflmao/rtl2mqtt.
+This script transforms the data from a SDR receiving software ([rtl_433](https://github.com/merbanan/rtl_433)) to MQTT messages.
+It cleans the data, reduces unnecessary fields and duplicates. It is intended to run as a daemon automatically after a device boot and interactively. Several logging facilities ease debugging your environment.
 
-It transforms the data from a SDR receiving software ([rtl_433](https://github.com/merbanan/rtl_433)) to MQTT messages.
-It cleans the data, reduces unnecessary field and duplicates. More logging facilities ease searching for problems.
+Features are heavily extended compared to the other *Rtl2MQTT* script from https://github.com/roflmao/rtl2mqtt (which inspired me a lot! Thanks!)
 
-Main areas of modifications and enhancements are:
- * Introduced command line options allowing for more flexibility (See source code for usage)
+Main areas of extended features are:
+
+ * Many command line options allowing for flexibility in the configuration (See source code for usage)
  * Temperature output is transformed to SI units, e.g. Celsius.
- * Streamline some contect for MQTT msg, e.g. no time stamp or checksum code.
- * Suppress duplicate messages
- * Enhance logging into a subdirectory structure to ease later analysis.
+ * Streamlined unnecessary content for MQTT messages, e.g. no time stamp or checksum code.
+ * Suppression of repeated messages (configurable)
+ * Enhance logging into a subdirectory structure, easing later device analysis.
 
-PS: The Dockerfile is untouched and not checked since I don't run Docker. It might work or not.
+NB: The Dockerfile is duplicated untouched and not checked since I don't run Docker. It might work or not.
 
 ## Installation
 
 rtl2mqtt.sh should run fine on all Linux versions that support rtl_433.
-However, prerequisites are bash, jq, and mosquitto_pub (from mosquitto). 
+However, prerequisites are bash, jq, and mosquitto_pub (from mosquitto).
 
 A very simple technique to make it run after each reboot is adding the following line to the crontab file 
 (The IP adress is the MQTT broker):
 
 ```crontab
-@reboot /usr/local/bin/rtl2mqtt.sh -h 192.168.178.72 -r -r
+@reboot /usr/local/bin/rtl2mqtt.sh -l /tmp -h 192.168.178.72 -r -r -q
 ```
 
-Another good way, especially on Raspbian, is copying the systemd service file "rtl2mqtt.service" to
-/etc/systemd/system/multi-user.target.wants:
+A better way for daemonizing rtl2mqtt, especially on Raspbian, is to copy the supplied ([systemd service file](https://www.raspberrypi.org/documentation/linux/usage/systemd.md)) "rtl2mqtt.service" to /etc/systemd/system/multi-user.target.wants, e.g. with these contents:
 
 ```YAML
 [Unit]
@@ -42,7 +42,7 @@ Type=simple
 Environment="LOGBASE=/var/log/rtl2mqtt"
 Environment="USER=openhabian"
 Environment="MQTTBROKER=localhost"
-ExecStartPre=+/bin/sh -c "/bin/mkdir -p $LOGBASE && chown $USER $LOGBASE && logger $LOGBASE in place"
+ExecStartPre=+/bin/sh -c "/bin/mkdir -p $LOGBASE && chown $USER $LOGBASE && logger $LOGBASE in place."
 ExecStart=/usr/local/bin/rtl2mqtt.sh -l $LOGBASE -h $MQTTBROKER -r -r -q
 User=openhabian
 WorkingDirectory=$LOGBASE
@@ -53,12 +53,13 @@ StandardError=inherit
 WantedBy=multi-user.target
 ```
 
-## Sample MQTT output
+Don't forget to adapt the variables to your local installation. Run ```systemctl status rtl2mqtt.service´´´ to see debugging output.
 
-This output is from a typical suburb with different weather stations (inside or outside)
-and movement sensors, smoke sensors, blind switches etc...
+## Sample output
 
-```
+The following sample MQTT output is from a typical suburb neighbourhood with different weather stations (inside and outside), movement sensors, smoke sensors, blind switches etc...
+
+```log
 45:35 Rtl/433 { event:"starting",additional_rtl_433_opts:"-G 4 -M protocol -C si -R -162" }
 ...
 54:46 Rtl/433/Smoke-GS558/25612 {"unit":15,"learn":0,"code":"7c818f"}
