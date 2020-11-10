@@ -51,10 +51,11 @@ expand_starred_string () {
   }
 
 rotate_logdir_sometimes () {           # check for log file rotation and maybe do it (sometimes)
-    (( msgMinute + msgSecond != 67 )) && return 0 # rotate log file only with probalility of 1/60
-    cd "$1" && _files="$( find . -maxdepth 2 -type f -size +200k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 )"
-    msgSecond++
-    [[ $_files ]] && log_error "Rotated files: $_files"
+    if (( msgMinute + msgSecond == 67 )) ; then  # rotate log file only with probalility of 1/60
+        cd "$1" && _files="$( find . -maxdepth 2 -type f -size +200k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 )"
+        msgSecond=$(( msgSecond + 1 ))
+        [[ $_files ]] && log_error "Rotated files: $_files"
+    fi
   }
 
 publish_to_mqtt_starred () {		# publish_to_mqtt_starred(expandableTopic, starred_message, moreMosquittoOptions)
@@ -91,7 +92,7 @@ hass_announce() { # $sitecode "$nodename" "publicwifi/localclients" "Readable na
 
 hass_remove_announce() {
     mosquitto_sub -h "$mqtthost" -i RTL_433 -t "$hassbasetopic/#" --remove-retained --retained-only -W 1
-    publish_to_mqtt_starred "$basetopic" "{ event:*cleaned*,note:*removed all announcements starting with $hassbasetopic* }"
+    publish_to_mqtt_starred "$basetopic" "{ *event*:*cleaned*,note:*removed all announcements starting with $hassbasetopic* }"
 }
 
 del_json_attribute () {
@@ -117,7 +118,7 @@ do
         ;;
     r)  # rewrite and simplify output
         if [ "$bRewrite" ] ; then
-            bRewriteMore="yes" && [ $bVerbose ] && echo "$scriptname: rewriting even more ..."
+            bRewriteMore="yes" && [[ $bVerbose ]] && echo "$scriptname: rewriting even more ..."
         else
             bRewrite="yes"  # rewrite and simplify output
         fi
@@ -163,14 +164,21 @@ fi
 
 [ "$( command -v jq )" ] || { log_error "$scriptname: jq is a prerequisite!" ; exit 1 ; }
 
-trap_function() { 
+trap_exit() { 
     log "$scriptname stopping at $( date )"
     [ "$bRemoveAnnouncements" ] && hass_remove_announce
     [ "$rtlcoproc_PID" ] && kill "$rtlcoproc_PID" && [ $bVerbose ] && echo "$scriptname: Killed coproc PID $_cppid" 1>&2
     sleep 1
-    publish_to_mqtt_starred "$basetopic" "{ event:*stopping*, receivedcount:*$nReceivedCount*,mqttlinecount:*$nMqttLines*,rtl433pid:*${rtlcoproc_PID} ($_cppid)*,*sensorcount:*${#aReadings[@]}*,collected_sensors:*${!aReadings[*]}* }"
+    publish_to_mqtt_starred "$basetopic" "{ *event*:*stopping*, receivedcount:*$nReceivedCount*,mqttlinecount:*$nMqttLines*,rtl433pid:*${rtlcoproc_PID} ($_cppid)*,*sensorcount:*${#aReadings[@]}*,collected_sensors:*${!aReadings[*]}* }"
  }
-trap 'trap_function' EXIT # previously also: INT QUIT TERM 
+trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
+
+trap_usr1() { 
+    log "$scriptname received signal USR1"
+    publish_to_mqtt_starred "$basetopic" "{ *event*:*status*, *sensorcount*:*${#aReadings[@]}*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,
+        *collected_sensors*:*${!aReadings[*]}*, note:*rcvd USR1* }"
+ }
+trap 'trap_usr1' USR1 # previously also: INT QUIT TERM 
 
 _string="*event*:*starting*, *additional_rtl_433_opts*:*$rtl_433_opts*, *user*:*$( id -nu )*, *logto*:*$logbase ($sDoLog)*"
 if [ -t 1 ] ; then # probably terminal
@@ -192,7 +200,7 @@ if [[ $replayfile ]] ; then
     coproc rtlcoproc ( cat "$replayfile" )
 else
     coproc rtlcoproc ( /usr/local/bin/rtl_433 $rtl_433_opts -F json )   # options are not double-quoted on purpose
-    renice -n 7 "${rtlcoproc_PID}"
+    renice -n 10 "${rtlcoproc_PID}"
 fi 
 
 _cppid="$rtlcoproc_PID"
@@ -203,7 +211,7 @@ do
     nReceivedCount=$(( nReceivedCount + 1 ))
     data="$( del_json_attribute ".mic" "$data" )"
     log "$data"
-    msgSecond="${data[*]/\",*/}" && msgMinute="${msgSecond:(-5):2}" && msgSecond="${msgSecond:(-2):2}" # no subprocess needed...
+    msgSecond="${data[*]/\",*/}" && msgMinute="${msgSecond:(-5):2}" && msgMinute="${msgMinute#0}" && msgSecond="${msgSecond:(-2):2}" && msgSecond="${msgSecond#0}" # no subprocess needed...
     data="$( del_json_attribute ".time" "$data"  )"
 
     if [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
@@ -259,11 +267,12 @@ do
             publish_to_mqtt_starred "$basetopic${model:+/}$model${id:+/}$id" "${data//\"/*}" # ... publish it!
         fi
     fi
-    _string="*event*:*log*,*sensorcount*:*${#aReadings[@]}*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*"
-    if (( nPrevMax < ${#aReadings[@]} )) ; then                 # we have a new sensor
-        nPrevMax=${#aReadings[@]}
+    nReadings=${#aReadings[@]} && nReadings=${nReadings#0} # removing any leading 0
+    _string="*event*:*status*,*sensorcount*:*$nReadings*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*"
+    if (( nPrevMax < nReadings )) ; then                 # we have a new sensor
+        nPrevMax=nReadings
         publish_to_mqtt_starred "$basetopic" "{$_string,note:*sensor added*, latest_model:*${model}*,latest_id:*${id}*}"
-    elif (( nMqttLines % (${#aReadings[@]}*10) == 0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
+    elif (( nMqttLines % (nReadings*10+1) == 0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*: [ true $(  
             for KEY in "${!aReadings[@]}"; do
                 _reading="${aReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
@@ -272,7 +281,7 @@ do
         ) ]"
         log "$( expand_starred_string "$_collection" )" 
         publish_to_mqtt_starred "$basetopic" "{$_string, *note*:*regular log*, *collected_model_ids*:*${!aReadings[*]}*, $_collection }"
-    elif (( ${#aReadings[@]} > msgSecond % 99999 || (nReceivedCount % 9999 == 0) )) ; then # reset whole array to empty once in a while, starting over
+    elif (( nReadings > msgSecond % 99999 || (nReceivedCount % 9999 == 0) )) ; then # reset whole array to empty once in a while, starting over
         publish_to_mqtt_starred "$basetopic" "{$_string, *note*:*resetting saved values*, *collected_sensors*:*${!aReadings[*]}*}"
         unset aReadings && declare -A aReadings   # reset the whole collection array
         nPrevMax=$(( nPrevMax / 3 ))              # to quite a reduced number, but not back to 0, to reduce future log messages
