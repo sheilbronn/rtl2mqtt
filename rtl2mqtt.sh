@@ -162,10 +162,10 @@ else
     sDoLog="dir"
 fi
 
-[ "$( command -v jq )" ] || { log_error "$scriptname: jq is a prerequisite!" ; exit 1 ; }
+[ "$( command -v jq )" ] || { log_error "$scriptname: jq must be available!" ; exit 1 ; }
 
-trap_exit() { 
-    log "$scriptname stopping at $( date )"
+trap_exit() {   # stuff to do when exiting
+    log "$scriptname exiting at $( date )"
     [ "$bRemoveAnnouncements" ] && hass_remove_announce
     [ "$rtlcoproc_PID" ] && kill "$rtlcoproc_PID" && [ $bVerbose ] && echo "$scriptname: Killed coproc PID $_cppid" 1>&2
     sleep 1
@@ -173,14 +173,20 @@ trap_exit() {
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
 
-trap_usr1() { 
-    log "$scriptname received signal USR1"
-    publish_to_mqtt_starred "$basetopic" "{ *event*:*status*, *sensorcount*:*${#aReadings[@]}*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,
-        *collected_sensors*:*${!aReadings[*]}*, note:*rcvd USR1* }"
+trap_usr1() {    # log state to MQTT
+    log "$scriptname received signal USR1: logging to MQTT"
+    publish_to_mqtt_starred "$basetopic" "{*event*:*status*,*sensorcount*:*${#aReadings[@]}*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,
+        *collected_sensors*:*${!aReadings[*]}*,note:*rcvd USR1* }"
  }
-trap 'trap_usr1' USR1 # previously also: INT QUIT TERM 
+trap 'trap_usr1' USR1 
 
-_string="*event*:*starting*, *additional_rtl_433_opts*:*$rtl_433_opts*, *user*:*$( id -nu )*, *logto*:*$logbase ($sDoLog)*"
+trap_usr2() {    # remove all home assistant announcements 
+    log "$scriptname received signal USR1: removing all home assistant announcements"
+    hass_remove_announce
+  }
+trap 'trap_usr2' USR2 
+
+_string="*event*:*starting*,*additional_rtl_433_opts*:*$rtl_433_opts*,*user*:*$( id -nu )*,*logto*:*$logbase ($sDoLog)*"
 if [ -t 1 ] ; then # probably terminal
     log "$scriptname starting at $( date )"
     publish_to_mqtt_starred "$basetopic" "{ $_string }"
@@ -267,12 +273,12 @@ do
             publish_to_mqtt_starred "$basetopic${model:+/}$model${id:+/}$id" "${data//\"/*}" # ... publish it!
         fi
     fi
-    nReadings=${#aReadings[@]} && nReadings=${nReadings#0} # removing any leading 0
+    nReadings=${#aReadings[@]} && nReadings=${nReadings#0} # remove any leading 0
     _string="*event*:*status*,*sensorcount*:*$nReadings*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*"
-    if (( nPrevMax < nReadings )) ; then                 # we have a new sensor
+    if (( nPrevMax < nReadings )) ; then                 # new max means we have a new sensor
         nPrevMax=nReadings
         publish_to_mqtt_starred "$basetopic" "{$_string,note:*sensor added*, latest_model:*${model}*,latest_id:*${id}*}"
-    elif (( nMqttLines % (nReadings*10+1) == 0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
+    elif (( nReceivedCount % (nReadings*10+1) == 0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*: [ true $(  
             for KEY in "${!aReadings[@]}"; do
                 _reading="${aReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
@@ -280,9 +286,9 @@ do
             done
         ) ]"
         log "$( expand_starred_string "$_collection" )" 
-        publish_to_mqtt_starred "$basetopic" "{$_string, *note*:*regular log*, *collected_model_ids*:*${!aReadings[*]}*, $_collection }"
+        publish_to_mqtt_starred "$basetopic" "{$_string,*note*:*regular log*, *collected_model_ids*:*${!aReadings[*]}*, $_collection }"
     elif (( nReadings > msgSecond % 99999 || (nReceivedCount % 9999 == 0) )) ; then # reset whole array to empty once in a while, starting over
-        publish_to_mqtt_starred "$basetopic" "{$_string, *note*:*resetting saved values*, *collected_sensors*:*${!aReadings[*]}*}"
+        publish_to_mqtt_starred "$basetopic" "{$_string,*note*:*resetting saved values*,*collected_sensors*:*${!aReadings[*]}*}"
         unset aReadings && declare -A aReadings   # reset the whole collection array
         nPrevMax=$(( nPrevMax / 3 ))              # to quite a reduced number, but not back to 0, to reduce future log messages
         [[ $bRemoveAnnouncements ]] && hass_remove_announce

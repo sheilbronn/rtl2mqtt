@@ -15,7 +15,7 @@ The following sample MQTT output is from a typical suburb neighbourhood with dif
 57:05 Rtl/433/Nexus-TH/35 {"temperature_C":15,"humidity":99}
 58:36 Rtl/433/inFactory-TH/12 {"temperature_C":15.3,"humidity":79}
 59:04 Rtl/433/Prologue-TH/107 {"temperature_C":24.2,"humidity":14}
-59:10 Rtl/433 {"event":"status","sensorcount":"6","mqttlinecount":"19","receivedcount":"21",note:"sensor added", latest_model:"rologue-TH",latest_id:"107"}
+59:10 Rtl/433 {"event":"status","sensorcount":"6","mqttlinecount":"19","receivedcount":"21",note:"sensor added", latest_model:"Prologue-TH",latest_id:"107"}
 
 ...
 ```
