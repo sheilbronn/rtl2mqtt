@@ -15,6 +15,7 @@ scriptname="${0##*/}"
 logbase="/var/log/$( basename "${scriptname// /}" .sh )" # /var/log is preferred, but will default to /tmp if not useable
 mqtthost="test.mosquitto.org"        # default MQTT broker, unsecure ok.
 basetopic="Rtl/433"                  # default MQTT topic prefix
+rtl433command="/usr/local/bin/rtl_433"
 rtl_433_opts="-G 4 -M protocol -C si -R -162"
 hassbasetopic="homeassistant/sensor/RTL433"
 command -v rtl_433 >/dev/null || { echo "$scriptname: rtl_433 not found..." 1>&2 ; exit 1 ; }
@@ -163,6 +164,7 @@ else
 fi
 
 [ "$( command -v jq )" ] || { log_error "$scriptname: jq must be available!" ; exit 1 ; }
+tuner="$( $rtl433command -T 1 2>&1 | grep '^Found ' | sed -e 's/Found //' -e 's/ tuner//' )"
 
 trap_exit() {   # stuff to do when exiting
     log "$scriptname exiting at $( date )"
@@ -186,7 +188,7 @@ trap_usr2() {    # remove all home assistant announcements
   }
 trap 'trap_usr2' USR2 
 
-_string="*event*:*starting*,*additional_rtl_433_opts*:*$rtl_433_opts*,*user*:*$( id -nu )*,*logto*:*$logbase ($sDoLog)*"
+_string="*event*:*starting*,*tuner*:*$tuner*,*additional_rtl_433_opts*:*$rtl_433_opts*,*user*:*$( id -nu )*,*logto*:*$logbase ($sDoLog)*"
 if [ -t 1 ] ; then # probably terminal
     log "$scriptname starting at $( date )"
     publish_to_mqtt_starred "$basetopic" "{ $_string }"
@@ -205,7 +207,7 @@ fi
 if [[ $replayfile ]] ; then
     coproc rtlcoproc ( cat "$replayfile" )
 else
-    coproc rtlcoproc ( /usr/local/bin/rtl_433 $rtl_433_opts -F json )   # options are not double-quoted on purpose
+    coproc rtlcoproc ( $rtl433command  $rtl_433_opts -F json )   # options are not double-quoted on purpose
     renice -n 10 "${rtlcoproc_PID}"
 fi 
 
