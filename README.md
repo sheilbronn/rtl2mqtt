@@ -73,4 +73,6 @@ WantedBy=multi-user.target
 
 Don't forget to adapt the variables to your local installation. Run ```systemctl status rtl2mqtt.service´´´ to see debugging output.
 
-.
+## Hardware
+
+I'm using a [CSL DVB-T USB Stick](https://www.amazon.de/CSL-Realtek-Chip-Fernbedienung-Antenne-Windows/dp/B00CIQKFAO) plugged into a Raspberry Pi to receive the 433MhZ signals. They can also be bought on Ebay for a few Euros. Other sticks might work, too. Just let me know.
