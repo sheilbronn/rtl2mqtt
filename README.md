@@ -6,16 +6,16 @@ It cleans the data, reduces unnecessary fields and duplicates. It is intended to
 The following sample MQTT output is from a typical suburb neighbourhood with different weather stations (inside and outside), movement sensors, smoke sensors, blind switches etc...
 
 ```log
-45:35 Rtl/433 { event:"starting",additional_rtl_433_opts:"-G 4 -M protocol -C si -R -162" }
+45:35 Rtl/433/bridge { event:"starting",additional_rtl_433_opts:"-G 4 -M protocol -C si -R -162" }
 ...
 54:46 Rtl/433/Smoke-GS558/25612 {"unit":15,"learn":0,"code":"7c818f"}
 55:25 Rtl/433/Generic-Remote/61825 {"cmd":62,"tristate":"110ZX00Z011X"}
 55:59 Rtl/433/Smoke-GS558/25612 {"unit":15,"learn":0,"code":"7c818f"}
-56:44 Rtl/433/Prologue-TH/107 {"temperature_C":24.2,"humidity":14}
-57:05 Rtl/433/Nexus-TH/35 {"temperature_C":15,"humidity":99}
-58:36 Rtl/433/inFactory-TH/12 {"temperature_C":15.3,"humidity":79}
-59:04 Rtl/433/Prologue-TH/107 {"temperature_C":24.2,"humidity":14}
-59:10 Rtl/433 {"event":"status","sensorcount":"6","mqttlinecount":"19","receivedcount":"21",note:"sensor added", latest_model:"Prologue-TH",latest_id:"107"}
+56:44 Rtl/433/Prologue-TH/107 {"temperature":24.2,"humidity":14}
+57:05 Rtl/433/Nexus-TH/35 {"temperature":15,"humidity":99}
+58:36 Rtl/433/inFactory-TH/12 {"temperature":15.3,"humidity":79}
+59:04 Rtl/433/Prologue-TH/107 {"temperature":24.2,"humidity":14}
+59:10 Rtl/433/bridge {"event":"status","sensorcount":"6","mqttlinecount":"19","receivedcount":"21",note:"sensor added", latest_model:"Prologue-TH",latest_id:"107"}
 
 ...
 ```

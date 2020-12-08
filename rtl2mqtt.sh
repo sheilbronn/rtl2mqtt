@@ -18,9 +18,12 @@ mqtthost="test.mosquitto.org"        # default MQTT broker, unsecure ok.
 basetopic="Rtl/433"                  # default MQTT topic prefix
 hassbasetopic="homeassistant/sensor/RTL433"
 rtl433_command=$( command -v rtl_433 ) || { echo "$sName: rtl_433 not found..." 1>&2 ; exit 1 ; }
-rt433_opts="-G 4 -M protocol -C si -R -162"
+rt433_opts="-G 4 -M protocol -C si -R -162 -R -86 -R -31 -R -37"
 rtl433version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
 
+declare -i nLogMinutesPeriod=10
+declare -i nLogMessagesPeriod=50
+declare -i nLastStatusSeconds=$(( $(date +%s) - nLogMinutesPeriod*60 + 30 ))
 declare -i nMqttLines=0     
 declare -i nReceivedCount=0 
 declare -i nPrevMax=1       # start with 1 for non-triviality
@@ -59,13 +62,17 @@ rotate_logdir_sometimes () {           # check for log file rotation and maybe d
     fi
   }
 
-publish_to_mqtt_starred () {		# publish_to_mqtt_starred(expandableTopic, starred_message, moreMosquittoOptions)
-    mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$1"         -m "$( expand_starred_string "$2" )" $3 # ...  
-  }
+publish_to_mqtt_starred () {		# publish_to_mqtt_starred( [expandableTopic ,] starred_message, moreMosquittoOptions)
+    if (( $# == 1 )) ; then
+        _topic="/bridge"
+        _msg="$1"
 
-publish_standard () {
-    local - ; set +x
-    publish_to_mqtt_starred "$basetopic" "$1" "$2"
+    else
+        _topic="$1"
+        _msg="$2"
+    fi
+    _topic="${_topic/#\//$basetopic/}"
+    mosquitto_pub -h "$mqtthost" -i RTL_433 -t "$_topic" -m "$( expand_starred_string "$_msg" )" $3 $4 $5 # ...  
   }
 
 normalize_config_topic_part() {
@@ -102,7 +109,7 @@ hass_announce() { # $sitecode "$nodename" "publicwifi/localclients" "Readable na
 
 hass_remove_announce() {
     mosquitto_sub -h "$mqtthost" -i RTL_433 -t "$hassbasetopic/#" --remove-retained --retained-only -W 1
-    publish_standard "{ *event*:*cleaned*,note:*removed all announcements starting with $hassbasetopic* }"
+    publish_to_mqtt_starred "{ *event*:*cleaned*,note:*removed all announcements starting with $hassbasetopic* }"
 }
 
 del_json_attribute () {
@@ -183,14 +190,15 @@ trap_exit() {   # stuff to do when exiting
     [ "$bRemoveAnnouncements" ] && hass_remove_announce
     [ "$rtlcoproc_PID" ] && kill "$rtlcoproc_PID" && [ $bVerbose ] && echo "$sName: Killed coproc PID $_cppid" 1>&2
     sleep 1
-    publish_standard "{ *event*:*stopping*,receivedcount:*$nReceivedCount*,mqttlinecount:*$nMqttLines*,rtl433pid:*${rtlcoproc_PID} ($_cppid)*,*sensorcount:*${#aReadings[@]}*,collected_sensors:*${!aReadings[*]}* }"
+    publish_to_mqtt_starred "{ *event*:*stopping*,receivedcount:*$nReceivedCount*,mqttlinecount:*$nMqttLines*,rtl433pid:*${rtlcoproc_PID:-ENDED} (was $_cppid)*,*sensorcount:*${#aReadings[@]}*,collected_sensors:*${!aReadings[*]}* }"
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
 
 trap_usr1() {    # log state to MQTT
     log "$sName received signal USR1: logging to MQTT"
-    publish_standard "{*event*:*status*,*sensorcount*:*${#aReadings[@]}*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,
-        *collected_sensors*:*${!aReadings[*]}*,note:*rcvd USR1* }"
+    publish_to_mqtt_starred "{*event*:*status*,note:*rcvd signal USR1*,*sensorcount*:*${#aReadings[@]}*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,
+        *collected_sensors*:*${!aReadings[*]}* }"
+    nLastStatusSecondsSeconds="$( date +%s )"
  }
 trap 'trap_usr1' USR1 
 
@@ -212,15 +220,15 @@ echo_potentially_duplicate_data() {
     fi
  }
 
-_string="*event*:*starting*,*tuner*:*$sdr_tuner*,*freq*:*$sdr_freq*,*additional_rt433_opts*:*$rt433_opts*,*user*:*$( id -nu )*,*logto*:*$logbase ($sDoLog)*"
+_statistics="*tuner*:*$sdr_tuner*,*freq*:*$sdr_freq*,*additional_rt433_opts*:*$rt433_opts*,*logto*:*$logbase ($sDoLog)*,*rewrite*:*${bRewrite:-no}*"
 if [ -t 1 ] ; then # probably terminal
     log "$sName starting at $( date )"
-    publish_standard "{ $_string }"
+    publish_to_mqtt_starred "{*event*:*starting*,$_statistics }"
 else               # probably non-terminal
     delayedStartSecs=3
     log "$sName starting in $delayedStartSecs secs from $( date )"
     sleep "$delayedStartSecs"
-    publish_standard "{ $_string,note:*delayed by $delayedStartSecs secs*,*cmdargs*:*$commandArgs*}"
+    publish_to_mqtt_starred "{*event*:*starting*,$_statistics,note:*delayed by $delayedStartSecs secs*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*}"
 fi
 
 # Optionally remove any matching retained announcements
@@ -258,10 +266,11 @@ do
         else 
             _bHasTemperature=""
         fi
-        _bHasHumidity="$( jq -e -r 'if (.humidity and .humidity<101) then "yes" else empty end'  <<< "$data" )"
-        _bHasRain="$(     jq -e -r 'if (.rain_mm  and .rain_mm >0  ) then "yes" else empty end'  <<< "$data" )"
+        _bHasHumidity="$( jq -e -r 'if (.humidity and .humidity<=100) then "yes" else empty end' <<< "$data" )"
+        _bHasRain="$(     jq -e -r 'if (.rain_mm  and .rain_mm  >0  ) then "yes" else empty end' <<< "$data" )"
 
         data="$( jq -c "del(.model) | del(.id) | del(.protocol) | del(.subtype) | del(.channel)" <<< "$data" )"
+        data="$( sed -e 's/"temperature_C":\([0-9]*\)\(\.[0-9]*\)/"temperature":\1\2/' -e 's/"humidity":\([0-9.]*\)/"humidity":\1/' <<< "$data" )" # hack to cut off "_C" not using jq
 
         if [[ $bRewriteMore ]] ; then
             data="$( del_json_attribute ".transmit" "$data"  )"        
@@ -270,7 +279,7 @@ do
             data="$( jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" )"
             data="$( jq -c 'if .unknown1   == 0 then del(.unknown1)   else . end' <<< "$data" )"
 
-            bSkipLine="$( jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or .rain_mm>0 then "yes" else empty end' <<<"$data"  )"
+            # bSkipLine="$( jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) or .rain_mm>0 then "yes" else empty end' <<<"$data"  )"
         fi
         [[ $sDoLog == "dir" && $model ]] && echo "$data" >> "$logbase/model/${model}_$id"
     fi
@@ -302,22 +311,25 @@ do
         fi
     fi
     nReadings=${#aReadings[@]} && nReadings=${nReadings#0} # remove any leading 0
-    _string="*event*:*status*,*sensorcount*:*$nReadings*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*"
-    if (( nReadings > nPrevMax )) ; then                 # new max means we have a new sensor
+    _statistics="*sensorcount*:*$nReadings*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,*readingscount*:*$nReadings*"
+
+    if (( nReadings > nPrevMax )) ; then                 # a new max means we have a new sensor
         nPrevMax=nReadings
-        publish_standard "{$_string,note:*sensor added*,latest_model:*${model}*,latest_id:*${id}*}"
-    elif (( nReceivedCount % (nReadings*10+1) == 0  )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
-        _collection="*sensorreadings*: [ $(  
+        publish_to_mqtt_starred "{*event*:*status*,note:*sensor added*,$_statistics,latest_model:*${model}*,latest_id:*${id}*}"
+    elif (( $(date +%s) > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==1 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
+        _collection="*sensorreadings*: [
+            $( _comma=""
             for KEY in "${!aReadings[@]}"; do
                 _reading="${aReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
-                echo "${_cnt:+,} { *model_id*:*$KEY*, ${_reading//\"/*} }"
-                _cnt=$(( _cnt + 1 ))
+                echo "$_comma { *model_id*:*$KEY*, ${_reading//\"/*} }"
+                _comma=","
             done
         ) ]"
         log "$( expand_starred_string "$_collection" )" 
-        publish_standard "{$_string,*note*:*regular log*,*collected_model_ids*:*${!aReadings[*]}*, $_collection }"
-    elif (( nReadings > msgSecond % 99999 || (nReceivedCount % 9999 == 0) )) ; then # reset whole array to empty once in a while = starting over
-        publish_standard "{$_string,*note*:*resetting saved values*,*collected_sensors*:*${!aReadings[*]}*}"
+        publish_to_mqtt_starred "{*event*:*status*,*note*:*regular log*,$_statistics,*collected_model_ids*:*${!aReadings[*]}*, $_collection }"
+        nLastStatusSeconds="$( date +%s )"
+    elif (( ( nReadings > msgSecond*msgSecond*(msgMinute+1) ) || ((nReceivedCount % 1000) == 0) )) ; then # reset whole array to empty once in a while = starting over
+        publish_to_mqtt_starred "{*event*:*status*,*note*:*resetting saved values*,$_statistics,*collected_sensors*:*${!aReadings[*]}*}"
         unset aReadings && declare -A aReadings   # reset the whole collection array
         nPrevMax=$(( nPrevMax / 3 ))              # to quite a reduced number, but not back to 0, to reduce future log messages
         [[ $bRemoveAnnouncements ]] && hass_remove_announce
@@ -326,6 +338,6 @@ done
 
 _msg="$sName: while-loop ended at $( date ), rtlprocid=:${rtlcoproc_PID}:"
 log "$_msg" 
-publish_standard "{ *event*:*endloop*, *note*:*$_msg* }"
+publish_to_mqtt_starred "{ *event*:*endloop*, *note*:*$_msg* }"
 
 # now the exit trap function will be processed...
