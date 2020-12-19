@@ -251,7 +251,10 @@ do
     nReceivedCount=$(( nReceivedCount + 1 ))
     data="$( del_json_attribute ".mic" "$data" )"   # .mic is useless
     log "$data"
-    msgSecond="${data[*]/\",*/}" && msgMinute="${msgSecond:(-5):2}" && msgMinute="${msgMinute#0}" && msgSecond="${msgSecond:(-2):2}" && msgSecond="${msgSecond#0}" # no subprocess needed...
+    msgTime="${data[*]/\",*/}"
+        msgHour="${msgTime:(-8):2}"   && msgHour="${msgHour#0}" 
+        msgMinute="${msgTime:(-5):2}" && msgMinute="${msgMinute#0}" 
+        msgSecond="${msgTime:(-2):2}" && msgSecond="${msgSecond#0}" # no subprocess needed...
     data="$( del_json_attribute ".time" "$data"  )" # .time is redundant
 
     if [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
@@ -316,19 +319,19 @@ do
     if (( nReadings > nPrevMax )) ; then                 # a new max means we have a new sensor
         nPrevMax=nReadings
         publish_to_mqtt_starred "{*event*:*status*,note:*sensor added*,$_statistics,latest_model:*${model}*,latest_id:*${id}*}"
-    elif (( $(date +%s) > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==1 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
-        _collection="*sensorreadings*: [
-            $( _comma=""
+    elif (( $(date +%s) > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
+        _collection="*sensorreadings*: [ 
+            $(  _comma=""
             for KEY in "${!aReadings[@]}"; do
                 _reading="${aReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
-                echo "$_comma { *model_id*:*$KEY*, ${_reading//\"/*} }"
+                printf "$_comma { *model_id*:*$KEY*, ${_reading//\"/*} }"
                 _comma=","
             done
         ) ]"
         log "$( expand_starred_string "$_collection" )" 
         publish_to_mqtt_starred "{*event*:*status*,*note*:*regular log*,$_statistics,*collected_model_ids*:*${!aReadings[*]}*, $_collection }"
         nLastStatusSeconds="$( date +%s )"
-    elif (( ( nReadings > msgSecond*msgSecond*(msgMinute+1) ) || ((nReceivedCount % 1000) == 0) )) ; then # reset whole array to empty once in a while = starting over
+    elif (( nReadings > (msgSecond*msgSecond+2)*(msgMinute+1)*(msgHour+1) || nMqttLines%5000==0 || nReceivedCount % 10000 == 0 )) ; then # reset whole array to empty once in a while = starting over
         publish_to_mqtt_starred "{*event*:*status*,*note*:*resetting saved values*,$_statistics,*collected_sensors*:*${!aReadings[*]}*}"
         unset aReadings && declare -A aReadings   # reset the whole collection array
         nPrevMax=$(( nPrevMax / 3 ))              # to quite a reduced number, but not back to 0, to reduce future log messages

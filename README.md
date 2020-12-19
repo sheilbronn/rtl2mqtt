@@ -16,7 +16,6 @@ The following sample MQTT output is from a typical suburb neighbourhood with dif
 58:36 Rtl/433/inFactory-TH/12 {"temperature":15.3,"humidity":79}
 59:04 Rtl/433/Prologue-TH/107 {"temperature":24.2,"humidity":14}
 59:10 Rtl/433/bridge {"event":"status","sensorcount":"6","mqttlinecount":"19","receivedcount":"21",note:"sensor added", latest_model:"Prologue-TH",latest_id:"107"}
-
 ...
 ```
 
@@ -29,7 +28,7 @@ Main areas of extended features are:
  * Streamlined unnecessary content for MQTT messages, e.g. no time stamp or checksum code.
  * Suppression of repeated messages (configurable)
  * Enhance logging into a subdirectory structure, easing later device analysis.
- * Sending an USR1 signal to the daemon will emit a status message.
+ * Sending an USR1 signal to the daemon will emit a status message to MQTT.
 
 NB: The Dockerfile is duplicated untouched and not checked since I don't run Docker. It might work or not.
 
