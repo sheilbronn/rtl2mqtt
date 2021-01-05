@@ -80,11 +80,12 @@ publish_to_mqtt_starred () {		# publish_to_mqtt_starred( [expandableTopic ,] sta
 normalize_config_topic_part() {
     printf "%s" "${1//[ \/-]/}" | tr "[:upper:]" "[:lower:]"
   }
-
-#                    hass_announce "" "$basetopic" "${model}/${id}" "(${id}) Temp" "Rtl433 ${model}" "value_json.temperature_C" "temperature"
+#     hass_announce "" "$basetopic" "bridge/state"   "(0) Count"    "Rtl433 Bridge"   "value_json.sensorcount"   "sensorcount"
+#     hass_announce "" "$basetopic" "${model}/${id}" "(${id}) Temp" "Rtl433 ${model}" "value_json.temperature_C" "temperature"
 hass_announce() { # $sitecode "$nodename" "publicwifi/localclients" "Readable name" 5:"$ad_devname" 6:"value_json.count" "$icontype"
 	local -
-    local _topicpart="${3%/set}"
+    local _topicpart="${3%/set}" # if $3 ends in /set it is settable => remove /set
+ #   local _issettable="$(( $3 != $_topicpart ))"
 	local _devid="$( basename "$_topicpart" )"
 	local _command_topic_str="$( [ "$3" != "$_topicpart" ] && echo ",*cmd_t*:*~/set*" ) "  # determined by suffix ".../set"
     local _name="${5:+$5-}$4" && _name="${_name// /-}" && _name="${_name//[)()]/}"   #   echo ${5:+$5-}$4 | tr ' ' '-' | tr -d 'x'
@@ -105,8 +106,8 @@ hass_announce() { # $sitecode "$nodename" "publicwifi/localclients" "Readable na
     esac
                         : --  *device*:{*name*:*$_devname*,*mdl*:*$5 sender*,*ids*:[*RTL433_$_configtopicpart*],*sw*:*$rtl433version* }
                         : --  *device*:{*identifiers*:[*${sID}_${_configtopicpart}*],*manufacturer*:*RTL*,*model*:*A $5 sensor on channel $_devid*,*name*:*$_devname*,*sw_version*:*RTL2MQTT V1*}
-    local  _hassdevicestring="*device*:{*identifiers*:[*${sID}_${_configtopicpart}*],*manufacturer*:*$manufacturer*,*model*:*$5 sensor on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433version*}"
-    local  _msg="{*availability*:[{*topic*:*$basetopic/bridge/state*}],$_hassdevicestring,*device_class*:*$7*,*json_attributes_topic*:*$_sensortopic*,*name*:*$_channelname*,*state_topic*:*$_sensortopic*,*unique_id*:*${sID}_${_configtopicpart}${7}*,*unit_of_measurement*:*$_unit*${_value_template_str}${_command_topic_str}$_icon_str}"
+    local  _device_string="*device*:{*identifiers*:[*${sID}_${_configtopicpart}*],*manufacturer*:*$manufacturer*,*model*:*$5 sensor on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433version*}"
+    local  _msg="{*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,*availability*:[{*topic*:*$basetopic/bridge/state*}],$_device_string,*device_class*:*$7*,*json_attributes_topic*:*~*,*unique_id*:*${sID}_${_configtopicpart}${7}*,*unit_of_measurement*:*$_unit*${_value_template_str}${_command_topic_str}$_icon_str}"
 
     # : {"availability":[{"topic":"zigbee2mqtt/bridge/state"}],"device":{"identifiers":["zigbee2mqtt_0x00158d0003a401e2"],"manufacturer":"Xiaomi","model":"MiJia temperature & humidity sensor (WSDCGQ01LM)","name":"Aqara-Sensor","sw_version":"Zigbee2MQTT 1.16.2"},"device_class":"temperature","json_attributes_topic":"zigbee2mqtt/Aqara-Sensor","name":"Aqara-Sensor_temperature","state_topic":"zigbee2mqtt/Aqara-Sensor","unique_id":"0x00158d0003a401e2_temperature_zigbee2mqtt","unit_of_measurement":"C","value_template":"{{ value_json.temperature }}"}
     # : {*availability*:[{*topic*:*$basetopic/bridge/state*}],*device*:{*identifiers*:[*${sID}_${_configtopicpart}*],*manufacturer*:*RTL*,*model*:*A $5 sensor*,*name*:*$_devname*,*sw_version*:*RTL2MQTT V1*},*device_class*:*$7*,*json_attributes_topic*:*zigbee2mqtt/Aqar-Sensor*,*name*:*Aqar-Sensor_humidity*,*state_topic*:*zigbee2mqtt/Aqar-Sensor*,*unique_id*:*0x00158d0003a401e2x_humidity_zigbee2mqtt*,*unit_of_measurement*:*%*,*value_template*:*{{ value_json.humidity }}*}

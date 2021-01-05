@@ -1,7 +1,7 @@
 # rtl2mqtt
 
 This script transforms the data from the SDR receiving software [rtl_433](https://github.com/merbanan/rtl_433) to MQTT messages.
-It cleans the data, reduces unnecessary fields and duplicates. It is intended to run as a daemon automatically after a device boot and interactively. Several logging facilities ease debugging your environment.
+It cleans the data, reduces unnecessary fields and duplicates. It is intended to run as a daemon, e.g. automatically after a device boot, or  on the command line. Several logging facilities ease debugging in your environment.
 
 The following sample MQTT output is from a typical suburb neighbourhood with different weather stations (inside and outside), movement sensors, smoke sensors, blind switches etc...
 
@@ -19,7 +19,7 @@ The following sample MQTT output is from a typical suburb neighbourhood with dif
 ...
 ```
 
-Features are heavily extended compared to the other *Rtl2MQTT* scripts from https://github.com/roflmao/rtl2mqtt and https://github.com/IT-Berater/rtl2mqtt (which inspired me a lot! Thanks!)
+Features are reimplemented and extended compared to the other *Rtl2MQTT* scripts from https://github.com/roflmao/rtl2mqtt and https://github.com/IT-Berater/rtl2mqtt (which inspired me a lot! Thanks!)
 
 Main areas of extended features are:
 
@@ -37,14 +37,13 @@ NB: The Dockerfile is duplicated untouched and not checked since I don't run Doc
 rtl2mqtt.sh should run fine on all Linux versions that support rtl_433.
 However, prerequisites are bash, jq, and mosquitto_pub (from mosquitto).
 
-A very simple technique to make it run after each reboot is adding the following line to the crontab file 
-(The IP adress is the MQTT broker):
+A very simple technique to make it run after each reboot is adding something like the following line to the crontab file:
 
 ```crontab
-@reboot /usr/local/bin/rtl2mqtt.sh -l /tmp -h 192.168.178.72 -r -r -q
+@reboot /usr/local/bin/rtl2mqtt.sh -l /tmp -f localhost -r -r -q
 ```
 
-A better way for daemonizing rtl2mqtt, especially on Raspbian, is to copy the supplied [systemd service file](https://www.raspberrypi.org/documentation/linux/usage/systemd.md) "rtl2mqtt.service" to /etc/systemd/system/multi-user.target.wants, e.g. with these contents:
+However, a better way for daemonizing rtl2mqtt, especially on Raspbian, is to copy this supplied [systemd service file](https://www.raspberrypi.org/documentation/linux/usage/systemd.md) "rtl2mqtt.service" to /etc/systemd/system/multi-user.target.wants, e.g. with these contents:
 
 ```YAML
 [Unit]
@@ -74,4 +73,4 @@ Don't forget to adapt the variables to your local installation. Run ```systemctl
 
 ## Hardware
 
-I'm using a [CSL DVB-T USB Stick](https://www.amazon.de/CSL-Realtek-Chip-Fernbedienung-Antenne-Windows/dp/B00CIQKFAO) plugged into a Raspberry Pi to receive the 433MhZ signals. They can also be bought on Ebay for a few Euros. Other sticks might work, too. Just let me know.
+I'm using a [CSL DVB-T USB Stick](https://www.amazon.de/CSL-Realtek-Chip-Fernbedienung-Antenne-Windows/dp/B00CIQKFAO) plugged into a Raspberry Pi to receive the 433MhZ signals. They may be bought on Ebay for a few Euros only. Other sticks might work, too. Just let me know, e.g. open an issue,  and I'll put it in the README.
