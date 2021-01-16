@@ -19,18 +19,19 @@ The following sample MQTT output is from a typical suburb neighbourhood with dif
 ...
 ```
 
-Features are reimplemented and extended compared to the other *Rtl2MQTT* scripts from https://github.com/roflmao/rtl2mqtt and https://github.com/IT-Berater/rtl2mqtt (which inspired me a lot! Thanks!)
+Features are reimplemented and extended compared to the other *Rtl2MQTT* scripts from https://github.com/roflmao/rtl2mqtt and https://github.com/IT-Berater/rtl2mqtt (which inspired me a lot! Thanks!) as well as the 
+Python script [rtl_433_mqtt_hass.py](https://github.com/merbanan/rtl_433/examples/rtl_433_mqtt_hass.py) from the rtl_433 examples.
 
 Main areas of extended features are:
 
+ * Suppression of repeated = duplicate messages (configurable). This was quite a helpful feature!
  * Many command line options allowing for flexibility in the configuration (See source code for usage)
- * Temperature output is transformed to SI units, e.g. Celsius.
+ * Temperature output is transformed to SI units (Celsius) and rounded to 0.1°C.
  * Streamlined unnecessary content for MQTT messages, e.g. no time stamp or checksum code.
- * Suppression of repeated messages (configurable)
  * Enhance logging into a subdirectory structure, easing later device analysis.
  * Sending an USR1 signal to the daemon will emit a status message to MQTT.
 
-NB: The Dockerfile is duplicated untouched and not checked since I don't run Docker. It might work or not.
+NB: The Dockerfile is copied untouched and not checked since I don't run Docker. It might work or not.
 
 ## Installation
 
