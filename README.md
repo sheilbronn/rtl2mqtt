@@ -25,10 +25,11 @@ Python script [rtl_433_mqtt_hass.py](https://github.com/merbanan/rtl_433/blob/ma
 Main areas of extended features are:
 
  * Suppression of repeated = duplicate messages (configurable). This was quite a helpful feature!
- * Many command line options allowing for flexibility in the configuration (See source code for usage)
+ * Support Home Assistant auto-discovery announcements for new sensors (works with the [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant), too!)
  * Temperature output is transformed to SI units (Celsius) and rounded to 0.1°C.
  * Streamlined unnecessary content for MQTT messages, e.g. no time stamp or checksum code.
  * Enhance logging into a subdirectory structure, easing later device analysis.
+ * Many command line options allowing for flexibility in the configuration (See source code for usage)
  * Sending an USR1 signal to the daemon will emit a status message to MQTT.
 
 NB: The Dockerfile is copied untouched and not checked since I don't run Docker. It might work or not.
