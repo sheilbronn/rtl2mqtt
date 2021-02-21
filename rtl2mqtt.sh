@@ -14,8 +14,9 @@ sMID="$sID"
 
 commandArgs="$*"
 logbase="/var/log/$( basename "${sName// /}" .sh )" # /var/log is preferred, but will default to /tmp if not useable
-manufacturer="RTL"
-hassbasetopic="homeassistant/sensor/$manufacturer"
+sManufacturer="RTL"
+# hasstopicprefix="homeassistant/sensor/$sManufacturer"
+hasstopicprefix="homeassistant/sensor" 
 basetopic="rtl/433"                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
@@ -23,14 +24,15 @@ rtl433_opts="-R -162 -R -86 -R -31 -R -37 -R -129" # My specific personal exclud
 rtl433_opts="-G 4 -M protocol -C si $rtl433_opts"  # generic options for everybody
 rtl433version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
 
-declare -i nLogMinutesPeriod=15
-declare -i nLogMessagesPeriod=150
+declare -i nLogMinutesPeriod=20
+declare -i nLogMessagesPeriod=200
 declare -i nLastStatusSeconds=$(( $(date +%s) - nLogMinutesPeriod*60 + 30 ))
 declare -i nMqttLines=0     
 declare -i nReceivedCount=0 
 declare -i nPrevMax=1       # start with 1 for non-triviality
 declare -A aReadings
 declare -A aCounts
+declare -A aProtocols
 
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
@@ -77,58 +79,76 @@ publish_to_mqtt_starred () {		# publish_to_mqtt_starred( [expandableTopic ,] sta
     mosquitto_pub ${mqtthost:+-h $mqtthost} ${sMID:+-i $sMID} -t "$_topic" -m "$( expand_starred_string "$_msg" )" $3 $4 $5 # ...  
   }
 
-normalize_config_topic_part() {
-    printf "%s" "${1//[ \/-]/}" | tr "[:upper:]" "[:lower:]"
-  }
-#     hass_announce "" "$basetopic" "bridge/state"   "(0) Count"    "Rtl433 Bridge"   "value_json.sensorcount"   "sensorcount"
-#     hass_announce "" "$basetopic" "${model}/${id}" "(${id}) Temp" "Rtl433 ${model}" "value_json.temperature_C" "temperature"
-hass_announce() { # $sitecode "$nodename" "publicwifi/localclients" "Readable name" 5:"$ad_devname" 6:"value_json.count" "$icontype"
+# Parameters for hass_announce:
+# $1: MQTT "base topic" for states of all the device(s), e.g. "rtl/433" or "ffmuc"
+# $2: Generic device model, e.g. a certain temperature sensor model 
+# $3: MQTT "subtopic" for the specific device instance,  e.g. ${model}/${id}. ("..../set" indicates writeability)
+# $4: Text for specific device instance and sensor type info, e.g. "(${id}) Temp"
+# $5: JSON attribute carrying the state
+# $6: device "class" (of sensor, e.g. none, temperature, humidity, battery), 
+#     used in the announcement topic, in the unique id, in the (channel) name, 
+#     and FOR the icon and the device class 
+# Examples:
+# hass_announce "$basetopic" "Rtl433 Bridge" "bridge/state"  "(0) SensorCount"   "value_json.sensorcount"   "none"
+# hass_announce "$basetopic" "Rtl433 Bridge" "bridge/state"  "(0) MqttLineCount" "value_json.mqttlinecount" "none"
+# hass_announce "$basetopic" "${model}" "${model}/${id}" "(${id}) Battery" "value_json.battery_ok" "battery"
+# hass_announce "$basetopic" "${model}" "${model}/${id}" "(${id}) Temp"  "value_json.temperature_C" "temperature"
+# hass_announce "$basetopic" "${model}" "${model}/${id}" "(${id}) Humid"  "value_json.humidity"       "humidity" 
+# hass_announce "ffmuc" "$ad_devname"  "$node/publi../localcl.." "Readable Name"  "value_json.count"   "$icontype"
+
+hass_announce() {
 	local -
-    local _topicpart="${3%/set}" # if $3 ends in /set it is settable => remove /set
+    local _topicpart="${3%/set}" # if $3 ends in /set it is settable, but remove /set from state topic
  #   local _issettable="$(( $3 != $_topicpart ))"
 	local _devid="$( basename "$_topicpart" )"
 	local _command_topic_str="$( [ "$3" != "$_topicpart" ] && echo ",*cmd_t*:*~/set*" )"  # determined by suffix ".../set"
-    local _name="${5:+$5-}$4" && _name="${_name// /-}" && _name="${_name//[)()]/}"   #   echo ${5:+$5-}$4 | tr ' ' '-' | tr -d 'x'
-    local _configtopicpart="$( normalize_config_topic_part "$3" )"
-    local _topic="${hassbasetopic}$_configtopicpart/$7/config"  # example : homeassistant/sensor/0x00158d0003a401e2/{temperature,humidity}/config
+ #   local _name="${2:+$2-}$4" && _name="${_name// /-}" && _name="${_name//[)()]/}"
+ #   local _name="$( echo "${2:+$2-}$4" | tr " " "-" | tr -d "[)()]/" )"
 
-    local _devname="$5 $_devid"
-    local _channelname="$_devname ${7^}"
-    local _sensortopic="${1:+$1/}$2/$_topicpart"
-    local _value_template_str="${6:+,*value_template*:*{{ $6 \}\}*}"
-    local _icon_str="${7:+,*icon*:*mdi:mdi-$7*}"  # mdi icons: https://cdn.materialdesignicons.com/5.4.55/
-	# local *friendly_name*:*${5:+$5 }$4*,
+    local _dev_class="${6#none}" # dont wont "none" as string for dev_class
+    local _jsonpath="${5#value_json.}" # && _jsonpath="${_jsonpath//[ \/-]/}"
+    local _jsonpath_red="$( echo "$_jsonpath" | tr -d "][ /-_" )" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
+    local _configtopicpart="$( echo "$3" | tr -d "][ /-" | tr "[:upper:]" "[:lower:]" )"
+    local _topic="${hasstopicprefix}/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
+
+    local _devname="$2 ${_devid^}"
+    local _icon_str=""
+    if [ "$_dev_class" ] ; then
+        _icon_str=",*icon*:*mdi:mdi-$_dev_class*"  # mdi icons: https://cdn.materialdesignicons.com/5.4.55/
+        local _channelname="$_devname ${_dev_class^}"
+    else
+        local _channelname="$_devname $4" # take something meaningfull
+    fi
+    local _sensortopic="${1:+$1/}$_topicpart"
+    local _value_template_str="${5:+,*value_template*:*{{ $5 \}\}*}"
+	# local *friendly_name*:*${2:+$2 }$4*,
 
     local _unit_str=""
-    case "$7" in
+    case "$6" in
         temperature*) _unit_str=",*unit_of_measurement*:*°C*" ;;
         humidity)     _unit_str=",*unit_of_measurement*:*%*" ;;
+        switch)       _icon_str=",*icon*:*mdi:mdi-toggle-switch*" ;;
         # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
     esac
 
-                        : --  *device*:{*name*:*$_devname*,*mdl*:*$5 sender*,*ids*:[*RTL433_$_configtopicpart*],*sw*:*$rtl433version* }
-                        : --  *device*:{*identifiers*:[*${sID}_${_configtopicpart}*],*manufacturer*:*RTL*,*model*:*A $5 sensor on channel $_devid*,*name*:*$_devname*,*sw_version*:*RTL2MQTT V1*}
-    local  _device_string="*device*:{*identifiers*:[*${sID}_${_configtopicpart}*],*manufacturer*:*$manufacturer*,*model*:*$5 sensor on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433version*}"
-    local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*$7*,*unique_id*:*${sID}_${_configtopicpart}$7*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str"
+    local  _device_string="*device*:{*identifiers*:[*${sID}_${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433version*}"
+    local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*${6:-none}*,*unique_id*:*${sID}_${_configtopicpart}$_jsonpath_red*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str"
            # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
            # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
-
-    # : {"availability":[{"topic":"zigbee2mqtt/bridge/state"}],"device":{"identifiers":["zigbee2mqtt_0x00158d0003a401e2"],"manufacturer":"Xiaomi","model":"MiJia temperature & humidity sensor (WSDCGQ01LM)","name":"Aqara-Sensor","sw_version":"Zigbee2MQTT 1.16.2"},"device_class":"temperature","json_attributes_topic":"zigbee2mqtt/Aqara-Sensor","name":"Aqara-Sensor_temperature","state_topic":"zigbee2mqtt/Aqara-Sensor","unique_id":"0x00158d0003a401e2_temperature_zigbee2mqtt","unit_of_measurement":"C","value_template":"{{ value_json.temperature }}"}
-    # : {*availability*:[{*topic*:*$basetopic/bridge/state*}],*device*:{*identifiers*:[*${sID}_${_configtopicpart}*],*manufacturer*:*RTL*,*model*:*A $5 sensor*,*name*:*$_devname*,*sw_version*:*RTL2MQTT V1*},*device_class*:*$7*,*json_attributes_topic*:*zigbee2mqtt/Aqar-Sensor*,*name*:*Aqar-Sensor_humidity*,*state_topic*:*zigbee2mqtt/Aqar-Sensor*,*unique_id*:*0x00158d0003a401e2x_humidity_zigbee2mqtt*,*unit_of_measurement*:*%*,*value_template*:*{{ value_json.humidity }}*}
-    # : {"availability":[{"topic":"zigbee2mqtt/bridge/state"}],"device":{"identifiers":["zigbee2mqtt_0x00158d0003a401e2"],"manufacturer":"Xiaomi","model":"MiJia temperature & humidity sensor (WSDCGQ01LM)","name":"Aqara-Sensor","sw_version":"Zigbee2MQTT 1.16.2"},"device_class":"humidity","json_attributes_topic":"zigbee2mqtt/Aqara-Sensor","name":"Aqara-Sensor_humidity","state_topic":"zigbee2mqtt/Aqara-Sensor","unique_id":"0x00158d0003a401e2_humidity_zigbee2mqtt","unit_of_measurement":"%","value_template":"{{ value_json.humidity }}"}
 
    	publish_to_mqtt_starred "$_topic" "{$_msg}" "-r"
   }
 
 hass_remove_announce() {
-    _topic="$hassbasetopic/#" 
-    _topic="$( dirname $hassbasetopic )/#" # deletes eveything below "homeassistant/sensor/..." !
+    _topic="$hasstopicprefix/#" 
+    _topic="$( dirname $hasstopicprefix )/#" # deletes eveything below "homeassistant/sensor/..." !
     [[ $bVerbose ]] && echo "$sName: removing all announcements below $_topic..."
     mosquitto_sub ${mqtthost:+-h $mqtthost} ${sMID:+-i $sMID} -W 1  -t "$_topic" --remove-retained --retained-only
     publish_to_mqtt_starred "{ *event*:*cleaned*,*note*:*removed all announcements starting with $_topic* }"
 }
 
 del_json_attribute () {
+	# echo "$2" | sed -E -e "s;\"$1\":(\"[^\"]*\"|[^,}]*)[ ]*,;;" -e "s;[ ]*,[ ]*\"$1\":(\"[^\"]*\"|[^,}]*)[ ]*};;"
     jq -c "del($1)" <<< "$2"
 }
 
@@ -243,7 +263,7 @@ echo_if_not_duplicate() {
         gPrevData="$1" # save the previous data
         bWasDuplicate=""
     else
-        printf ". "
+        printf "."
         bWasDuplicate="yes"
     fi
  }
@@ -262,19 +282,22 @@ fi
 # Optionally remove any matching retained announcements
 [[ $bRemoveAnnouncements ]] && hass_remove_announce
 
-# Start the RTL433 listener ....
 [[ $bVerbose || -t 1 ]] && log_error "options for rtl_433 are: $rtl433_opts"
 if [[ $replayfile ]] ; then
     coproc rtlcoproc ( cat "$replayfile" )
 else
+    # Start the RTL433 listener as a coprocess ....
     coproc rtlcoproc ( $rtl433_command  $rtl433_opts -F json )   # options are not double-quoted on purpose
     # -F "mqtt://$mqtthost:1883,events,devices"
-    renice -n 10 "${rtlcoproc_PID}"
+    renice -n 15 "${rtlcoproc_PID}"
 fi 
 
 _cppid="$rtlcoproc_PID" # save it as an permanent variable
 
-[[ $rtlcoproc_PID ]] && hass_announce "" "$basetopic" "bridge/state" "(0) Count"  "Rtl433 Bridge" "value_json.sensorcount" "sensorcount"  && sleep 1
+if [[ $rtlcoproc_PID ]] ; then
+    hass_announce "$basetopic" "Rtl433 Bridge" "bridge/state" "SensorCount"  "value_json.sensorcount"  "none"  && sleep 1
+    hass_announce "$basetopic" "Rtl433 Bridge" "bridge/state" "MqttLineCount" "value_json.mqttlinecount" "none"  && sleep 1
+fi
 
 while read -r data <&"${rtlcoproc[0]}"         # ... and enter an (almost) endless loop
 do
@@ -287,11 +310,12 @@ do
     msgMinute="${msgTime:(-5):2}" && msgMinute="${msgMinute#0}" 
     msgSecond="${msgTime:(-2):2}" && msgSecond="${msgSecond#0}" # no subprocess needed...
     data="$( del_json_attribute ".time" "$data"  )" # .time is redundant
+    model="$( jq -r '.model // empty' <<< "$data" )"    
+    id="$(    jq -r '.id    // empty' <<< "$data" )"
+    protocol="$(    jq -r '.protocol  // empty' <<< "$data" )"
 
     if [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
         [[ $bVerbose ]] && echo_if_not_duplicate "RCVD: $data"
-        model="$( jq -r '.model // empty' <<< "$data" )"    
-        id="$(    jq -r '.id    // empty' <<< "$data" )"
         rtlChannel="$( jq -r '.channel  // empty' <<< "$data" )"
 
         temp="$( jq -e -r 'if .temperature_C then .temperature_C*10 + 0.5 | floor / 10 else empty end' <<< "$data" )"
@@ -332,6 +356,7 @@ do
         prevval="${aReadings[${model}_${id}]}"
         aReadings[${model}_${id}]="$data"
         aCounts[${model}_${id}]="$(( aCounts[${model}_${id}] + 1 ))"
+        aProtocols[${protocol}]="$model"
         if [[ $bMoreVerbose ]] ; then
             _prefix="SAME:  "  &&  [[ ${aReadings[${model}_${id}]} != "$prevval" ]] && _prefix="CHANGE(${#aReadings[@]}):"
             grep -E --color=auto '^[^/]*|/' <<< "$_prefix ${model}_${id} /${aReadings[${model}_${id}]}/$prevval/"
@@ -340,11 +365,11 @@ do
 
             # for now, only  only temperature and humidity sensors are announced for auto-discovery:
             if [[ -z $prevval && $_bHasTemperature ]] ; then
-                hass_announce "" "$basetopic" "${model}/${id}" "(${id}) Temp"  "${model}" "value_json.temperature" "temperature"  && sleep 1
-                [[ $_bHasHumidity  ]] && hass_announce "" "$basetopic" "${model}/${id}" "(${id}) Humid" "${model}" "value_json.humidity" "humidity" && sleep 1
-                [[ $_bHasBatteryOK ]] && hass_announce "" "$basetopic" "${model}/${id}" "(${id}) Battery"  "${model}" "value_json.battery_ok" "battery"  && sleep 1
+                hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Temp"  "value_json.temperature" "temperature"  && sleep 1
+                [[ $_bHasHumidity  ]] && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Humid"  "value_json.humidity" "humidity" && sleep 1
+                [[ $_bHasBatteryOK ]] && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Battery" "value_json.battery_ok" "battery"  && sleep 1
             fi        
-            publish_to_mqtt_starred "$basetopic${model:+/}$model${id:+/}$id" "${data//\"/*}" # ... publish values!
+            publish_to_mqtt_starred "$basetopic/${model:+$model/}${id:-00}" "${data//\"/*}" # ... publish values!
         else
             [[ $bVerbose ]] && echo "Suppressed a duplicate." 
         fi

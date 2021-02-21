@@ -20,7 +20,7 @@ The following sample MQTT output is from a typical suburb neighbourhood with dif
 ```
 
 Features are reimplemented and extended compared to the other *Rtl2MQTT* scripts from https://github.com/roflmao/rtl2mqtt and https://github.com/IT-Berater/rtl2mqtt (which inspired me a lot! Thanks!) as well as the 
-Python script [rtl_433_mqtt_hass.py](https://github.com/merbanan/rtl_433/examples/rtl_433_mqtt_hass.py) from the rtl_433 examples.
+Python script [rtl_433_mqtt_hass.py](https://github.com/merbanan/rtl_433/blob/master/examples/rtl_433_mqtt_hass.py) from the rtl_433 examples.
 
 Main areas of extended features are:
 
