@@ -1,21 +1,22 @@
 # rtl2mqtt
 
 This script transforms the data from the SDR receiving software [rtl_433](https://github.com/merbanan/rtl_433) to MQTT messages.
-It cleans the data, reduces unnecessary fields and duplicates. It is intended to run as a daemon, e.g. automatically after a device boot, or  on the command line. Several logging facilities ease debugging in your environment.
+It cleans the data, reduces unnecessary fields and duplicates. It is intended to run as a daemon, e.g. automatically after a device boot, or on the command line. Several logging facilities ease the debugging of your environment.
 
 The following sample MQTT output is from a typical suburb neighbourhood with different weather stations (inside and outside), movement sensors, smoke sensors, blind switches etc...
 
 ```log
-45:35 rtl/433/bridge/state { event:"starting",additional_rtl_433_opts:"-G 4 -M protocol -C si -R -162" }
-...
-54:46 rtl/433/Smoke-GS558/25612 {"unit":15,"learn":0,"code":"7c818f"}
-55:25 rtl/433/Generic-Remote/61825 {"cmd":62,"tristate":"110ZX00Z011X"}
-55:59 rtl/433/Smoke-GS558/25612 {"unit":15,"learn":0,"code":"7c818f"}
-56:44 rtl/433/Prologue-TH/107 {"temperature":24.2,"humidity":14}
-57:05 rtl/433/Nexus-TH/35 {"temperature":15,"humidity":99}
-58:36 rtl/433/inFactory-TH/12 {"temperature":15.3,"humidity":79}
-59:04 rtl/433/Prologue-TH/107 {"temperature":24.2,"humidity":14}
-59:10 rtl/433/bridge {"event":"status","sensorcount":"6","mqttlinecount":"19","receivedcount":"21",note:"sensor added", latest_model:"Prologue-TH",latest_id:"107"}
+12:01 rtl/433/Prologue-TH/107 {"battery_ok":1,"temperature":"24","humidity":"14"}
+12:06 rtl/433/inFactory-TH/12 {"battery_ok":0,"temperature":"10.4","humidity":"56"}
+12:06 rtl/433/bridge/log {"note":"sensor added","latest_model":"inFactory-TH","latest_id":"12","latest_channel":"1","sensors":["temperature","pressure_kPa","battery",""]}
+12:06 rtl/433/bridge/state {"sensorcount":"2","announcedcount":"0","mqttlinecount":"2","receivedcount":"2","readingscount":"2"}
+12:24 rtl/433/Nexus-TH/35 {"battery_ok":0,"temperature":"9.6","humidity":"39"}
+12:25 rtl/433/Bresser-3CH/164 {"battery_ok":0,"temperature":"9","humidity":"79"}
+12:25 rtl/433/bridge/log {"note":"sensor added","latest_model":"Bresser-3CH","latest_id":"164","latest_channel":"1","sensors":["temperature","pressure_kPa","battery",""]}
+12:25 rtl/433/bridge/state {"sensorcount":"4","announcedcount":"0","mqttlinecount":"4","receivedcount":"9","readingscount":"4"}
+12:36 rtl/433/Prologue-TH/107 {"battery_ok":1,"temperature":"24","humidity":"14"}
+13:14 rtl/433/inFactory-TH/12 {"battery_ok":0,"temperature":"10.2","humidity":"56"}
+13:21 rtl/433/Bresser-3CH/164 {"battery_ok":0,"temperature":"9","humidity":"79"}
 ...
 ```
 
@@ -24,11 +25,12 @@ Python script [rtl_433_mqtt_hass.py](https://github.com/merbanan/rtl_433/blob/ma
 
 Main areas of extended features are:
 
- * Suppression of repeated = duplicate messages (configurable). This was quite a helpful feature!
- * Support Home Assistant auto-discovery announcements for new sensors (works with the [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant), too!)
- * Temperature output is transformed to SI units (Celsius) and rounded to 0.1°C.
- * Streamlined unnecessary content for MQTT messages, e.g. no time stamp or checksum code.
- * Enhance logging into a subdirectory structure, easing later device analysis.
+ * Suppression of repeated (duplicate) messages. This is a configurable, quite helpful feature!
+ * Support Home Assistant auto-discovery announcements for new sensors (it works with the [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant), too!)
+ * Temperature output is transformed to SI units (Celsius) and rounded to 0.2°C for less flicker.
+ * Streamlined unnecessary content in the original JSON messages, e.g. no time stamp or checksum code.
+ * Enhance logging into a subdirectory structure, easing later source device analysis.
+ * The RTL2MQTT bridge provides a state and a log channel.
  * Many command line options allowing for flexibility in the configuration (See source code for usage)
  * Sending an USR1 signal to the daemon will emit a status message to MQTT.
 
@@ -37,7 +39,7 @@ NB: The Dockerfile is copied untouched and not checked since I don't run Docker.
 ## Installation
 
 rtl2mqtt.sh should run fine on all Linux versions that support rtl_433.
-However, prerequisites are bash, jq, and mosquitto_pub (from mosquitto).
+Prerequisites are bash, jq, and mosquitto_pub (from mosquitto).
 
 A very simple technique to make it run after each reboot is adding something like the following line to the crontab file:
 
