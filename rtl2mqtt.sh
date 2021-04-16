@@ -20,17 +20,19 @@ hasstopicprefix="homeassistant/sensor"
 basetopic="rtl/433"                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
-rtl433_opts="-R -162 -R -86 -R -31 -R -37 -R -129" # My specific personal excludes: 129: Eurochron-TH gives neg. temp's
+rtl433_opts="-R -162 -R -86 -R -31 -R -37 -R -129 -R 10 -R 53" # My specific personal excludes: 129: Eurochron-TH gives neg. temp's
+rtl433_opts="$rtl433_opts -R 10 -R 53" # Additional specific personal excludes
 rtl433_opts="-G 4 -M protocol -C si $rtl433_opts"  # generic options for everybody
 rtl433version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
+sSuppressAttrs="del(.mic) | del(.time)" # attrs that will be always eliminated
 
-declare -i nLogMinutesPeriod=30
-declare -i nLogMessagesPeriod=500
+declare -i nLogMinutesPeriod=60
+declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=$(( $(date +%s) - nLogMinutesPeriod*60 + 30 ))
 declare -i nMqttLines=0     
 declare -i nReceivedCount=0
 declare -i nAnnouncedCount=0
-declare -i nMinOccurences=3
+declare -i nMinOccurences=4
 declare -i nPrevMax=1       # start with 1 for non-triviality
 declare -A aReadings
 declare -A aCounts
@@ -63,7 +65,7 @@ expand_starred_string () {
   }
 
 rotate_logdir_sometimes () {           # check for log file rotation and maybe do it sometimes
-    if (( msgMinute + msgSecond == 67 )) ; then  # rotate log file only with probalility of 1/60
+    if (( msgMinute + msgSecond == 67 )) ; then  # try log file rotation only with probalility of 1/60
         cd "$1" && _files="$( find . -maxdepth 2 -type f -size +200k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 )"
         msgSecond=$(( msgSecond + 1 ))
         [[ $_files ]] && log_error "Rotated files: $_files"
@@ -156,7 +158,8 @@ hass_remove_announce() {
     _topic="$( dirname $hasstopicprefix )/#" # deletes eveything below "homeassistant/sensor/..." !
     [[ $bVerbose ]] && echo "$sName: removing all announcements below $_topic..."
     mosquitto_sub ${mqtthost:+-h $mqtthost} ${sMID:+-i $sMID} -W 1  -t "$_topic" --remove-retained --retained-only
-    publish_to_mqtt_starred "log" "{*note*:*removed all announcements starting with $_topic* }"
+    _rc=$?
+    publish_to_mqtt_starred "log" "{*note*:*removed all announcements starting with $_topic returned $_rc.* }"
 }
 
 del_json_attribute () {
@@ -164,7 +167,7 @@ del_json_attribute () {
     jq -c "del($1)" <<< "$2"
 }
 
-while getopts "?qh:pt:drl:f:F:C:T:ae2vx" opt      
+while getopts "?qh:pt:drl:f:F:c:T:as:e2vx" opt      
 do
     case "$opt" in
     \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x" 1>&2
@@ -203,13 +206,15 @@ do
             rtl433_opts="$rtl433_opts -f $OPTARG"
         fi
         ;;
-    C)  maxcount="$OPTARG" # currently unused
+    c)  nMinOccurences="$OPTARG" # currently unused
         ;;
     T)  nMaxSeconds="$OPTARG"
         ;;
     e)  bEliminateDups="yes" # eliminate duplicate receptions (=same ones immediately following each other from the same sensor)
         ;;
     a)  bAlways="yes" 
+        ;;
+    s)  sSuppressAttrs="$sSuppressAttrs | del(.$OPTARG)" # attrs that will be always eliminated
         ;;
     2)  bTryAlternate="yes" # ease experiments (not used in production)
         ;;
@@ -323,21 +328,22 @@ while read -r data <&"${rtlcoproc[0]}"         # ... and enter an (almost) infin
 do
     # [[ $bQuiet ]] && [[ $data  =~ ^rtl_433:\ warning: ]] && continue
     nReceivedCount=$(( nReceivedCount + 1 ))
-    data="$( del_json_attribute ".mic" "$data" )"   # .mic is useless
-    log "$data"
+    # data="$( del_json_attribute ".mic" "$data" )"   # .mic is useless here
+    # data="$( del_json_attribute ".time" "$data"  )" # .time is redundant here
     msgTime="${data[*]/\",*/}"
     msgHour="${msgTime:(-8):2}"   && msgHour="${msgHour#0}" 
     msgMinute="${msgTime:(-5):2}" && msgMinute="${msgMinute#0}" 
     msgSecond="${msgTime:(-2):2}" && msgSecond="${msgSecond#0}" # no subprocess needed...
-    data="$( del_json_attribute ".time" "$data"  )" # .time is redundant
+    data="$( jq -c "$sSuppressAttrs" <<< "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )"
     model="$( jq -r '.model // empty' <<< "$data" )"    
     id="$(    jq -r '.id    // empty' <<< "$data" )"
     protocol="$(    jq -r '.protocol  // empty' <<< "$data" )"
+    log "$data"
+    [[ $bVerbose ]] && echo_if_not_duplicate "RCVD: $data"
 
     if [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
-        [[ $bVerbose ]] && echo_if_not_duplicate "RCVD: $data"
-        rtlChannel="$( jq -r '.channel  // empty' <<< "$data" )"
 
+        data="$( jq -c "del(.model) | del(.id) | del(.protocol) | del(.subtype) | del(.channel)" <<< "$data" )"
         temp="$( jq -e -r 'if .temperature_C then .temperature_C*5 + 0.5 | floor / 5 else empty end' <<< "$data" )" # round to 0.2° C
         if [[ $temp ]] ; then
             _bHasTemperature="yes"
@@ -353,13 +359,11 @@ do
         else 
             _bHasTemperature=""
         fi
+
         _bHasHumidity="$( jq -e -r 'if (.humidity and .humidity<=100) then "yes" else empty end' <<< "$data" )"
         _bHasRain="$(     jq -e -r 'if (.rain_mm  and .rain_mm  >0  ) then "yes" else empty end' <<< "$data" )"
         _bHasBatteryOK="$( jq -e -r 'if (.battery_ok and .battery_ok<=2) then "yes" else empty end' <<< "$data" )"
         _bHasPressureKPa="$( jq -e -r 'if (.pressure_kPa and .pressure_kPa<=9999) then "yes" else empty end' <<< "$data" )"
-
-        data="$( jq -c "del(.model) | del(.id) | del(.protocol) | del(.subtype) | del(.channel)" <<< "$data" )"
-        data="$( sed -e 's/"temperature_C":\([0-9.-]*\)/"temperature":"\1"/' -e 's/"humidity":\([0-9.]*\)/"humidity":"\1"/' <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
 
         if [[ $bRewriteMore ]] ; then
             data="$( del_json_attribute ".transmit" "$data"  )"        
@@ -368,9 +372,10 @@ do
             # data="$( jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" )"
             data="$( jq -c 'if .unknown1   == 0 then del(.unknown1)   else . end' <<< "$data" )"
 
-            # bSkipLine="$( jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) or .rain_mm>0 then "yes" else empty end' <<<"$data"  )"
+            bSkipLine="$( jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
         fi
         [[ $sDoLog == "dir" && $model ]] && echo "$data" >> "$logbase/model/${model}_$id"
+        data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
     fi
 
     # Send message to MQTT or skip it ...
@@ -392,9 +397,8 @@ do
         fi
         if [[ $bEliminateDups != "yes" || ${aReadings[${model}_${id}]} != "$prevval"  ]] ; then # rcvd data should be different from previous reading!
 
-            # For now, only some sensors are announced for auto-discovery:
-            # if [[ -z $prevval && $_bHasTemperature ]] ; then
             if (( aCounts[${model}_${id}] == nMinOccurences )) ; then
+                # For now, only some types of sensors are announced for auto-discovery:
                 if [[ $_bHasTemperature || $_bHasPressureKPa ]] ; then
                     [[ $_bHasTemperature ]] && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Temp"   "value_json.temperature" "temperature"
                     [[ $_bHasHumidity    ]] && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Humid"  "value_json.humidity" "humidity"
@@ -415,7 +419,8 @@ do
 
     if (( nReadings > nPrevMax )) ; then                 # a new max means we have a new sensor
         nPrevMax=nReadings
-        publish_to_mqtt_starred "log" "{*note*:*sensor added*,*latest_model*:*$model*,*latest_id*:*$id*,*latest_channel*:*$rtlChannel*,*sensors*:[${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*pressure_kPa*,}${_bHasPressureKPa:+*humidity*,}${_bHasBatteryOK:+*battery*,}**]}"
+        rtlChannel="$( jq -r '.channel  // empty' <<< "$data" )"
+        publish_to_mqtt_starred "log" "{*note*:*sensor added*,*latest_model*:*$model*,*latest_id*:*$id*,*latest_channel*:*$rtlChannel*,*sensors*:[${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}**]}"
         publish_to_mqtt_state
     elif (( $(date +%s) > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*: [ $(  _comma=""
