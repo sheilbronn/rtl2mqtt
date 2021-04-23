@@ -398,7 +398,7 @@ do
             echo "====================================="           
             echo "Model_ID=${model}_${id}, Reading=${aReadings[${model}_${id}]}, Prev=$prevval, Time=$( date +%s ) (${aLastSents[${model}_${id}]})"
         fi
-        set -x
+        # set -x
         if [[ $data != "$prevval" ||  $(date +%s) -gt $(( aLastSents[${model}_${id}] + nMinSeconds )) ]] ; then # rcvd data should be different from previous reading!
 
             if (( aCounts[${model}_${id}] == nMinOccurences )) ; then
