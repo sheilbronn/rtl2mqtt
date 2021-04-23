@@ -24,11 +24,12 @@ rtl433_opts="-R -162 -R -86 -R -31 -R -37 -R -129 -R 10 -R 53" # My specific per
 rtl433_opts="$rtl433_opts -R 10 -R 53" # Additional specific personal excludes
 rtl433_opts="-G 4 -M protocol -C si $rtl433_opts"  # generic options for everybody
 rtl433version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
-sSuppressAttrs="del(.mic) | del(.time)" # attrs that will be always eliminated
+sSuppressAttrs="mic time" # attrs that will be always eliminated
 
 declare -i nLogMinutesPeriod=60
 declare -i nLogMessagesPeriod=1000
-declare -i nLastStatusSeconds=$(( $(date +%s) - nLogMinutesPeriod*60 + 30 ))
+declare -i nLastStatusSeconds=90
+declare -i nMinSeconds=95 # only at least every 95 seconds
 declare -i nMqttLines=0     
 declare -i nReceivedCount=0
 declare -i nAnnouncedCount=0
@@ -38,11 +39,14 @@ declare -A aReadings
 declare -A aCounts
 declare -A aProtocols
 declare -A aPrevTempVals
+declare -A aLastSents
 
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 
-log () {
+# echo "${@:1: $#-1}" ; exit 
+
+log() {
     local - ; set +x
     [ "$sDoLog" ] || return
     if [ "$sDoLog" = "dir" ] ; then
@@ -64,7 +68,7 @@ expand_starred_string () {
     _string="${1//\"/\'}"  &&  echo "${_string//\*/\"}" 
   }
 
-rotate_logdir_sometimes () {           # check for log file rotation and maybe do it sometimes
+rotate_logdir_sometimes () {           # check for log file rotation
     if (( msgMinute + msgSecond == 67 )) ; then  # try log file rotation only with probalility of 1/60
         cd "$1" && _files="$( find . -maxdepth 2 -type f -size +200k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 )"
         msgSecond=$(( msgSecond + 1 ))
@@ -73,6 +77,7 @@ rotate_logdir_sometimes () {           # check for log file rotation and maybe d
   }
 
 publish_to_mqtt_starred () {		# options: ( [expandableTopic ,] starred_message, moreMosquittoOptions)
+    local - ; set +x
     if [[ $# -eq 1 ]] ; then
         _topic="/bridge/state"
         _msg="$1"
@@ -162,12 +167,18 @@ hass_remove_announce() {
     publish_to_mqtt_starred "log" "{*note*:*removed all announcements starting with $_topic returned $_rc.* }"
 }
 
-del_json_attribute () {
-	# echo "$2" | sed -E -e "s;\"$1\":(\"[^\"]*\"|[^,}]*)[ ]*,;;" -e "s;[ ]*,[ ]*\"$1\":(\"[^\"]*\"|[^,}]*)[ ]*};;"
-    jq -c "del($1)" <<< "$2"
+del_json_attributes() {
+    local - ; # set -x
+    local d="xx"
+    for s in ${@:1:($#-1)} ; do
+        d="$d | del(.${s//[^a-zA-Z0-9_]})" # only allow certain chars for attr names for sec reasons
+    done
+    jq -c "${d#xx | }" <<< "${@:$#}" #     # syntax: "del(.xxx) | del(.yyy)"
 }
 
-while getopts "?qh:pt:drl:f:F:c:T:as:e2vx" opt      
+# del_json_attributes "one" "two" "*_special*" '{"one":"1","two":2,"three":3,"four":"4","_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
+
+while getopts "?qh:pt:drl:f:F:c:as:t:2vx" opt      
 do
     case "$opt" in
     \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x" 1>&2
@@ -208,13 +219,11 @@ do
         ;;
     c)  nMinOccurences="$OPTARG" # currently unused
         ;;
-    T)  nMaxSeconds="$OPTARG"
-        ;;
-    e)  bEliminateDups="yes" # eliminate duplicate receptions (=same ones immediately following each other from the same sensor)
+    t)  nMinSeconds="$OPTARG" # seconds before repating the same reading
         ;;
     a)  bAlways="yes" 
         ;;
-    s)  sSuppressAttrs="$sSuppressAttrs | del(.$OPTARG)" # attrs that will be always eliminated
+    s)  sSuppressAttrs="$sSuppressAttrs ${OPTARG//[^a-zA-Z0-9_]}" # attrs that will be always eliminated
         ;;
     2)  bTryAlternate="yes" # ease experiments (not used in production)
         ;;
@@ -227,8 +236,6 @@ do
 done
 
 shift "$((OPTIND-1))"   # Discard options processed by getopts, any remaining options will be passed to mosquitto_sub further down on
-
-rtl433_opts="$rtl433_opts${nMaxSeconds:+ -T $nMaxSeconds}"
 
 if [ -f "${logbase}.log" ] ; then  # one log file only
     sDoLog="file"
@@ -249,8 +256,34 @@ startup="$( $rtl433_command -T 1 2>&1 )"
 sdr_tuner="$( echo "$startup" | grep '^Found '   | sed -e 's/Found //' -e 's/ tuner//' )"
 sdr_freq="$( echo "$startup" | grep '^Tuned to ' | sed -e 's/^Tuned to //' -e 's/\.$//' )"
 
+echo_if_not_duplicate() {
+    if [[ $1 != "$gPrevData" ]] ; then
+        [[ $bWasDuplicate ]] && echo "" # echo a newline after some dots
+        echo "$1"
+        gPrevData="$1" # save the previous data
+        bWasDuplicate=""
+    else
+        printf "."
+        bWasDuplicate="yes"
+    fi
+ }
+
+_info="*tuner*:*$sdr_tuner*,*freq*:*$sdr_freq*,*additional_rtl433_opts*:*$rtl433_opts*,*logto*:*$logbase ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore}*,*nMinOccurences*=*$nMinOccurences*,*nMinSeconds*=*$nMinSeconds*"
+if [ -t 1 ] ; then # probably on a terminal
+    log "$sName starting at $( date )"
+    publish_to_mqtt_starred "log" "{*event*:*starting*,$_info}"
+else               # probably non-terminal
+    delayedStartSecs=3
+    log "$sName starting in $delayedStartSecs secs from $( date )"
+    sleep "$delayedStartSecs"
+    publish_to_mqtt_starred "log" "{*event*:*starting*,$_info,*note*:*delayed by $delayedStartSecs secs*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*}"
+fi
+
+# Optionally remove any matching retained announcements
+[[ $bRemoveAnnouncements ]] && hass_remove_announce
+
 trap_exit() {   # stuff to do when exiting
-    log "$sName exiting at $( date )"
+    log "========= $sName exiting at $( date ) ========="
     [ "$bRemoveAnnouncements" ] && hass_remove_announce
     [ "$rtlcoproc_PID" ] && kill "$rtlcoproc_PID" && [ $bVerbose ] && echo "$sName: Killed coproc PID $_cppid" 1>&2
     # sleep 1
@@ -274,39 +307,13 @@ trap_usr2() {    # remove all home assistant announcements
   }
 trap 'trap_usr2' USR2 
 
-echo_if_not_duplicate() {
-    if [[ $1 != "$gPrevData" ]] ; then
-        [[ $bWasDuplicate ]] && echo "" # echo a newline after some dots
-        echo "$1"
-        gPrevData="$1" # save the previous data
-        bWasDuplicate=""
-    else
-        printf "."
-        bWasDuplicate="yes"
-    fi
- }
-
-_info="*tuner*:*$sdr_tuner*,*freq*:*$sdr_freq*,*additional_rtl433_opts*:*$rtl433_opts*,*logto*:*$logbase ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore}*"
-if [ -t 1 ] ; then # probably on a terminal
-    log "$sName starting at $( date )"
-    publish_to_mqtt_starred "log" "{*event*:*starting*,$_info}"
-else               # probably non-terminal
-    delayedStartSecs=3
-    log "$sName starting in $delayedStartSecs secs from $( date )"
-    sleep "$delayedStartSecs"
-    publish_to_mqtt_starred "log" "{*event*:*starting*,$_info,*note*:*delayed by $delayedStartSecs secs*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*,*nMinOccurences*=*$nMinOccurences*}"
-fi
-
-# Optionally remove any matching retained announcements
-[[ $bRemoveAnnouncements ]] && hass_remove_announce
-
-if [[ $bVerbose || -t 1 ]] ; then
-    log_error "options for rtl_433 are: $rtl433_opts"
-    (( nMinOccurences > 1 )) && log_error "Will do MQTT announcements only after at least $nMinOccurences occurences..."
-fi 
 if [[ $replayfile ]] ; then
     coproc rtlcoproc ( cat "$replayfile" )
 else
+    if [[ $bVerbose || -t 1 ]] ; then
+        log_error "options for rtl_433 are: $rtl433_opts"
+        (( nMinOccurences > 1 )) && log_error "Will do MQTT announcements only after at least $nMinOccurences occurences..."
+    fi 
     # Start the RTL433 listener as a coprocess ....
     coproc rtlcoproc ( $rtl433_command  $rtl433_opts -F json )   # options are not double-quoted on purpose
     # -F "mqtt://$mqtthost:1883,events,devices"
@@ -328,34 +335,25 @@ while read -r data <&"${rtlcoproc[0]}"         # ... and enter an (almost) infin
 do
     # [[ $bQuiet ]] && [[ $data  =~ ^rtl_433:\ warning: ]] && continue
     nReceivedCount=$(( nReceivedCount + 1 ))
-    # data="$( del_json_attribute ".mic" "$data" )"   # .mic is useless here
-    # data="$( del_json_attribute ".time" "$data"  )" # .time is redundant here
     msgTime="${data[*]/\",*/}"
     msgHour="${msgTime:(-8):2}"   && msgHour="${msgHour#0}" 
     msgMinute="${msgTime:(-5):2}" && msgMinute="${msgMinute#0}" 
     msgSecond="${msgTime:(-2):2}" && msgSecond="${msgSecond#0}" # no subprocess needed...
-    data="$( jq -c "$sSuppressAttrs" <<< "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )"
+    data="$( del_json_attributes "$sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )"
+    log "$data"
+    [[ $bVerbose ]] && echo_if_not_duplicate "RCVD: $data"
     model="$( jq -r '.model // empty' <<< "$data" )"    
     id="$(    jq -r '.id    // empty' <<< "$data" )"
     protocol="$(    jq -r '.protocol  // empty' <<< "$data" )"
-    log "$data"
-    [[ $bVerbose ]] && echo_if_not_duplicate "RCVD: $data"
 
     if [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
 
-        data="$( jq -c "del(.model) | del(.id) | del(.protocol) | del(.subtype) | del(.channel)" <<< "$data" )"
+        data="$( del_json_attributes "model id protocol subtype channel" "$data" )"
         temp="$( jq -e -r 'if .temperature_C then .temperature_C*5 + 0.5 | floor / 5 else empty end' <<< "$data" )" # round to 0.2° C
         if [[ $temp ]] ; then
             _bHasTemperature="yes"
             data="$( jq -cer ".temperature_C = $temp" <<< "$data" )"
             [[ ${aPrevTempVals[${model}_${id}]} ]] || aPrevTempVals[${model}_${id}]=0
-
-        #    delta=awk "BEGIN { diff = $a - $b ; print diff ; res = ( diff<0 ? -diff : diff ) ; print sprintf(\"%d\",res*5) / 5  }"
-        #    if (( ( temp > aPrevTempVals[${model}_${id}] ? temp - ${aPrevTempVals[${model}_${id}]} : ${aPrevTempVals[${model}_${id}]} - temp ) * 10 > 1 )) ; then
-        #        aPrevTempVals[${model}_${id}]="$temp"
-        #    else 
-        #        temp="${aPrevTempVals[${model}_${id}]}" # ignore a insignificant change
-        #    fi
         else 
             _bHasTemperature=""
         fi
@@ -366,7 +364,7 @@ do
         _bHasPressureKPa="$( jq -e -r 'if (.pressure_kPa and .pressure_kPa<=9999) then "yes" else empty end' <<< "$data" )"
 
         if [[ $bRewriteMore ]] ; then
-            data="$( del_json_attribute ".transmit" "$data"  )"        
+            data="$( del_json_attributes ".transmit" "$data"  )"        
 
             data="$( jq -c 'if .button     == 0 then del(.button    ) else . end' <<< "$data" )"
             # data="$( jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" )"
@@ -395,7 +393,13 @@ do
             _prefix="SAME:  "  &&  [[ ${aReadings[${model}_${id}]} != "$prevval" ]] && _prefix="CHANGE(${#aReadings[@]}):"
             grep -E --color=auto '^[^/]*|/' <<< "$_prefix ${model}_${id} /${aReadings[${model}_${id}]}/$prevval/"
         fi
-        if [[ $bEliminateDups != "yes" || ${aReadings[${model}_${id}]} != "$prevval"  ]] ; then # rcvd data should be different from previous reading!
+
+        if [[ $bVerbose ]] ; then
+            echo "====================================="           
+            echo "Model_ID=${model}_${id}, Reading=${aReadings[${model}_${id}]}, Prev=$prevval, Time=$( date +%s ) (${aLastSents[${model}_${id}]})"
+        fi
+        set -x
+        if [[ $data != "$prevval" ||  $(date +%s) -gt $(( aLastSents[${model}_${id}] + nMinSeconds )) ]] ; then # rcvd data should be different from previous reading!
 
             if (( aCounts[${model}_${id}] == nMinOccurences )) ; then
                 # For now, only some types of sensors are announced for auto-discovery:
@@ -411,9 +415,12 @@ do
                 fi    
             fi    
             publish_to_mqtt_starred "$basetopic/${model:+$model/}${id:-00}" "${data//\"/*}" # ... publish values!
+            aLastSents[${model}_${id}]="$( date +%s )"
+            aReadings[${model}_${id}]="$data"
         else
             [[ $bVerbose ]] && echo "Suppressed a duplicate." 
         fi
+        set +x
     fi
     nReadings=${#aReadings[@]} # && nReadings=${nReadings#0} # remove any leading 0
 
