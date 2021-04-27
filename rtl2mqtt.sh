@@ -25,21 +25,26 @@ rtl433_opts="$rtl433_opts -R 10 -R 53" # Additional specific personal excludes
 rtl433_opts="-G 4 -M protocol -C si $rtl433_opts"  # generic options for everybody
 rtl433version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
 sSuppressAttrs="mic time" # attrs that will be always eliminated
+sSensorMatch=".*" # sensor names will have to match this regex
 
 declare -i nLogMinutesPeriod=60
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
-declare -i nMinSeconds=95 # only at least every 95 seconds
+declare -i nMinSecondsOther=10 # only at least every 10 seconds
+declare -i nMinSecondsTempSensor=140 # only at least every 180+10 seconds
+declare -i nTimeStamp
 declare -i nMqttLines=0     
 declare -i nReceivedCount=0
 declare -i nAnnouncedCount=0
-declare -i nMinOccurences=4
+declare -i nMinOccurences=3
 declare -i nPrevMax=1       # start with 1 for non-triviality
-declare -A aReadings
+declare -l bAnnounceHass="1" # default is yes for now
+declare -A aLastReadings
 declare -A aCounts
 declare -A aProtocols
 declare -A aPrevTempVals
 declare -A aLastSents
+declare -A aAnnounced
 
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
@@ -94,7 +99,7 @@ publish_to_mqtt_starred () {		# options: ( [expandableTopic ,] starred_message, 
   }
 
 publish_to_mqtt_state () {	
-    _statistics="*sensorcount*:*${nReadings:-0}*,*announcedcount*:*$nAnnouncedCount*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,*readingscount*:*$nReadings*"
+    _statistics="*sensorcount*:${nReadings:-0},*announcedcount*:$nAnnouncedCount,*mqttlinecount*:$nMqttLines,*receivedcount*:$nReceivedCount,*readingscount*:$nReadings"
     publish_to_mqtt_starred "state" "{$_statistics${1:+, $1}}"
 }
 
@@ -178,7 +183,7 @@ del_json_attributes() {
 
 # del_json_attributes "one" "two" "*_special*" '{"one":"1","two":2,"three":3,"four":"4","_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
 
-while getopts "?qh:pt:drl:f:F:c:as:t:2vx" opt      
+while getopts "?qh:pt:M:drl:f:F:c:as:t:T:2vx" opt      
 do
     case "$opt" in
     \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x" 1>&2
@@ -194,9 +199,11 @@ do
 		*)       mqtthost="$( echo "$OPTARG" | tr -c -d '0-9a-z_.' )" ;; # clean up for sec purposes
 		esac
         ;;
-    p)  bAnnouceHass="yes"
+    p)  bAnnounceHass="1"
         ;;
     t)  basetopic="$OPTARG" # other base topic for MQTT
+        ;;
+    M)  sSensorMatch="${OPTARG}.*"
         ;;
     d)  bRemoveAnnouncements="yes" # delete (remove) all retained auto-discovery announcements (before starting), needs newer mosquitto_sub
         ;;
@@ -219,11 +226,11 @@ do
         ;;
     c)  nMinOccurences="$OPTARG" # currently unused
         ;;
-    t)  nMinSeconds="$OPTARG" # seconds before repating the same reading
+    T)  nMinSecondsOther="$OPTARG" # seconds before repeating the same reading
         ;;
     a)  bAlways="yes" 
         ;;
-    s)  sSuppressAttrs="$sSuppressAttrs ${OPTARG//[^a-zA-Z0-9_]}" # attrs that will be always eliminated
+    s)  sSuppressAttrs="$sSuppressAttrs ${OPTARG//[^a-zA-Z0-9_]}" # sensor attributes that will be always eliminated
         ;;
     2)  bTryAlternate="yes" # ease experiments (not used in production)
         ;;
@@ -257,10 +264,10 @@ sdr_tuner="$( echo "$startup" | grep '^Found '   | sed -e 's/Found //' -e 's/ tu
 sdr_freq="$( echo "$startup" | grep '^Tuned to ' | sed -e 's/^Tuned to //' -e 's/\.$//' )"
 
 echo_if_not_duplicate() {
-    if [[ $1 != "$gPrevData" ]] ; then
+    if [[ "$1..$2" != "$gPrevData" ]] ; then
         [[ $bWasDuplicate ]] && echo "" # echo a newline after some dots
-        echo "$1"
-        gPrevData="$1" # save the previous data
+        echo -e "$1${2:+\n$2}"
+        gPrevData="$1..$2" # save the previous data
         bWasDuplicate=""
     else
         printf "."
@@ -268,7 +275,7 @@ echo_if_not_duplicate() {
     fi
  }
 
-_info="*tuner*:*$sdr_tuner*,*freq*:*$sdr_freq*,*additional_rtl433_opts*:*$rtl433_opts*,*logto*:*$logbase ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore}*,*nMinOccurences*=*$nMinOccurences*,*nMinSeconds*=*$nMinSeconds*"
+_info="*tuner*:*$sdr_tuner*,*freq*:*$sdr_freq*,*additional_rtl433_opts*:*$rtl433_opts*,*logto*:*$logbase ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsOther*:$nMinSecondsOther"
 if [ -t 1 ] ; then # probably on a terminal
     log "$sName starting at $( date )"
     publish_to_mqtt_starred "log" "{*event*:*starting*,$_info}"
@@ -285,10 +292,11 @@ fi
 trap_exit() {   # stuff to do when exiting
     log "========= $sName exiting at $( date ) ========="
     [ "$bRemoveAnnouncements" ] && hass_remove_announce
+    _cppid="$rtlcoproc_PID" # avoid race condition after killing
     [ "$rtlcoproc_PID" ] && kill "$rtlcoproc_PID" && [ $bVerbose ] && echo "$sName: Killed coproc PID $_cppid" 1>&2
     # sleep 1
-    nReadings=${#aReadings[@]}
-    publish_to_mqtt_state "*collected_sensors*:*${!aReadings[*]}* }"
+    nReadings=${#aLastReadings[@]}
+    publish_to_mqtt_state "*collected_sensors*:*${!aLastReadings[*]}* }"
     publish_to_mqtt_starred "log" "{ *note*:*exiting* }"
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
@@ -296,7 +304,7 @@ trap 'trap_exit' EXIT # previously also: INT QUIT TERM
 trap_usr1() {    # log collected sensors to MQTT
     log "$sName received signal USR1: logging to MQTT"
     publish_to_mqtt_starred "log" "{*note*:*received signal USR1, will publish collected sensors* }"
-    publish_to_mqtt_state "*collected_sensors*:*${!aReadings[*]}* }"
+    publish_to_mqtt_state "*collected_sensors*:*${!aLastReadings[*]}* }"
     nLastStatusSeconds="$( date +%s )"
  }
 trap 'trap_usr1' USR1 
@@ -320,9 +328,7 @@ else
     renice -n 15 "${rtlcoproc_PID}"
 fi 
 
-_cppid="$rtlcoproc_PID" # save it in a permanent variable
-
-if [[ $rtlcoproc_PID ]] ; then
+if [[ $rtlcoproc_PID && $bAnnounceHass ]] ; then
     # _statistics="*sensorcount*:*${nReadings:-0}*,*announcedcount*:*$nAnnouncedCount*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,*readingscount*:*$nReadings*"
     hass_announce "$basetopic" "Rtl433 Bridge" "bridge/state" "AnnouncedCount" "value_json.announcedcount" "none"
     hass_announce "$basetopic" "Rtl433 Bridge" "bridge/state" "SensorCount"   "value_json.sensorcount"  "none"
@@ -341,110 +347,116 @@ do
     msgSecond="${msgTime:(-2):2}" && msgSecond="${msgSecond#0}" # no subprocess needed...
     data="$( del_json_attributes "$sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )"
     log "$data"
-    [[ $bVerbose ]] && echo_if_not_duplicate "RCVD: $data"
+    [[ $bMoreVerbose ]] && echo_if_not_duplicate "READ: $data"
     model="$( jq -r '.model // empty' <<< "$data" )"    
     id="$(    jq -r '.id    // empty' <<< "$data" )"
     protocol="$(    jq -r '.protocol  // empty' <<< "$data" )"
+    model_id="${model}_$id"
+    [[ $bVerbose ]] || expr match "$model_id" "$sSensorMatch.*" > /dev/null || continue # skip early when not verbose
 
     if [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
-
         data="$( del_json_attributes "model id protocol subtype channel" "$data" )"
         temp="$( jq -e -r 'if .temperature_C then .temperature_C*5 + 0.5 | floor / 5 else empty end' <<< "$data" )" # round to 0.2° C
         if [[ $temp ]] ; then
-            _bHasTemperature="yes"
+            _bHasTemperature="1"
             data="$( jq -cer ".temperature_C = $temp" <<< "$data" )"
-            [[ ${aPrevTempVals[${model}_${id}]} ]] || aPrevTempVals[${model}_${id}]=0
+            [[ ${aPrevTempVals[$model_id]} ]] || aPrevTempVals[$model_id]=0
         else 
             _bHasTemperature=""
         fi
 
-        _bHasHumidity="$( jq -e -r 'if (.humidity and .humidity<=100) then "yes" else empty end' <<< "$data" )"
-        _bHasRain="$(     jq -e -r 'if (.rain_mm  and .rain_mm  >0  ) then "yes" else empty end' <<< "$data" )"
-        _bHasBatteryOK="$( jq -e -r 'if (.battery_ok and .battery_ok<=2) then "yes" else empty end' <<< "$data" )"
-        _bHasPressureKPa="$( jq -e -r 'if (.pressure_kPa and .pressure_kPa<=9999) then "yes" else empty end' <<< "$data" )"
+        _bHasHumidity="$( jq -e -r 'if (.humidity and .humidity<=100) then "1" else empty end' <<< "$data" )"
+        _bHasRain="$(     jq -e -r 'if (.rain_mm  and .rain_mm  >0  ) then "1" else empty end' <<< "$data" )"
+        _bHasBatteryOK="$( jq -e -r 'if (.battery_ok and .battery_ok<=2) then "1" else empty end' <<< "$data" )"
+        _bHasPressureKPa="$( jq -e -r 'if (.pressure_kPa and .pressure_kPa<=9999) then "1" else empty end' <<< "$data" )"
 
         if [[ $bRewriteMore ]] ; then
-            data="$( del_json_attributes ".transmit" "$data"  )"        
-
+            data="$( del_json_attributes ".transmit" "$data"  )"
             data="$( jq -c 'if .button     == 0 then del(.button    ) else . end' <<< "$data" )"
             # data="$( jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" )"
             data="$( jq -c 'if .unknown1   == 0 then del(.unknown1)   else . end' <<< "$data" )"
 
             bSkipLine="$( jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
         fi
-        [[ $sDoLog == "dir" && $model ]] && echo "$data" >> "$logbase/model/${model}_$id"
+        [[ $sDoLog == "dir" && $model ]] && echo "$data" >> "$logbase/model/$model_id"
         data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
     fi
 
+    nTimeStamp="$( date +%s )"
     # Send message to MQTT or skip it ...
     if [[ $bSkipLine ]] ; then
         [[ $bVerbose ]] && echo "SKIPPING: $data"
         bSkipLine=""
         continue
-    elif [[ $bAlways || $data != "$prev_data" ]] ; then
-        [[ $bVerbose && ! $bRewrite ]] && echo_if_not_duplicate "RCVD: $data" # Raw message to MQTT
-        nMqttLines=$(( nMqttLines + 1 ))
+    elif [[ $bAlways || $data != "$prev_data" || $nTimeStamp -gt $((prev_time+nMinSecondsOther)) ]] ; then
+        if [[ $bVerbose ]] ; then
+            [[ $bRewrite ]] && echo_if_not_duplicate "" "CLEANED: $model_id = $data" # resulting message for MQTT
+            expr match "$model_id" "$sSensorMatch.*"  > /dev/null || continue # skip if match
+        fi
         prev_data="$data"
-        prevval="${aReadings[${model}_${id}]}"
-        aReadings[${model}_${id}]="$data"
-        aCounts[${model}_${id}]="$(( aCounts[${model}_${id}] + 1 ))"
+        prev_time="$nTimeStamp"
+        prevval="${aLastReadings[$model_id]}" 
+        aLastReadings[$model_id]="$data"
+        aCounts[$model_id]="$(( aCounts[$model_id] + 1 ))"
         aProtocols[${protocol}]="$model"
         if [[ $bMoreVerbose ]] ; then
-            _prefix="SAME:  "  &&  [[ ${aReadings[${model}_${id}]} != "$prevval" ]] && _prefix="CHANGE(${#aReadings[@]}):"
-            grep -E --color=auto '^[^/]*|/' <<< "$_prefix ${model}_${id} /${aReadings[${model}_${id}]}/$prevval/"
+            _prefix="SAME:  "  &&  [[ ${aLastReadings[$model_id]} != "$prevval" ]] && _prefix="CHANGE(${#aLastReadings[@]}):"
+            grep -E --color=auto '^[^/]*|/' <<< "$_prefix $model_id /${aLastReadings[$model_id]}/$prevval/"
         fi
-
+        _mindiff=$(( (_bHasTemperature || _bHasHumidity) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
+        _bReady=$(( bAnnounceHass && aAnnounced[$model_id]!=1 && aCounts[$model_id] >= nMinOccurences ))
         if [[ $bVerbose ]] ; then
-            echo "====================================="           
-            echo "Model_ID=${model}_${id}, Reading=${aReadings[${model}_${id}]}, Prev=$prevval, Time=$( date +%s ) (${aLastSents[${model}_${id}]})"
+            echo "_mindiff=$_mindiff, _bReady=$_bReady, _bHasTemperature=$_bHasTemperature, _bHasHumidity=$_bHasHumidity"
+            echo "Model_ID=$model_id, Readings=${aLastReadings[$model_id]}, Counts=${aCounts[$model_id]}, Prev=$prevval, Time=$nTimeStamp (${aLastSents[$model_id]})"
         fi
-        # set -x
-        if [[ $data != "$prevval" ||  $(date +%s) -gt $(( aLastSents[${model}_${id}] + nMinSeconds )) ]] ; then # rcvd data should be different from previous reading!
-
-            if (( aCounts[${model}_${id}] == nMinOccurences )) ; then
-                # For now, only some types of sensors are announced for auto-discovery:
-                if [[ $_bHasTemperature || $_bHasPressureKPa ]] ; then
-                    [[ $_bHasTemperature ]] && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Temp"   "value_json.temperature" "temperature"
-                    [[ $_bHasHumidity    ]] && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Humid"  "value_json.humidity" "humidity"
-                    [[ $_bHasPressureKPa ]] && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }PressureKPa"  "value_json.pressure_kPa" "pressure_kPa"
-                    [[ $_bHasBatteryOK   ]] && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Battery" "value_json.battery_ok" "battery"
-                    nAnnouncedCount=$(( nAnnouncedCount + 1 ))
-                    publish_to_mqtt_state
-                else
-                    publish_to_mqtt_starred "log" "{*note*:*not announced for MQTT discovery: ${model}_${id}*"
-                fi    
-            fi    
+        if (( _bReady )) ; then
+            # For now, only some types of sensors are announced for auto-discovery:
+            if (( _bHasTemperature || _bHasPressureKPa )) ; then
+                (( _bHasTemperature )) && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Temp"   "value_json.temperature" "temperature"
+                (( _bHasHumidity    )) && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Humid"  "value_json.humidity" "humidity"
+                (( _bHasPressureKPa )) && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }PressureKPa"  "value_json.pressure_kPa" "pressure_kPa"
+                (( _bHasBatteryOK   )) && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Battery" "value_json.battery_ok" "battery"
+                nAnnouncedCount=$(( nAnnouncedCount + 1 ))
+                publish_to_mqtt_state
+            else
+                publish_to_mqtt_starred "log" "{*note*:*not announced for MQTT discovery: $model_id*"
+            fi
+            aAnnounced[$model_id]=1 # dont reconsider for announcement 
+        fi
+        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_id] + _mindiff )) || _bReady -eq 1 ]] ; then # rcvd data should be different from previous reading!
             publish_to_mqtt_starred "$basetopic/${model:+$model/}${id:-00}" "${data//\"/*}" # ... publish values!
-            aLastSents[${model}_${id}]="$( date +%s )"
-            aReadings[${model}_${id}]="$data"
+            nMqttLines=$(( nMqttLines + 1 ))
+            aLastSents[$model_id]="$nTimeStamp"
+            aLastReadings[$model_id]="$data"
         else
             [[ $bVerbose ]] && echo "Suppressed a duplicate." 
         fi
         set +x
     fi
-    nReadings=${#aReadings[@]} # && nReadings=${nReadings#0} # remove any leading 0
+    nReadings=${#aLastReadings[@]} # && nReadings=${nReadings#0} # remove any leading 0
 
     if (( nReadings > nPrevMax )) ; then                 # a new max means we have a new sensor
         nPrevMax=nReadings
         rtlChannel="$( jq -r '.channel  // empty' <<< "$data" )"
-        publish_to_mqtt_starred "log" "{*note*:*sensor added*,*latest_model*:*$model*,*latest_id*:*$id*,*latest_channel*:*$rtlChannel*,*sensors*:[${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}**]}"
+        publish_to_mqtt_starred "log" "{*note*:*sensor added*,*model*:*$model*,*id*:*$id*,*channel*:*$rtlChannel*,*sensors*:[${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}**]}"
         publish_to_mqtt_state
-    elif (( $(date +%s) > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
+    elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*: [ $(  _comma=""
-            for KEY in "${!aReadings[@]}"; do
-                _reading="${aReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
+            for KEY in "${!aLastReadings[@]}"; do
+                _reading="${aLastReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
                 echo -n "$_comma { *model_id*:*$KEY*, ${_reading//\"/*} }"
                 _comma=","
             done
         ) ]"
         log "$( expand_starred_string "$_collection" )" 
-        publish_to_mqtt_state "*note*:*regular log*,*collected_model_ids*:*${!aReadings[*]}*, $_collection"
-        nLastStatusSeconds="$( date +%s )"
+        publish_to_mqtt_state "*note*:*regular log*,*collected_model_ids*:*${!aLastReadings[*]}*, $_collection"
+        nLastStatusSeconds=$nTimeStamp
     elif (( nReadings > (msgSecond*msgSecond+2)*(msgMinute+1)*(msgHour+1) || nMqttLines%5000==0 || nReceivedCount % 10000 == 0 )) ; then # reset whole array to empty once in a while = starting over
         publish_to_mqtt_state
         publish_to_mqtt_starred "log" "{*note*:*will reset saved values*}"
-        unset aReadings && declare -A aReadings # reset the whole collection array
+        unset aLastReadings && declare -A aLastReadings # reset the whole collection array
         unset aCounts   && declare -A aCounts
+        unset aAnnounced && declare -A aAnnounced
         nPrevMax=$(( nPrevMax / 3 ))            # reduce it (but not back to 0) to reduce future log messages
         [[ $bRemoveAnnouncements ]] && hass_remove_announce
     fi
