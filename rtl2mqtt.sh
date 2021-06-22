@@ -9,8 +9,8 @@ set -o noglob     # file name globbing is neither needed nor wanted (for securit
 set -o noclobber  # disable for security reasons
 set -o pipefail
 sName="${0##*/}" && sName="${sName%.sh}"
-sID="$( basename "${sName// /}" .sh )" # sID="${sID}433"
-sMID="$sID"
+sMID="$( basename "${sName// /}" .sh )"
+sID="${sMID}"
 
 commandArgs="$*"
 logbase="/var/log/$( basename "${sName// /}" .sh )" # /var/log is preferred, but will default to /tmp if not useable
@@ -99,9 +99,9 @@ publish_to_mqtt_starred () {		# options: ( [expandableTopic ,] starred_message, 
     mosquitto_pub ${mqtthost:+-h $mqtthost} ${sMID:+-i $sMID} -t "$_topic" -m "$( expand_starred_string "$_msg" )" $3 $4 $5 # ...  
   }
 
-publish_to_mqtt_state () {	
+publish_to_mqtt_state() {	
     _statistics="*sensorcount*:${nReadings:-0},*announcedcount*:$nAnnouncedCount,*mqttlinecount*:$nMqttLines,*receivedcount*:$nReceivedCount,*readingscount*:$nReadings"
-    publish_to_mqtt_starred "state" "{$_statistics${1:+, $1}}"
+    publish_to_mqtt_starred "state" "{$_statistics${1:+,$1}}"
 }
 
 # Parameters for hass_announce:
@@ -124,18 +124,15 @@ publish_to_mqtt_state () {
 hass_announce() {
 	local -
     local _topicpart="${3%/set}" # if $3 ends in /set it is settable, but remove /set from state topic
- #   local _issettable="$(( $3 != $_topicpart ))"
-	local _devid="$( basename "$_topicpart" )"
+ 	local _devid="$( basename "$_topicpart" )"
 	local _command_topic_str="$( [ "$3" != "$_topicpart" ] && echo ",*cmd_t*:*~/set*" )"  # determined by suffix ".../set"
- #   local _name="${2:+$2-}$4" && _name="${_name// /-}" && _name="${_name//[)()]/}"
- #   local _name="$( echo "${2:+$2-}$4" | tr " " "-" | tr -d "[)()]/" )"
 
     local _dev_class="${6#none}" # dont wont "none" as string for dev_class
     local _jsonpath="${5#value_json.}" # && _jsonpath="${_jsonpath//[ \/-]/}"
     local _jsonpath_red="$( echo "$_jsonpath" | tr -d "][ /-_" )" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
     local _configtopicpart="$( echo "$3" | tr -d "][ /-" | tr "[:upper:]" "[:lower:]" )"
     local _topic="${hasstopicprefix}/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
-
+          _configtopicpart="${_configtopicpart^[a-z]*}" # uppercase first letter for readability
     local _devname="$2 ${_devid^}"
     local _icon_str=""
     if [ "$_dev_class" ] ; then
@@ -156,8 +153,8 @@ hass_announce() {
         # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
     esac
 
-    local  _device_string="*device*:{*identifiers*:[*${sID}_${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433version*}"
-    local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*${6:-none}*,*unique_id*:*${sID}_${_configtopicpart}$_jsonpath_red*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str"
+    local  _device_string="*$device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433version*}"
+    local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str"
            # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
            # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
 
@@ -168,7 +165,7 @@ hass_remove_announce() {
     _topic="$hasstopicprefix/#" 
     _topic="$( dirname $hasstopicprefix )/#" # deletes eveything below "homeassistant/sensor/..." !
     [[ $bVerbose ]] && echo "$sName: removing all announcements below $_topic..."
-    mosquitto_sub ${mqtthost:+-h $mqtthost} ${sMID:+-i $sMID} -W 1  -t "$_topic" --remove-retained --retained-only
+    mosquitto_sub ${mqtthost:+-h $mqtthost} ${sMID:+-i $sMID} -W 1 -t "$_topic" --remove-retained --retained-only
     _rc=$?
     publish_to_mqtt_starred "log" "{*note*:*removed all announcements starting with $_topic returned $_rc.* }"
 }
@@ -444,7 +441,8 @@ do
     if (( nReadings > nPrevMax )) ; then                 # a new max means we have a new sensor
         nPrevMax=nReadings
         rtlChannel="$( jq -r '.channel  // empty' <<< "$data" )"
-        publish_to_mqtt_starred "log" "{*note*:*sensor added*,*model*:*$model*,*id*:*$id*,*channel*:*$rtlChannel*,*sensors*:[${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}**]}"
+        _sensors="${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}"
+        publish_to_mqtt_starred "log" "{*note*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$rtlChannel*,*sensors*:[${_sensors%,}]}"
         publish_to_mqtt_state
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*: [ $(  _comma=""
