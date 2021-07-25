@@ -147,9 +147,12 @@ hass_announce() {
 
     local _unit_str=""
     case "$6" in
+		none)		  _icon_str="" ;; 
         temperature*) _unit_str=",*unit_of_measurement*:*°C*" ;;
         humidity)     _unit_str=",*unit_of_measurement*:*%*" ;;
+		clock)			_icon_str=",*icon*:*mdi:clock-outline*" ;;
         switch)       _icon_str=",*icon*:*mdi:mdi-toggle-switch*" ;;
+        motion)       _icon_str=",*icon*:*mdi:motion*" ;;
         # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
     esac
 
@@ -181,7 +184,7 @@ del_json_attributes() {
 
 # del_json_attributes "one" "two" "*_special*" '{"one":"1","two":2,"three":3,"four":"4","_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
 
-while getopts "?qh:pt:M:drl:f:F:w:c:as:t:T:2vx" opt      
+while getopts "?qh:pt:M:drl:f:F:H:w:c:as:t:T:2vx" opt      
 do
     case "$opt" in
     \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x" 1>&2
@@ -223,6 +226,9 @@ do
         else
             rtl433_opts="$rtl433_opts -f $OPTARG"
         fi
+        ;;
+    H)  nHopSecs="$OPTARG" # MQTT announcements only after at least $nMinOccurences occurences...
+        rtl433_opts="$rtl433_opts -H $nHopSecs"
         ;;
     c)  nMinOccurences="$OPTARG" # MQTT announcements only after at least $nMinOccurences occurences...
         ;;
@@ -339,12 +345,18 @@ fi
 
 while read -r data <&"${rtlcoproc[0]}"         # ... and enter an (almost) infinite loop
 do
-    # [[ $bQuiet ]] && [[ $data  =~ ^rtl_433:\ warning: ]] && continue
+    if [[ $data  =~ "center_frequency" ]] ; then
+        [[ $bMoreVerbose ]] && echo_if_not_duplicate "RAW: $data" && publish_to_mqtt_starred "log" "$data"
+        continue
+    fi
     nReceivedCount=$(( nReceivedCount + 1 ))
+    # [[ $bMoreVerbose ]] && echo_if_not_duplicate "RAW: $data"
+    # set -x
     msgTime="${data[*]/\",*/}"
     msgHour="${msgTime:(-8):2}"   && msgHour="${msgHour#0}" 
     msgMinute="${msgTime:(-5):2}" && msgMinute="${msgMinute#0}" 
     msgSecond="${msgTime:(-2):2}" && msgSecond="${msgSecond#0}" # no subprocess needed...
+    set +x
     data="$( del_json_attributes "$sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )" # remove double-quotes around numbers
     log "$data"
     [[ $bMoreVerbose ]] && echo_if_not_duplicate "READ: $data"
@@ -366,9 +378,10 @@ do
         fi
 
         _bHasHumidity="$( jq -e -r 'if (.humidity and .humidity<=100) then "1" else empty end' <<< "$data" )"
-        _bHasRain="$(     jq -e -r 'if (.rain_mm  and .rain_mm  >0  ) then "1" else empty end' <<< "$data" )"
+        # _bHasRain="$(     jq -e -r 'if (.rain_mm  and .rain_mm  >0  ) then "1" else empty end' <<< "$data" )"
         _bHasBatteryOK="$( jq -e -r 'if (.battery_ok and .battery_ok<=2) then "1" else empty end' <<< "$data" )"
         _bHasPressureKPa="$( jq -e -r 'if (.pressure_kPa and .pressure_kPa<=9999) then "1" else empty end' <<< "$data" )"
+        _bHasCmd="$( jq -e -r 'if (.cmd) then "1" else empty end' <<< "$data" )"
 
         if [[ $bRewriteMore ]] ; then
             data="$( del_json_attributes ".transmit" "$data"  )"
@@ -406,16 +419,17 @@ do
         _mindiff=$(( (_bHasTemperature || _bHasHumidity) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
         _bReady=$(( bAnnounceHass && aAnnounced[$model_id]!=1 && aCounts[$model_id] >= nMinOccurences ))
         if [[ $bVerbose ]] ; then
-            echo "_mindiff=$_mindiff, _bReady=$_bReady, _bHasTemperature=$_bHasTemperature, _bHasHumidity=$_bHasHumidity"
+            echo "_mindiff=$_mindiff, _bReady=$_bReady, _bHasTemperature=$_bHasTemperature, _bHasHumidity=$_bHasHumidity, _bHasCmd=$_bHasCmd"
             echo "Model_ID=$model_id, Readings=${aLastReadings[$model_id]}, Counts=${aCounts[$model_id]}, Prev=$prevval, Time=$nTimeStamp (${aLastSents[$model_id]})"
         fi
         if (( _bReady )) ; then
             # For now, only some types of sensors are announced for auto-discovery:
-            if (( _bHasTemperature || _bHasPressureKPa )) ; then
+            if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd)) ; then
                 (( _bHasTemperature )) && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Temp"   "value_json.temperature" "temperature"
                 (( _bHasHumidity    )) && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Humid"  "value_json.humidity" "humidity"
                 (( _bHasPressureKPa )) && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }PressureKPa"  "value_json.pressure_kPa" "pressure_kPa"
                 (( _bHasBatteryOK   )) && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Battery" "value_json.battery_ok" "battery"
+                (( _bHasCmd         )) && hass_announce "$basetopic" "${model}" "${model:+$model/}${id:-00}" "${id:+($id) }Cmd" "value_json.cmd" "motion"
                 nAnnouncedCount=$(( nAnnouncedCount + 1 ))
                 publish_to_mqtt_starred "log" "{*note*:*announced MQTT discovery: $model_id*}"
                 publish_to_mqtt_state
@@ -445,10 +459,10 @@ do
         publish_to_mqtt_starred "log" "{*note*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$rtlChannel*,*sensors*:[${_sensors%,}]}"
         publish_to_mqtt_state
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   # log once in a while, good heuristic in a generalized neighbourhood
-        _collection="*sensorreadings*: [ $(  _comma=""
+        _collection="*sensorreadings*: [$(  _comma=""
             for KEY in "${!aLastReadings[@]}"; do
                 _reading="${aLastReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
-                echo -n "$_comma { *model_id*:*$KEY*, ${_reading//\"/*} }"
+                echo -n "$_comma {*model_id*:*$KEY*,${_reading//\"/*}}"
                 _comma=","
             done
         ) ]"
@@ -468,6 +482,6 @@ done
 
 _msg="$sName: while-loop ended at $( date ), rtlprocid=:${rtlcoproc_PID}:"
 log "$_msg" 
-publish_to_mqtt_starred "{ *event*:*endloop*, *note*:*$_msg* }"
+publish_to_mqtt_starred "log" "{*event*:*endloop*,*note*:*$_msg*}"
 
 # now the exit trap function will be processed...
