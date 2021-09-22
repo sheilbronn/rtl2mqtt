@@ -156,7 +156,7 @@ hass_announce() {
         # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
     esac
 
-    local  _device_string="*$device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433version*}"
+    local  _device_string="*device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433version*}"
     local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str"
            # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
            # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
