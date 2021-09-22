@@ -41,6 +41,7 @@ declare -i nMinOccurences=3
 declare -i nPrevMax=1       # start with 1 for non-triviality
 declare -l bAnnounceHass="1" # default is yes for now
 declare -A aLastReadings
+declare -A aSecondLastReadings
 declare -A aCounts
 declare -A aProtocols
 declare -A aPrevTempVals
@@ -408,7 +409,8 @@ do
         fi
         prev_data="$data"
         prev_time="$nTimeStamp"
-        prevval="${aLastReadings[$model_id]}" 
+        prevval="${aLastReadings[$model_id]}"
+        prevvals="${aSecondLastReadings[$model_id]}"
         aLastReadings[$model_id]="$data"
         aCounts[$model_id]="$(( aCounts[$model_id] + 1 ))"
         aProtocols[${protocol}]="$model"
@@ -416,11 +418,12 @@ do
             _prefix="SAME:  "  &&  [[ ${aLastReadings[$model_id]} != "$prevval" ]] && _prefix="CHANGE(${#aLastReadings[@]}):"
             grep -E --color=auto '^[^/]*|/' <<< "$_prefix $model_id /${aLastReadings[$model_id]}/$prevval/"
         fi
-        _mindiff=$(( (_bHasTemperature || _bHasHumidity) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
+        _nTimeDiff=$(( (_bHasTemperature || _bHasHumidity) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
+        [[ $data == "$prevvals"  ]] && _nTimeDiff=$(( _nTimeDiff * 2 ))
         _bReady=$(( bAnnounceHass && aAnnounced[$model_id]!=1 && aCounts[$model_id] >= nMinOccurences ))
         if [[ $bVerbose ]] ; then
-            echo "_mindiff=$_mindiff, _bReady=$_bReady, _bHasTemperature=$_bHasTemperature, _bHasHumidity=$_bHasHumidity, _bHasCmd=$_bHasCmd"
-            echo "Model_ID=$model_id, Readings=${aLastReadings[$model_id]}, Counts=${aCounts[$model_id]}, Prev=$prevval, Time=$nTimeStamp (${aLastSents[$model_id]})"
+            echo "_nTimeDiff=$_nTimeDiff, _bReady=$_bReady, _bHasTemperature=$_bHasTemperature, _bHasHumidity=$_bHasHumidity, _bHasCmd=$_bHasCmd"
+            echo "Model_ID=$model_id, Readings=${aLastReadings[$model_id]}, Counts=${aCounts[$model_id]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp (${aLastSents[$model_id]})"
         fi
         if (( _bReady )) ; then
             # For now, only some types of sensors are announced for auto-discovery:
@@ -439,9 +442,13 @@ do
             fi
             aAnnounced[$model_id]=1 # dont reconsider for announcement 
         fi
-        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_id] + _mindiff )) || "$_bReady" -eq 1 ]] ; then # rcvd data should be different from previous reading!
+        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_id] + _nTimeDiff )) || "$_bReady" -eq 1 ]] ; then # rcvd data should be different from previous reading(s)!
             aLastReadings[$model_id]="$data"
-            [[ $data != "$prevval" && $bRewrite ]] && data="$( jq -cer '.note = "changed"' <<< "$data" )"
+            if [[ $bRewrite && ( $_bHasTemperature || $_bHasHumidity ) ]] ; then
+                [[ $data != "$prevval"  ]] && data="$( jq -cer '.note  = "changed"' <<< "$data" )"
+                [[ $data == "$prevvals" ]] && data="$( jq -cer ".note2 = \"like second last (count=${aCounts[$model_id]}, _bReady=$_bReady, _nTimeDiff=$_nTimeDiff)\"" <<< "$data" )"
+                aSecondLastReadings[$model_id]="$prevval"
+            fi
             publish_to_mqtt_starred "$basetopic/${model:+$model/}${id:-00}" "${data//\"/*}" # ... publish values!
             nMqttLines=$(( nMqttLines + 1 ))
             aLastSents[$model_id]="$nTimeStamp"
@@ -452,7 +459,7 @@ do
     fi
     nReadings=${#aLastReadings[@]} # && nReadings=${nReadings#0} # remove any leading 0
 
-    if (( nReadings > nPrevMax )) ; then                 # a new max means we have a new sensor
+    if (( nReadings > nPrevMax )) ; then   # a new max means we have a new sensor
         nPrevMax=nReadings
         rtlChannel="$( jq -r '.channel  // empty' <<< "$data" )"
         _sensors="${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}"
