@@ -135,7 +135,8 @@ hass_announce() {
     local _devname="$2 ${_devid^}"
     local _icon_str=""
     if [ "$_dev_class" ] ; then
-        _icon_str=",*icon*:*mdi:mdi-$_dev_class*"  # mdi icons: https://cdn.materialdesignicons.com/5.4.55/
+        # mdi icons: https://cdn.materialdesignicons.com/5.4.55/
+        _icon_str="${_dev_class/temperature/thermometer}" ; _icon_str="${_icon_str/humidity/water-percent}" ; _icon_str="${_icon_str/motion/motion-sensor}"  # more common icons
         local _channelname="$_devname ${_dev_class^}"
     else
         local _channelname="$_devname $4" # take something meaningfull
@@ -149,13 +150,14 @@ hass_announce() {
 		none)		  _icon_str="" ;; 
         temperature*) _unit_str=",*unit_of_measurement*:*°C*" ;;
         humidity)     _unit_str=",*unit_of_measurement*:*%*" ;;
-		clock)			_icon_str=",*icon*:*mdi:clock-outline*" ;;
-        switch)       _icon_str=",*icon*:*mdi:mdi-toggle-switch*" ;;
-        motion)       _icon_str=",*icon*:*mdi:motion*" ;;
+		clock)		    _icon_str="clock-outline*" ;;
+        switch)       _icon_str="toggle-switch*" ;;
+        motion)       _icon_str="motion-sensor*" ;;
         # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
     esac
 
-    local  _device_string="*device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433version*}"
+    _icon_str="${_icon_str:+,*icon*:*mdi:mdi-$_icon_str*}"
+    local  _device_string="*device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433_version*}"
     local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str"
            # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
            # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
