@@ -384,11 +384,11 @@ fi
 
 if [[ $rtlcoproc_PID && $bAnnounceHass ]] ; then
     # _statistics="*sensorcount*:*${nReadings:-0}*,*announcedcount*:*$nAnnouncedCount*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,*readingscount*:*$nReadings*"
-    hass_announce "$sRtlPrefix" "Rtl433 Bridge" "bridge/state" "AnnouncedCount" "value_json.announcedcount" "none"
-    hass_announce "$sRtlPrefix" "Rtl433 Bridge" "bridge/state" "SensorCount"   "value_json.sensorcount"  "none"
-    hass_announce "$sRtlPrefix" "Rtl433 Bridge" "bridge/state" "MqttLineCount" "value_json.mqttlinecount" "none"
-    hass_announce "$sRtlPrefix" "Rtl433 Bridge" "bridge/state" "ReadingsCount" "value_json.readingscount" "none"  && sleep 1
-    hass_announce "$sRtlPrefix" "Rtl433 Bridge" "bridge/log"   "LogMessage"     ""           "none"
+    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount" "value_json.announceds" "none"
+    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "SensorCount"   "value_json.sensors"  "none"
+    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "MqttLineCount" "value_json.mqttlines" "none"
+    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "ReadingsCount" "value_json.receiveds" "none"  && sleep 1
+    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/log   "LogMessage"     ""           "none"
 fi
 
 # set -x
@@ -422,12 +422,12 @@ do
     model="$(   jq -r '.model // empty' <<< "$data" )"    
     id="$(      jq -r '.id    // empty' <<< "$data" )"
     # protocol="$( jq -r '.protocol  // empty' <<< "$data" )"
-    model_id="${model}_$id"
+    model_id="${model}${id:+_$id}"
     [[ $bVerbose ]] || expr match "$model_id" "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
     [ "$sFreq" ]    && data="$( append_json_keyval "FREQM" "$sFreq" "$data" )"
     # exit
 
-    if [ $model_id = "_" ] ; then
+    if [ "$model_id" = "_" ] ; then
         : # pass-through für "-M stats" messages
     elif [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
         data="$( del_json_attributes "model id protocol" "$data" )" # other stuff: rssi subtype channel mod snr noise
@@ -499,28 +499,31 @@ do
             echo "Model_ID=$model_id, Readings=${aLastReadings[$model_id]}, Counts=${aCounts[$model_id]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp (${aLastSents[$model_id]})"
         fi
         if (( _bReady )) ; then
-            # For now, only some types of sensors are announced for auto-discovery:
-            if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd)) ; then
+            # For now, only the following certain types of sensors are announced for auto-discovery:
+            if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd )) ; then
                 (( _bHasTemperature )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Temp"   "value_json.temperature" temperature
                 (( _bHasHumidity    )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Humid"  "value_json.humidity" humidity
                 (( _bHasPressureKPa )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
                 (( _bHasBatteryOK   )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Battery" "value_json.battery_ok" battery_ok
                 (( _bHasCmd         )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Cmd" "value_json.cmd" motion
             #   [ "$sFreq"          ]  && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Freq" "value_json.FREQM" frequency
-                nAnnouncedCount=$(( nAnnouncedCount + 1 ))
                 publish_to_mqtt_starred "log" "{*note*:*announced MQTT discovery: $model_id*}"
+                nAnnouncedCount=$(( nAnnouncedCount + 1 ))
                 publish_to_mqtt_state
                 sleep 1 # give readers a second to digest the announcement first
             else
                 publish_to_mqtt_starred "log" "{*note*:*not announced for MQTT discovery: $model_id*}"
             fi
-            aAnnounced[$model_id]=1 # dont reconsider for announcement 
+            aAnnounced[$model_id]=1 # 1=dont reconsider for announcement 
         fi
         if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_id] + _nTimeDiff )) || "$_bReady" -eq 1 ]] ; then # rcvd data should be different from previous reading(s)!
             aLastReadings[$model_id]="$data"
             if [[ $bRewrite && ( $_bHasTemperature || $_bHasHumidity ) ]] ; then
-                [[ $data != "$prevval" ]] && data="$( jq -cer '.NOTE  = "changed"' <<< "$data" )"
-                [[ $data == "$prevvals" ]] && data="$( jq -cer ".NOTE2 = \"eq 2nd last (c=${aCounts[$model_id]},_bR=$_bReady,_nTD=$_nTimeDiff)\"" <<< "$data" )"
+                if [[ $data != "$prevval" ]] ; then
+                    data="$( jq -cer '.NOTE  = "changed"' <<< "$data" )"
+                elif [[ $data == "$prevvals" ]] ; then
+                    data="$( jq -cer ".NOTE2 = \"eq 2nd last (c=${aCounts[$model_id]},_bR=$_bReady,_nTD=$_nTimeDiff)\"" <<< "$data" )"
+                fi
                 aSecondLastReadings[$model_id]="$prevval"
             fi
             publish_to_mqtt_starred "$basetopic/${model:+$model/}${id:-00}" "${data//\"/*}" # ... publish values!
