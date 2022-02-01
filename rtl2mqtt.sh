@@ -145,16 +145,16 @@ hass_announce() {
 	local _command_topic_str="$( [ "$3" != "$_topicpart" ] && echo ",*cmd_t*:*~/set*" )"  # determined by suffix ".../set"
 
     local _dev_class="${6#none}" # dont wont "none" as string for dev_class
+	local _state_class
     local _jsonpath="${5#value_json.}" # && _jsonpath="${_jsonpath//[ \/-]/}"
     local _jsonpath_red="$( echo "$_jsonpath" | tr -d "][ /-_" )" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
     local _configtopicpart="$( echo "$3" | tr -d "][ /-" | tr "[:upper:]" "[:lower:]" )"
     local _topic="${sHassPrefix}/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
           _configtopicpart="${_configtopicpart^[a-z]*}" # uppercase first letter for readability
     local _devname="$2 ${_devid^}"
-    local _icon_str=""
+    local _icon_str  # mdi icons: https://cdn.materialdesignicons.com/5.4.55/
+
     if [ "$_dev_class" ] ; then
-        # mdi icons: https://cdn.materialdesignicons.com/5.4.55/
-        _icon_str="${_dev_class/temperature/thermometer}" ; _icon_str="${_icon_str/humidity/water-percent}" ; _icon_str="${_icon_str/motion/motion-sensor}"  # more common icons
         local _channelname="$_devname ${_dev_class^}"
     else
         local _channelname="$_devname $4" # take something meaningfull
@@ -162,21 +162,22 @@ hass_announce() {
     local _sensortopic="${1:+$1/}$_topicpart"
     local _value_template_str="${5:+,*value_template*:*{{ $5 \}\}*}"
 	# local *friendly_name*:*${2:+$2 }$4*,
-
     local _unit_str=""
+
     case "$6" in
-		none)		  _icon_str="" ;; 
-        temperature*) _unit_str=",*unit_of_measurement*:*°C*" ;;
-        humidity)     _unit_str=",*unit_of_measurement*:*%*" ;;
-		clock)		  _icon_str="clock-outline*" ;;
-        switch)       _icon_str="toggle-switch*" ;;
-        motion)       _icon_str="motion-sensor*" ;;
+        temperature*)   _icon_str="thermometer" ; _unit_str=",*unit_of_measurement*:*°C*"	; _state_class="measurement" ;;
+        humidity)	_icon_str="water-percent"   ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
+        counter)	_icon_str="counter"         ; _unit_str=",*unit_of_measurement*:*#*"	; _state_class="total" ;;
+		clock)	    _icon_str="clock-outline" ;;
+        switch)     _icon_str="toggle-switch*" ;;
+        motion)     _icon_str="motion-sensor" ;;
         # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
+		none)		  _icon_str="" ;; 
     esac
 
-    _icon_str="${_icon_str:+,*icon*:*mdi:mdi-$_icon_str*}"
-    local  _device_string="*device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 on channel $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433_version*}"
-    local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str"
+    _icon_str="${_icon_str:+,*icon*:*mdi:$_icon_str*}"
+    local  _device_string="*device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 with id $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433_version*}"
+    local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
            # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
            # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
 
@@ -236,7 +237,7 @@ do
         ;;
     S)  sSensorMatch="${OPTARG}.*"
         ;;
-    d)  bRemoveAnnouncements="yes" # delete (remove) all retained auto-discovery announcements (before starting), needs newer mosquitto_sub
+    d)  bRemoveAnnouncements="yes" # delete (remove) all retained MQTT auto-discovery announcements (before starting), needs a newer mosquitto_sub
         ;;
     r)  # rewrite and simplify output
         if [ "$bRewrite" ] ; then
@@ -354,17 +355,25 @@ trap_exit() {   # stuff to do when exiting
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
 
-trap_usr1() {    # log collected sensors to MQTT
-    log "$sName received signal USR1: logging state to MQTT"
-    publish_to_mqtt_starred "log" "{*note*:*received signal USR1*,$_info}"
-    publish_to_mqtt_starred "log" "{*note*:*received signal USR1, will publish collected sensors* }"
+trap_int() {    # log collected sensors to MQTT
+    log "$sName received signal INT: logging state to MQTT"
+    publish_to_mqtt_starred "log" "{*note*:*received signal INT*,$_info}"
+    publish_to_mqtt_starred "log" "{*note*:*received signal INT, will publish collected sensors* }"
     publish_to_mqtt_state "*collected_sensors*:*${!aLastReadings[*]}* }"
     nLastStatusSeconds="$( date +%s )"
  }
+trap 'trap_int' INT 
+
+trap_usr1() {    # toggle verbosity 
+    [ "$bVerbose" ] && bVerbose="" || bVerbose="yes"
+    _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}"
+    log "$sName $_msg"
+    publish_to_mqtt_starred "log" "{*note*:*$_msg*}"
+  }
 trap 'trap_usr1' USR1 
 
 trap_usr2() {    # remove all home assistant announcements 
-    log "$sName received signal USR1: removing all home assistant announcements"
+    log "$sName received signal USR2: removing all home assistant announcements"
     hass_remove_announce
   }
 trap 'trap_usr2' USR2 
@@ -384,10 +393,10 @@ fi
 
 if [[ $rtlcoproc_PID && $bAnnounceHass ]] ; then
     # _statistics="*sensorcount*:*${nReadings:-0}*,*announcedcount*:*$nAnnouncedCount*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,*readingscount*:*$nReadings*"
-    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount" "value_json.announceds" "none"
-    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "SensorCount"   "value_json.sensors"  "none"
-    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "MqttLineCount" "value_json.mqttlines" "none"
-    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "ReadingsCount" "value_json.receiveds" "none"  && sleep 1
+    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount" "value_json.announceds" "counter"
+    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "SensorCount"   "value_json.sensors"  "counter"
+    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "MqttLineCount" "value_json.mqttlines" "counter"
+    hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "ReadingsCount" "value_json.receiveds" "counter"  && sleep 1
     hass_announce "$sRtlPrefix" "Rtl433 Bridge" bridge/log   "LogMessage"     ""           "none"
 fi
 
