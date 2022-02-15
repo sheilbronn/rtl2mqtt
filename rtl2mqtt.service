@@ -3,7 +3,7 @@ Description=Rtl2MQTT service
 After=network.target
 After=syslog.target
 Wants=mosquitto.service
-Documentation=https://github.com/sheilbronn/Manage-Gluon-MQTT
+Documentation=https://github.com/sheilbronn/rtl2mqtt
 
 [Service]
 Type=simple
@@ -16,6 +16,8 @@ User=openhabian
 WorkingDirectory=$LOGBASE
 StandardOutput=inherit
 StandardError=inherit
+Restart=on-failure
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
