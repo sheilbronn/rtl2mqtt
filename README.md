@@ -7,17 +7,16 @@ Several logging facilities ease the debugging of your local 433/866 MHz radio en
 The following sample MQTT output is from a typical suburb neighbourhood with different weather stations (inside and outside), movement sensors, smoke sensors, blind switches etc...
 
 ```log
-12:01 rtl/433/Prologue-TH/107 {"battery_ok":1,"temperature":24","humidity":14}
-12:06 rtl/433/inFactory-TH/12 {"battery_ok":0,"temperature":10.5","humidity":56}
-12:06 rtl/433/bridge/log {"note":"sensor added","latest_model":"inFactory-TH","latest_id":12,"latest_channel":1,"sensors":["temperature","pressure_kPa","battery"]}
+12:01 rtl/433/Prologue-TH/1 {"battery_ok":1,"temperature":24","humidity":14}
+12:06 rtl/433/inFactory-TH/3 {"battery_ok":0,"temperature":10.5","humidity":56}
+12:06 rtl/433/bridge/log {"note":"sensor added","model":"inFactory-TH","id":12,"channel":1,"sensors":["temperature","humidity","battery"]}
 12:06 rtl/433/bridge/state {"sensors":2,"announceds":0,"mqttlines":2,"receiveds":2,"lastfreq":433}
-12:24 rtl/433/Nexus-TH/35 {"battery_ok":0,"temperature":9.5,"humidity":39}
-12:25 rtl/433/Bresser-3CH/164 {"battery_ok":0,"temperature":9,"humidity":79}
-12:25 rtl/433/bridge/log {"note":"sensor added","latest_model":"Bresser-3CH","latest_id":164,"latest_channel":1,"sensors":["temperature","pressure_kPa","battery"]}
+12:25 rtl/433/Bresser-3CH/1 {"battery_ok":0,"temperature":9,"humidity":79}
+12:25 rtl/433/bridge/log {"note":"sensor added","model":"Bresser-3CH","id":164,"channel":1,"sensors":["temperature","humidity","battery"]}
 12:25 rtl/433/bridge/state {"sensors":4,"announceds":0,"mqttlines":4,"receiveds":9,"lastfreq":433}
-12:36 rtl/433/Prologue-TH/107 {"battery_ok":1,"temperature":24.5,"humidity":14,"NOTE":"changed"}
-13:14 rtl/433/inFactory-TH/12 {"battery_ok":0,"temperature":10.5,"humidity":56}
-13:21 rtl/433/Bresser-3CH/164 {"battery_ok":0,"temperature":9.5,"humidity":79,"NOTE":"changed"}
+12:36 rtl/433/Prologue-TH/1 {"battery_ok":1,"temperature":24.5,"humidity":14,"NOTE":"changed"}
+13:14 rtl/433/inFactory-TH/3 {"battery_ok":0,"temperature":10.5,"humidity":56}
+13:21 rtl/433/Bresser-3CH/1 {"battery_ok":0,"temperature":9.5,"humidity":79,"NOTE":"changed"}
 13:27 rtl/433/Generic-Remote/61825 {"cmd":62,"tristate":"110ZX00Z011X"}
 ...
 ```

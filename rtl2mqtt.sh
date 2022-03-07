@@ -25,7 +25,7 @@ rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ;
 rtl433_opts=( -G 4 -M protocol -C si )  # generic options for everybody, e.g. -M level 
 # rtl433_opts=( "${rtl433_opts[@]}" $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 rtl433_opts_more="-R -162 -R -86 -R -31 -R -37 -R -129 -R 10 -R 53" # My specific personal excludes: 129: Eurochron-TH gives neg. temp's
-rtl433_opts_more="$rtl433_opts_more -R -10 -R -53" # Additional specific personal excludes
+rtl433_opts_more="$rtl433_opts_more -R -10 -R -53 -R 198" # Additional specific personal excludes
 sSuppressAttrs="mic time" # attributes that will be eliminated always 
 sSensorMatch=".*" # any sensor name will have to match this regex
 sRoundTo=0.5
@@ -125,17 +125,17 @@ publish_to_mqtt_state() {
 # Parameters for hass_announce:
 # $1: MQTT "base topic" for states of all the device(s), e.g. "rtl/433" or "ffmuc"
 # $2: Generic device model, e.g. a certain temperature sensor model 
-# $3: MQTT "subtopic" for the specific device instance,  e.g. ${model}/${id}. ("..../set" indicates writeability)
-# $4: Text for specific device instance and sensor type info, e.g. "(${id}) Temp"
+# $3: MQTT "subtopic" for the specific device instance,  e.g. ${model}/${ident}. ("..../set" indicates writeability)
+# $4: Text for specific device instance and sensor type info, e.g. "(${ident}) Temp"
 # $5: JSON attribute carrying the state
 # $6: device "class" (of sensor, e.g. none, temperature, humidity, battery), 
 #     used in the announcement topic, in the unique id, in the (channel) name, and FOR the icon and the device class 
 # Examples:
 # hass_announce "$basetopic" "Rtl433 Bridge" "bridge/state"  "(0) SensorCount"   "value_json.sensorcount"   "none"
 # hass_announce "$basetopic" "Rtl433 Bridge" "bridge/state"  "(0) MqttLineCount" "value_json.mqttlinecount" "none"
-# hass_announce "$basetopic" "${model}" "${model}/${id}" "(${id}) Battery" "value_json.battery_ok" "battery"
-# hass_announce "$basetopic" "${model}" "${model}/${id}" "(${id}) Temp"  "value_json.temperature_C" "temperature"
-# hass_announce "$basetopic" "${model}" "${model}/${id}" "(${id}) Humid"  "value_json.humidity"       "humidity" 
+# hass_announce "$basetopic" "${model}" "${model}/${ident}" "(${ident}) Battery" "value_json.battery_ok" "battery"
+# hass_announce "$basetopic" "${model}" "${model}/${ident}" "(${ident}) Temp"  "value_json.temperature_C" "temperature"
+# hass_announce "$basetopic" "${model}" "${model}/${ident}" "(${ident}) Humid"  "value_json.humidity"       "humidity" 
 # hass_announce "ffmuc" "$ad_devname"  "$node/publi../localcl.." "Readable Name"  "value_json.count"   "$icontype"
 
 hass_announce() {
@@ -176,7 +176,7 @@ hass_announce() {
     esac
 
     _icon_str="${_icon_str:+,*icon*:*mdi:$_icon_str*}"
-    local  _device_string="*device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 with id $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433_version*}"
+    local  _device_string="*device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 with ident $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433_version*}"
     local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
            # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
            # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
@@ -201,7 +201,7 @@ append_json_keyval() {
     echo "${3/%\}/,\"$1\":$2\}}"
 }
 
-del_json_attributes() {
+del_json_attr() {
     local - && set +x  # del(.[] | .Country, .number, .Language)    OR   
     for s in "${@:1:($#-1)}" ; do
         s="${s//[^a-zA-Z0-9_ ]}" # only allow alnum chars for attr names for sec reasons
@@ -209,8 +209,27 @@ del_json_attributes() {
     done
     jq -c "del (${_d#,  })" <<< "${@:$#}" #   # expands to: "del(.xxx, .yyy, ...)"
 }
-#  set -x ; del_json_attributes "one" "two" ".four five six" "*_special*" '{"one":"1", "two":2  ,"three":3,"four":"4", "five":5, "_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
+#  set -x ; del_json_attr "one" "two" ".four five six" "*_special*" '{"one":"1", "two":2  ,"three":3,"four":"4", "five":5, "_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
 # results in: {"three":3,"_special2":"aa*?+bb"}
+
+has_json_attr() {
+    local -
+    # set +x
+    [ "${2//\"$1\":}" != "$2" -o "${2//\"$1\"[ ]*:}" != "$2" ]
+}
+# j='{"action":"null","battery":100}' ; has_json_attr action "$j" && echo yes ; has_json_attr jessy "$j" && echo no ; exit
+
+extract_json_val() {
+    local -
+    set +x
+    has_json_attr "$1" "$2" && jq -r ".$1 // empty" <<< "$2"
+}
+# j='{"action":"null","battery":100}' ; extract_json_val action "$j" ; exit
+
+assure_json_val() { # assure_json_val("battery",">9",'{"action":"null","battery":100}'')
+    has_json_attr "$1" "$3" &&  jq -e -r "if (.$1 ${2:+and .$1 $2} ) then "1" else empty end" <<< "$3"
+}
+# j='{"action":"null","battery":100}' ; assure_json_val battery ">999" "$j" ; assure_json_val battery ">9" "$j" ;  exit
 
 _moreopts="$( [ -r "$rtl2mqtt_optfile" ] && grep -v '#' < "$rtl2mqtt_optfile" | tr -c -d '[:alnum:]_. -' )"
 log_more "all options: $_moreopts $*"
@@ -360,7 +379,7 @@ trap_int() {    # log collected sensors to MQTT
     publish_to_mqtt_starred log "{*note*:*received signal INT*,$_info}"
     publish_to_mqtt_starred log "{*note*:*received signal INT, will publish collected sensors* }"
     publish_to_mqtt_state "*collected_sensors*:*${!aLastReadings[*]}* }"
-    nLastStatusSeconds="$( date +%s )"
+    nLastStatusSeconds="$(date +%s)"
  }
 trap 'trap_int' INT 
 
@@ -419,38 +438,40 @@ do
     fi
     nReceivedCount=$(( nReceivedCount + 1 ))
     
-    _time="$( jq -r '.time // empty' <<< "$data" )"  # ;  msgTime="2021-11-01 03:05:07"
+    _time="$( extract_json_val time "$data" )"  # ;  msgTime="2021-11-01 03:05:07"
     declare +i _str # to avoid octal interpretation
     _str="${_time:(-8):2}" ; msgHour="${_str#0}" 
     _str="${_time:(-5):2}" ; msgMinute="${_str#0}" 
     _str="${_time:(-2):2}" ; msgSecond="${_str#0}"
 
-    data="$( del_json_attributes "$sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )" # delete attributes and remove double-quotes around numbers
+    data="$( del_json_attr "$sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )" # delete attributes and remove double-quotes around numbers
     log "$data"
     [[ $bMoreVerbose ]] && echo_if_not_duplicate "READ: $data"
-    model="$(   jq -r '.model // empty' <<< "$data" )"    
-    id="$(      jq -r '.id    // empty' <<< "$data" )"
-    # protocol="$( jq -r '.protocol  // empty' <<< "$data" )"
-    model_id="${model}${id:+_$id}"
-    [[ $bVerbose ]] || expr match "$model_id" "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
-    [ "$sFreq" ]    && data="$( append_json_keyval "FREQM" "$sFreq" "$data" )"
+    channel="$(extract_json_val channel "$data" )"
+    model="$(   extract_json_val model  "$data" )"    
+    id="$(      extract_json_val id     "$data" )"
+    ident="${channel:-$id}" # prefer the channel over the id as the unique identifier, if present
+    # protocol="$( extract_json_val protocol protocol "$data" )"
+    model_ident="${model}${ident:+_$ident}"
+    [[ $bVerbose ]] || expr match "$model_ident" "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
+    [ "$sFreq" ]    && data="$( append_json_keyval FREQ "$sFreq" "$data" )"
     # exit
 
-    if [ "$model_id" = "_" ] ; then
+    if [ "$model_ident" = "_" ] ; then
         : # pass-through für "-M stats" messages
     elif [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
-        data="$( del_json_attributes "model id protocol" "$data" )" # other stuff: rssi subtype channel mod snr noise
+        data="$( del_json_attr "model protocol" "$data" )" # other stuff: id rssi subtype channel mod snr noise
 
-        _tmp="$( jq -e -r "if .temperature_C then .temperature_C / $sRoundTo + 0.5 | floor * $sRoundTo else empty end" <<< "$data" )" # round to 0.5° C
+        _tmp="$( has_json_attr temperature_C "$data" && jq -e -r "if .temperature_C then .temperature_C / $sRoundTo + 0.5 | floor * $sRoundTo else empty end" <<< "$data" )" # round to 0.5° C
         if [[ $_tmp ]] ; then
             _bHasTemperature="1"
-            data="$( jq -cer ".temperature_C = $_tmp" <<< "$data" )"
-            [[ ${aPrevTempVals[$model_id]} ]] || aPrevTempVals[$model_id]=0
+            data="$( jq -cer ".temperature_C = $_tmp" <<< "$data" )" # set to rounded temperature
+            [[ ${aPrevTempVals[$model_ident]} ]] || aPrevTempVals[$model_ident]=0
         else 
             _bHasTemperature=""
         fi
 
-        _tmp="$( jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 5 ) + 0.5 | floor * ( $sRoundTo * 5 ) | floor else empty end" <<< "$data" )" # round to 2,5%
+        _tmp="$( has_json_attr humidity "$data" && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 5 ) + 0.5 | floor * ( $sRoundTo * 5 ) | floor else empty end" <<< "$data" )" # round to 2,5%
         if [[ $_tmp ]] ; then
             _bHasHumidity="1"
             data="$( jq -cer ".humidity = $_tmp" <<< "$data" )"
@@ -458,86 +479,86 @@ do
             _bHasHumidity=""
         fi
 
-        # _bHasHumidity="$( jq -e -r 'if (.humidity and .humidity<=100) then "1" else empty end' <<< "$data" )"
-        _bHasRain="$(     jq -e -r 'if (.rain_mm  and .rain_mm  >0  ) then "1" else empty end' <<< "$data" )"
-        _bHasBatteryOK="$( jq -e -r 'if (.battery_ok and .battery_ok<=2) then "1" else empty end' <<< "$data" )"
-        _bHasPressureKPa="$( jq -e -r 'if (.pressure_kPa and .pressure_kPa<=9999) then "1" else empty end' <<< "$data" )"
-        _bHasCmd="$( jq -e -r 'if (.cmd) then "1" else empty end' <<< "$data" )"
+        # _bHasHumidity="$( assure_json_val humidity "<=100" "$data" )"
+        _bHasRain="$( assure_json_val rain_mm ">0" "$data" )"
+        _bHasBatteryOK="$( assure_json_val battery_ok "<=2" "$data" )"
+        _bHasPressureKPa="$(assure_json_val pressure_kPa "<=9999" "$data" )"
+        _bHasCmd="$(assure_json_val cmd "" "$data" )"
 
         if [[ $bRewriteMore ]] ; then
-            data="$( del_json_attributes ".transmit test" "$data" )"
-            data="$( jq -c 'if .button     == 0 then del(.button) else . end' <<< "$data" )"
-            # data="$( jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" )"
-            data="$( jq -c 'if .unknown1   == 0 then del(.unknown1)   else . end' <<< "$data" )"
+            data="$( del_json_attr ".transmit test" "$data" )"
+            data="$( has_json_attr button "$data"  &&  jq -c 'if .button     == 0 then del(.button) else . end' <<< "$data" || echo "$data" )"
+            # data="$( has_json_attr battery_ok "$data"  &&   jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" || echo "$data" )"
+            data="$( has_json_attr unknown1 "$data"  &&   jq -c 'if .unknown1   == 0 then del(.unknown1)   else . end' <<< "$data" || echo "$data" )"
 
             bSkipLine="$( jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
         fi
-        [[ $sDoLog == "dir" && $model ]] && echo "$( date +"%H:%M" ) $data" >> "$logbase/model/$model_id"
+        [[ $sDoLog == "dir" && $model ]] && echo "$( date +"%H:%M" ) $data" >> "$logbase/model/$model_ident"
         data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
     fi
 
-    nTimeStamp="$( date +%s )"
+    nTimeStamp="$(date +%s)"
     # Send message to MQTT or skip it ...
     if [[ $bSkipLine ]] ; then
         dbg "SKIPPING: $data"
         bSkipLine=""
         continue
-    elif [ "$model_id" = "_" ] ; then # stats message
+    elif [ "$model_ident" = "_" ] ; then # stats message
         [[ $bVerbose ]] && echo_if_not_duplicate "STATS: $data" && publish_to_mqtt_starred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
     elif [[ $bAlways || $data != "$prev_data" || $nTimeStamp -gt $((prev_time+nMinSecondsOther)) ]] ; then
         if [[ $bVerbose ]] ; then
-            [[ $bRewrite ]] && echo_if_not_duplicate "" "CLEANED: $model_id = $data" # resulting message for MQTT
-            expr match "$model_id" "$sSensorMatch.*"  > /dev/null || continue # skip if match
+            [[ $bRewrite ]] && echo_if_not_duplicate "" "CLEANED: $model_ident = $data" # resulting message for MQTT
+            expr match "$model_ident" "$sSensorMatch.*"  > /dev/null || continue # skip if match
         fi
         prev_data="$data"
         prev_time="$nTimeStamp"
-        prevval="${aLastReadings[$model_id]}"
-        prevvals="${aSecondLastReadings[$model_id]}"
-        aLastReadings[$model_id]="$data"
-        aCounts[$model_id]="$(( aCounts[$model_id] + 1 ))"
+        prevval="${aLastReadings[$model_ident]}"
+        prevvals="${aSecondLastReadings[$model_ident]}"
+        aLastReadings[$model_ident]="$data"
+        aCounts[$model_ident]="$(( aCounts[$model_ident] + 1 ))"
         # aProtocols[${protocol}]="$model"
         if [[ $bMoreVerbose ]] ; then
-            _prefix="SAME:  "  &&  [[ ${aLastReadings[$model_id]} != "$prevval" ]] && _prefix="CHANGE(${#aLastReadings[@]}):"
-            grep -E --color=auto '^[^/]*|/' <<< "$_prefix $model_id /${aLastReadings[$model_id]}/$prevval/"
+            _prefix="SAME:  "  &&  [[ ${aLastReadings[$model_ident]} != "$prevval" ]] && _prefix="CHANGE(${#aLastReadings[@]}):"
+            grep -E --color=auto '^[^/]*|/' <<< "$_prefix $model_ident /${aLastReadings[$model_ident]}/$prevval/"
         fi
         _nTimeDiff=$(( (_bHasTemperature || _bHasHumidity) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
         [[ $data == "$prevval"  ]] && _nTimeDiff=$(( _nTimeDiff * 2 ))
-        _bReady=$(( bAnnounceHass && aAnnounced[$model_id]!=1 && aCounts[$model_id] >= nMinOccurences ))
+        _bReady=$(( bAnnounceHass && aAnnounced[$model_ident]!=1 && aCounts[$model_ident] >= nMinOccurences ))
         if [[ $bVerbose ]] ; then
             echo "_nTimeDiff=$_nTimeDiff, _bReady=$_bReady, _bHasTemperature=$_bHasTemperature, _bHasHumidity=$_bHasHumidity, _bHasCmd=$_bHasCmd"
-            echo "Model_ID=$model_id, Readings=${aLastReadings[$model_id]}, Counts=${aCounts[$model_id]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp (${aLastSents[$model_id]})"
+            echo "model_ident=$model_ident, Readings=${aLastReadings[$model_ident]}, Counts=${aCounts[$model_ident]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp (${aLastSents[$model_ident]})"
         fi
         if (( _bReady )) ; then
             # For now, only the following certain types of sensors are announced for auto-discovery:
             if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd )) ; then
-                (( _bHasTemperature )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Temp"   "value_json.temperature" temperature
-                (( _bHasHumidity    )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Humid"  "value_json.humidity" humidity
-                (( _bHasPressureKPa )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
-                (( _bHasBatteryOK   )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Battery" "value_json.battery_ok" battery_ok
-                (( _bHasCmd         )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Cmd" "value_json.cmd" motion
-            #   [ "$sFreq"          ]  && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${id:-00}" "${id:+($id) }Freq" "value_json.FREQM" frequency
-                publish_to_mqtt_starred log "{*note*:*announced MQTT discovery: $model_id*}"
+                (( _bHasTemperature )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"   "value_json.temperature" temperature
+                (( _bHasHumidity    )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"  "value_json.humidity" humidity
+                (( _bHasPressureKPa )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
+                (( _bHasBatteryOK   )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery" "value_json.battery_ok" battery_ok
+                (( _bHasCmd         )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd" "value_json.cmd" motion
+            #   [ "$sFreq"          ]  && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Freq" "value_json.FREQ" frequency
+                publish_to_mqtt_starred log "{*note*:*announced MQTT discovery: $model_ident*}"
                 nAnnouncedCount=$(( nAnnouncedCount + 1 ))
                 publish_to_mqtt_state
                 sleep 1 # give readers a second to digest the announcement first
             else
-                publish_to_mqtt_starred log "{*note*:*not announced for MQTT discovery: $model_id*}"
+                publish_to_mqtt_starred log "{*note*:*not announced for MQTT discovery: $model_ident*}"
             fi
-            aAnnounced[$model_id]=1 # 1=dont reconsider for announcement 
+            aAnnounced[$model_ident]=1 # 1=dont reconsider for announcement 
         fi
-        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_id] + _nTimeDiff )) || "$_bReady" -eq 1 ]] ; then # rcvd data should be different from previous reading(s)!
-            aLastReadings[$model_id]="$data"
+        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || "$_bReady" -eq 1 ]] ; then # rcvd data should be different from previous reading(s)!
+            aLastReadings[$model_ident]="$data"
             if [[ $bRewrite && ( $_bHasTemperature || $_bHasHumidity ) ]] ; then
                 if [[ $data != "$prevval" ]] ; then
                     data="$( jq -cer '.NOTE  = "changed"' <<< "$data" )"
                 elif [[ $data == "$prevvals" ]] ; then
-                    data="$( jq -cer ".NOTE2 = \"eq 2nd last (c=${aCounts[$model_id]},_bR=$_bReady,_nTD=$_nTimeDiff)\"" <<< "$data" )"
+                    data="$( jq -cer ".NOTE2 = \"=2nd (#${aCounts[$model_ident]},_bR=$_bReady,${_nTimeDiff}s)\"" <<< "$data" )"
                 fi
-                aSecondLastReadings[$model_id]="$prevval"
+                aSecondLastReadings[$model_ident]="$prevval"
             fi
-            publish_to_mqtt_starred "$basetopic/${model:+$model/}${id:-00}" "${data//\"/*}" # ... publish values!
+            publish_to_mqtt_starred "$basetopic/${model:+$model/}${ident:-00}" "${data//\"/*}" # ... publish values!
             nMqttLines=$(( nMqttLines + 1 ))
-            aLastSents[$model_id]="$nTimeStamp"
+            aLastSents[$model_ident]="$nTimeStamp"
         else
             dbg "Suppressed a duplicate." 
         fi
@@ -547,16 +568,15 @@ do
 
     if (( nReadings > nPrevMax )) ; then   # a new max means we have a new sensor
         nPrevMax=nReadings
-        rtlChannel="$( jq -r '.channel  // empty' <<< "$data" )"
         _sensors="${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}${_bHasRain:+*rain*,}"
-        publish_to_mqtt_starred log "{*note*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$rtlChannel*,*sensors*:[${_sensors%,}]}"
+        publish_to_mqtt_starred log "{*note*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$channel*,*sensors*:[${_sensors%,}]}"
         publish_to_mqtt_state
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   
         # log once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*:[$(  _comma=""
             for KEY in "${!aLastReadings[@]}"; do
                 _reading="${aLastReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
-                echo -n "$_comma {*model_id*:*$KEY*,${_reading//\"/*}}"
+                echo -n "$_comma {*model_ident*:*$KEY*,${_reading//\"/*}}"
                 _comma=","
             done
         )] "
