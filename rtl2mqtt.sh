@@ -59,17 +59,19 @@ declare -A aAnnounced
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" # increases security
 
-alias _nx="local - && set +x" # stop local verbosity here
+alias _nx="local - && set +x" # stop local verbosity after this command
+_date() { printf "%($1)T" ; } # avoid invocating a seperate process
+cPid()  { sh -c 'echo $$' ; }
 
 log() {
     local - && set +x
     [ "$sDoLog" ] || return
     if [ "$sDoLog" = "dir" ] ; then
         rotate_logdir_sometimes "$logbase"
-        logfile="$logbase/$( date "+%H" )"
-        echo "$@" >> "$logfile"
+        logfile="$logbase/$(_date %H)"
+        echo "$(_date)" "$@" >> "$logfile"
     else
-        echo "$@" >> "$logbase.log"
+        echo "$(_date)" "$@" >> "$logbase.log"
     fi    
   }
 
@@ -94,7 +96,7 @@ expand_starred_string() {
 
 rotate_logdir_sometimes() {           # check for logfile rotation
     if (( msgMinute + msgSecond == 67 )) ; then  # try logfile rotation only with probalility of 1/60
-        cd "$1" && _files="$( find . -maxdepth 2 -type f -size +300k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 | xargs )"
+        cd "$1" && _files="$( find . -maxdepth 2 -type f -size +300k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 | xargs -0 )"
         msgSecond=$(( msgSecond + 1 ))
         [[ $_files ]] && log_more "Rotated files: $_files"
     fi
@@ -118,7 +120,7 @@ publish_to_mqtt_starred() {		# options: ( [expandableTopic ,] starred_message, m
   }
 
 publish_to_mqtt_state() {	
-    _statistics="*sensors*:${nReadings:-0},*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*lastfreq*:$sFreq,*currdate*:*$( date -Iseconds )*"
+    _statistics="*sensors*:${nReadings:-0},*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*lastfreq*:$sFreq,*currtime*:*$(_date)*"
     publish_to_mqtt_starred state "{$_statistics${1:+,$1}}"
 }
 
@@ -348,13 +350,13 @@ echo_if_not_duplicate() {
     fi
  }
 
-_info="*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[@]}*,*logto*:*$logbase ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther"
+_info="*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[@]}*,*logto*:*$logbase ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
 if [ -t 1 ] ; then # probably on a terminal
-    log "$sName starting at $( date )"
+    log "$sName starting at $(_date)"
     publish_to_mqtt_starred log "{*event*:*starting*,$_info}"
 else               # probably non-terminal
     delayedStartSecs=3
-    log "$sName starting in $delayedStartSecs secs from $( date )"
+    log "$sName starting in $delayedStartSecs secs from $(_date)"
     sleep "$delayedStartSecs"
     publish_to_mqtt_starred log "{*event*:*starting*,$_info,*note*:*delayed by $delayedStartSecs secs*,*sw_version*=*$rtl433_version*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*}"
 fi
@@ -363,7 +365,7 @@ fi
 [[ $bRemoveAnnouncements ]] && hass_remove_announce
 
 trap_exit() {   # stuff to do when exiting
-    log "$sName exit trapped at $( date ): removing announcements, then logging state."
+    log "$sName exit trapped at $(_date): removing announcements, then logging state."
     [ "$bRemoveAnnouncements" ] && hass_remove_announce
     _cppid="$rtlcoproc_PID" # avoid race condition after killing coproc
     [ "$rtlcoproc_PID" ] && kill "$rtlcoproc_PID" && dbg "Killed coproc PID $_cppid"
@@ -422,12 +424,19 @@ fi
 # set -x
 while read -r data <&"${rtlcoproc[0]}" ; _rc=$? && (( _rc==0  || _rc==27 ))      # ... and enter the loop
 do
+    _beginpid=$(cPid) # support debugging/optimizing number of processes started in within the loop
+    # dbg "diffpid=$(awk "BEGIN {print ( $(cPid) - $_beginpid - 3) }" )" 
+
     if [ "${data#{}" = "$data" ] ; then # possibly eliminating any non-JSON line (= starting with "{"), e.g. from rtl_433 debugging/error output
         _garbage1="Allocating " # "Allocating 15 zero-copy buffers"
         if [ "${data#$_garbage1}" = "$data" ] ; then # unless verbose...
             log "Non-JSON: $data"
+            [[ $bVerbose ]] && publish_to_mqtt_starred log "{*note*:*$sName: ${data//\*/+}*}"
         fi
+        data='""'
         continue
+    else 
+        dbg "RAW: $data"
     fi
     if [[ $data  =~ "center_frequency" ]] ; then
         data="${data//\" : /\":}" # beautify a bit, removing space(s)
@@ -444,7 +453,7 @@ do
     _str="${_time:(-5):2}" ; msgMinute="${_str#0}" 
     _str="${_time:(-2):2}" ; msgSecond="${_str#0}"
 
-    data="$( del_json_attr "$sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )" # delete attributes and remove double-quotes around numbers
+    data="$( del_json_attr "time $sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )" # delete attributes and remove double-quotes around numbers
     log "$data"
     [[ $bMoreVerbose ]] && echo_if_not_duplicate "READ: $data"
     channel="$(extract_json_val channel "$data" )"
@@ -453,7 +462,7 @@ do
     ident="${channel:-$id}" # prefer the channel over the id as the unique identifier, if present
     # protocol="$( extract_json_val protocol protocol "$data" )"
     model_ident="${model}${ident:+_$ident}"
-    [[ $bVerbose ]] || expr match "$model_ident" "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
+    [[ $bVerbose ]] || expr "$model_ident" : "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
     [ "$sFreq" ]    && data="$( append_json_keyval FREQ "$sFreq" "$data" )"
     # exit
 
@@ -493,11 +502,11 @@ do
 
             bSkipLine="$( jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
         fi
-        [[ $sDoLog == "dir" && $model ]] && echo "$( date +"%H:%M" ) $data" >> "$logbase/model/$model_ident"
+        [[ $sDoLog == "dir" && $model ]] && echo "$(_date %H:%M:%S) $data" >> "$logbase/model/$model_ident"
         data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
     fi
 
-    nTimeStamp="$(date +%s)"
+    nTimeStamp="$(_date %s)"
     # Send message to MQTT or skip it ...
     if [[ $bSkipLine ]] ; then
         dbg "SKIPPING: $data"
@@ -526,7 +535,8 @@ do
         _bReady=$(( bAnnounceHass && aAnnounced[$model_ident]!=1 && aCounts[$model_ident] >= nMinOccurences ))
         if [[ $bVerbose ]] ; then
             echo "_nTimeDiff=$_nTimeDiff, _bReady=$_bReady, _bHasTemperature=$_bHasTemperature, _bHasHumidity=$_bHasHumidity, _bHasCmd=$_bHasCmd"
-            echo "model_ident=$model_ident, Readings=${aLastReadings[$model_ident]}, Counts=${aCounts[$model_ident]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp (${aLastSents[$model_ident]})"
+            # (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 ))
+            echo "model_ident=$model_ident, Readings=${aLastReadings[$model_ident]}, Counts=${aCounts[$model_ident]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] ))"
         fi
         if (( _bReady )) ; then
             # For now, only the following certain types of sensors are announced for auto-discovery:
@@ -556,7 +566,7 @@ do
                 fi
                 aSecondLastReadings[$model_ident]="$prevval"
             fi
-            publish_to_mqtt_starred "$basetopic/${model:+$model/}${ident:-00}" "${data//\"/*}" # ... publish values!
+            publish_to_mqtt_starred "$basetopic/${model:+$model/}${ident:-00}" "${data//\"/*}" # ... publish the values!
             nMqttLines=$(( nMqttLines + 1 ))
             aLastSents[$model_ident]="$nTimeStamp"
         else
@@ -594,7 +604,7 @@ do
     fi
 done
 
-_msg="$sName: read failed (rc=$_rc), while-loop ended $( date ), rtlprocid now :${rtlcoproc_PID}:"
+_msg="$sName: read failed (rc=$_rc), while-loop ended $(printf "%()T"), rtlprocid now :${rtlcoproc_PID}:"
 log "$_msg" 
 publish_to_mqtt_starred log "{*event*:*endloop*,*note*:*$_msg*}"
 
