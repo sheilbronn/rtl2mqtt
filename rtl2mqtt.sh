@@ -378,12 +378,12 @@ trap_exit() {   # stuff to do when exiting
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
 
-trap_int() {    # log collected sensors to MQTT
+trap_int() {    # log all collected sensors to MQTT
     log "$sName received signal INT: logging state to MQTT"
     publish_to_mqtt_starred log "{*note*:*received signal INT*,$_info}"
     publish_to_mqtt_starred log "{*note*:*received signal INT, will publish collected sensors* }"
-    publish_to_mqtt_state "*collected_sensors*:*${!aLastReadings[*]}* }"
-    nLastStatusSeconds="$(date +%s)"
+    publish_to_mqtt_state "*collected_sensors*:*${!aLastReadings[*]}*"
+    nLastStatusSeconds="$(_date %s)"
  }
 trap 'trap_int' INT 
 
@@ -400,6 +400,13 @@ trap_usr2() {    # remove all home assistant announcements
     hass_remove_announce
   }
 trap 'trap_usr2' USR2 
+
+trap_other() {    # remove all home assistant announcements 
+    _msg="received other signal ..."
+    log "$sName $_msg"
+    publish_to_mqtt_starred log "{*note*:*$_msg*}"
+  }
+trap 'trap_other' URG XCPU XFSZ VTALRM PROF WINCH PWR SYS  IO
 
 if [[ $replayfile ]] ; then
     coproc rtlcoproc ( cat "$replayfile" )
@@ -482,7 +489,7 @@ do
             _bHasTemperature=""
         fi
 
-        _tmp="$( has_json_attr humidity "$data" && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 5 ) + 0.5 | floor * ( $sRoundTo * 5 ) | floor else empty end" <<< "$data" )" # round to 2,5%
+        _tmp="$( has_json_attr humidity "$data" && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 2 + 1 ) + 0.5 | floor * ( $sRoundTo * 5 ) | floor else empty end" <<< "$data" )" # round to 2,5%
         if [[ $_tmp ]] ; then
             _bHasHumidity="1"
             data="$( jq -cer ".humidity = $_tmp" <<< "$data" )"
