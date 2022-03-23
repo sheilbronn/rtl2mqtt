@@ -22,13 +22,13 @@ basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
 rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
-rtl433_opts=( -G 4 -M protocol -C si )  # generic options for everybody, e.g. -M level 
+rtl433_opts=( -G 4 -M protocol -M noise:300 -C si )  # generic options for everybody, e.g. -M level 
 # rtl433_opts=( "${rtl433_opts[@]}" $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 rtl433_opts_more="-R -162 -R -86 -R -31 -R -37 -R -129 -R 10 -R 53" # My specific personal excludes: 129: Eurochron-TH gives neg. temp's
 rtl433_opts_more="$rtl433_opts_more -R -10 -R -53 -R 198" # Additional specific personal excludes
-sSuppressAttrs="mic time" # attributes that will be eliminated always 
+sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
 sSensorMatch=".*" # any sensor name will have to match this regex
-sRoundTo=0.5
+sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 1+2*x (see below)
 
 # xx=( one "*.log" ) && xx=( "${xx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;         exit 0
 
@@ -236,7 +236,7 @@ assure_json_val() { # assure_json_val("battery",">9",'{"action":"null","battery"
 _moreopts="$( [ -r "$rtl2mqtt_optfile" ] && grep -v '#' < "$rtl2mqtt_optfile" | tr -c -d '[:alnum:]_. -' )"
 log_more "all options: $_moreopts $*"
 
-while getopts "?qh:pt:S:drl:f:F:M:H:AR:w:c:as:t:T:2vx" opt $_moreopts  "$@"
+while getopts "?qh:pt:S:drl:f:F:M:H:AR:Y:w:c:as:t:T:2vx" opt $_moreopts  "$@"
 do
     case "$opt" in
     \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x" 1>&2
@@ -273,7 +273,7 @@ do
     w)  sRoundTo="${OPTARG}" # round temperature to this value and humidity to 5-times this value
         ;;
     F)  if [ "$OPTARG" = "868" ] ; then
-            rtl433_opts=( "${rtl433_opts[@]}" -f 868.3M -s 256k -Y minmax ) # -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
+            rtl433_opts=( "${rtl433_opts[@]}" -f 868.3M -s 256k -Y minmax ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
         elif [ "$OPTARG" = "433" ] ; then
             rtl433_opts=( "${rtl433_opts[@]}" -f 433.9M ) #  -s 256k -f 433.92M for frequency 433... MhZ
         else
@@ -291,6 +291,8 @@ do
         ;;
     R)  rtl433_opts=( "${rtl433_opts[@]}" -R "$OPTARG" )
         ;;
+    Y)  rtl433_opts=( "${rtl433_opts[@]}" -Y "$OPTARG" )
+        ;;
     c)  nMinOccurences="$OPTARG" # MQTT announcements only after at least $nMinOccurences occurences...
         ;;
     T)  nMinSecondsOther="$OPTARG" # seconds before repeating the same reading
@@ -303,7 +305,7 @@ do
         ;;
     2)  bTryAlternate="yes" # ease experiments (not used in production)
         ;;
-    v)  [ "$bVerbose" = "yes" ] && { bMoreVerbose="yes" ; rtl433_opts=( "${rtl433_opts[@]}" -v ) ; }
+    v)  [ "$bVerbose" = "yes" ] && { bMoreVerbose="yes" ; rtl433_opts=( "-M noise:60" "${rtl433_opts[@]}" -v ) ; }
         bVerbose="yes" # more output for debugging purposes
         ;;
     x)  set -x # turn on shell debugging from here on
