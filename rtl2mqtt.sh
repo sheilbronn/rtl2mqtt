@@ -22,10 +22,11 @@ basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
 rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
-rtl433_opts=( -G 4 -M protocol -M noise:300 -C si )  # generic options for everybody, e.g. -M level 
+# rtl433_opts=( -G 4 -M protocol -M noise:300 -C si )  # generic options for everybody, e.g. -M level , -G deprecated
+rtl433_opts=(      -M protocol -M noise:300 -C si )  # generic options for everybody, e.g. -M level 
 # rtl433_opts=( "${rtl433_opts[@]}" $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 rtl433_opts_more="-R -162 -R -86 -R -31 -R -37 -R -129 -R 10 -R 53" # My specific personal excludes: 129: Eurochron-TH gives neg. temp's
-rtl433_opts_more="$rtl433_opts_more -R -10 -R -53 -R 198" # Additional specific personal excludes
+rtl433_opts_more="$rtl433_opts_more -R -10 -R -53 -R -198" # Additional specific personal excludes
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
 sSensorMatch=".*" # any sensor name will have to match this regex
 sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 1+2*x (see below)
@@ -334,8 +335,9 @@ fi
 [ "$( command -v jq )" ] || { log "$sName: jq must be available!" ; exit 1 ; }
 
 _startup="$( $rtl433_command "${rtl433_opts[@]}" -T 1 2>&1 )"
-sdr_tuner="$( awk -- '/^Found /   { print gensub("Found ", "",1, gensub(" tuner$", "",1,$0)) ; exit }' <<< "$_startup" )" # matches "Found Fitipower FC0013 tuner"
-sdr_freq="$(  awk -- '/^Tuned to/ { print gensub("MHz.", "",1,$3)                            ; exit }' <<< "$_startup" )" # matches "Tuned to 433.900MHz."
+sdr_tuner="$(  awk -- '/^Found /   { print gensub("Found ", "",1, gensub(" tuner$", "",1,$0)) ; exit }' <<< "$_startup" )" # matches "Found Fitipower FC0013 tuner"
+sdr_freq="$(   awk -- '/^Tuned to/ { print gensub("MHz.", "",1,$3)                            ; exit }' <<< "$_startup" )" # matches "Tuned to 433.900MHz."
+conf_files="$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_startup" | xargs ls -1 2>/dev/null )" # try to find an existing config file
 sFreq="${sdr_freq/%.*/}" # reduces to "433"
 basetopic="$sRtlPrefix/$sFreq" # derives first setting for basetopic
 
@@ -375,6 +377,7 @@ trap_exit() {   # stuff to do when exiting
     nReadings=${#aLastReadings[@]}
     publish_to_mqtt_state "*collected_sensors*:*${!aLastReadings[*]}*"
     publish_to_mqtt_starred log "{*note*:*exiting*}"
+    rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
 
@@ -382,7 +385,7 @@ trap_int() {    # log all collected sensors to MQTT
     log "$sName received signal INT: logging state to MQTT"
     publish_to_mqtt_starred log "{*note*:*received signal INT*,$_info}"
     publish_to_mqtt_starred log "{*note*:*received signal INT, will publish collected sensors* }"
-    publish_to_mqtt_state "*collected_sensors*:*${!aLastReadings[*]}*"
+    publish_to_mqtt_state "*collected_sensors*:*${!aLastReadings[*]}* }"
     nLastStatusSeconds="$(_date %s)"
  }
 trap 'trap_int' INT 
@@ -411,12 +414,17 @@ trap 'trap_other' URG XCPU XFSZ VTALRM PROF WINCH PWR SYS  IO
 if [[ $replayfile ]] ; then
     coproc rtlcoproc ( cat "$replayfile" )
 else
+    if [ -z "$conf_files" ] ; then
+        conf_file="$( mktemp /tmp/$sName.XXXXX.conf )"
+        rtl_433 -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { gsub("[\\]\\[\\*]","",$1) ; print "protocol " $1 }' > $conf_file # create file of all supported protocols
+        dbg "CREATED conf file: $conf_file"
+    fi
     if [[ $bVerbose || -t 1 ]] ; then
         log_more "options for rtl_433 are: ${rtl433_opts[@]}"
         (( nMinOccurences > 1 )) && log_more "Will do MQTT announcements only after at least $nMinOccurences occurences..."
     fi 
     # Start the RTL433 listener as a bash coprocess .... # https://unix.stackexchange.com/questions/459367/using-shell-variables-for-command-options
-    coproc rtlcoproc ( $rtl433_command "${rtl433_opts[@]}" -F json  2>&1  )   # options are not double-quoted on purpose 
+    coproc rtlcoproc ( $rtl433_command ${conf_file:+-c $conf_file} "${rtl433_opts[@]}" -F json  2>&1  )   # options are not double-quoted on purpose 
     # -F "mqtt://$mqtthost:1883,events,devices"
     renice -n 17 "${rtlcoproc_PID}"
 fi 
