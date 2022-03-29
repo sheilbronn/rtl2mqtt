@@ -280,7 +280,7 @@ do
             rtl433_opts=( "${rtl433_opts[@]}" -f "$OPTARG" )
         fi
         basetopic="$sRtlPrefix/$OPTARG"
-        nHopSecs=${nHopSecs:-61} # (60/2)+11 or 60+1 or 60+21
+        nHopSecs=${nHopSecs:-23} # ${nHopSecs:-61} # (60/2)+11 or 60+1 or 60+21 or 7, i.e. should be a coprime to 60sec
         nStatsSec=$(( nHopSecs - 1 ))
         ;;
     M)  rtl433_opts=( "${rtl433_opts[@]}" -M "$OPTARG" )
@@ -315,6 +315,7 @@ done
 
 shift "$((OPTIND-1))"   # Discard options processed by getopts, any remaining options will be passed to mosquitto_sub further down on
 
+# fixed in rtl_433 8e343ed: the real hop secs seam to be 1 higher than the value passed to -H...
 rtl433_opts=( "${rtl433_opts[@]}" ${nHopSecs:+-H $nHopSecs} ${nStatsSec:+-M stats:1:$nStatsSec} )
 # echo "${rtl433_opts[@]}" && exit 1
 
@@ -409,7 +410,7 @@ trap_other() {    # remove all home assistant announcements
     log "$sName $_msg"
     publish_to_mqtt_starred log "{*note*:*$_msg*}"
   }
-trap 'trap_other' URG XCPU XFSZ VTALRM PROF WINCH PWR SYS  IO
+trap 'trap_other' URG XCPU XFSZ VTALRM PROF WINCH PWR SYS
 
 if [[ $replayfile ]] ; then
     coproc rtlcoproc ( cat "$replayfile" )
@@ -484,9 +485,7 @@ do
     [[ $bVerbose ]] || expr "$model_ident" : "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
     # [ "$sFreq" ]    && data="$( append_json_keyval FREQ "$sFreq" "$data" )"
 
-    if [ "$model_ident" = "_" ] ; then
-        : # pass-through für "-M stats" messages
-    elif [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
+    if [[ $model_ident && $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
         data="$( del_json_attr "model protocol mod rssi snr noise" "$data" )" # other stuff: id rssi subtype channel mod snr noise
         # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
 
@@ -523,7 +522,8 @@ do
         fi
         [[ $sDoLog == "dir" && $model ]] && echo "$(_date %H:%M:%S) $data" >> "$logbase/model/$model_ident"
         data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
-        data="$( del_json_attr "freq" "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
+        # data="$( del_json_attr "freq2" "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
+        has_json_attr freq "$data"  &&  data="$( jq -cer '.freq=(.freq|floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
     fi
 
     nTimeStamp="$(_date %s)"
@@ -532,7 +532,7 @@ do
         dbg "SKIPPING: $data"
         bSkipLine=""
         continue
-    elif [ "$model_ident" = "_" ] ; then # stats message
+    elif [ -z "$model_ident" ] ; then # stats message
         [[ $bVerbose ]] && echo_if_not_duplicate "STATS: $data" && publish_to_mqtt_starred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
     elif [[ $bAlways || $data != "$prev_data" || $nTimeStamp -gt $((prev_time+nMinSecondsOther)) ]] ; then
         if [[ $bVerbose ]] ; then
