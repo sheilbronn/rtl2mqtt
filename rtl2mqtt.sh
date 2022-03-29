@@ -582,7 +582,7 @@ do
                 if [[ $data != "$prevval" ]] ; then
                     data="$( jq -cer '.NOTE  = "changed"' <<< "$data" )"
                 elif [[ $data == "$prevvals" ]] ; then
-                    data="$( jq -cer ".NOTE2 = \"=2nd (#${aCounts[$model_ident]},_bR=$_bReady,${_nTimeDiff}s)\"" <<< "$data" )"
+                    [[ $bVerbose ]] && data="$( jq -cer ".NOTE2 = \"=2nd (#${aCounts[$model_ident]},_bR=$_bReady,${_nTimeDiff}s)\"" <<< "$data" )"
                 fi
                 aSecondLastReadings[$model_ident]="$prevval"
             fi
