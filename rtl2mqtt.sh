@@ -369,6 +369,7 @@ fi
 [[ $bRemoveAnnouncements ]] && hass_remove_announce
 
 trap_exit() {   # stuff to do when exiting
+    local - && set +x
     log "$sName exit trapped at $(_date): removing announcements, then logging state."
     [ "$bRemoveAnnouncements" ] && hass_remove_announce
     _cppid="$rtlcoproc_PID" # avoid race condition after killing coproc
@@ -416,7 +417,8 @@ if [[ $replayfile ]] ; then
 else
     if [ -z "$conf_files" ] ; then
         conf_file="$( mktemp /tmp/$sName.XXXXX.conf )"
-        rtl_433 -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { gsub("[\\]\\[\\*]","",$1) ; print "protocol " $1 }' > $conf_file # create file of all supported protocols
+        # create file of all supported protocols:
+        rtl_433 -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { gsub("[\\]\\[\\*]","",$1) ; print "protocol " $1 }' >> $conf_file || { log_more "Can't fill $conf_file" ; exit 1 ; }
         dbg "CREATED conf file: $conf_file"
     fi
     if [[ $bVerbose || -t 1 ]] ; then
