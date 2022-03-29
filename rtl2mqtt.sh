@@ -23,10 +23,9 @@ rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
 rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
 # rtl433_opts=( -G 4 -M protocol -M noise:300 -C si )  # generic options for everybody, e.g. -M level , -G deprecated
-rtl433_opts=(      -M protocol -M noise:300 -C si )  # generic options for everybody, e.g. -M level 
+rtl433_opts=(      -M protocol -M noise:300 -M level -C si )  # generic options for everybody, e.g. -M level 
 # rtl433_opts=( "${rtl433_opts[@]}" $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
-rtl433_opts_more="-R -162 -R -86 -R -31 -R -37 -R -129 -R 10 -R 53" # My specific personal excludes: 129: Eurochron-TH gives neg. temp's
-rtl433_opts_more="$rtl433_opts_more -R -10 -R -53 -R -198" # Additional specific personal excludes
+rtl433_opts_more="-R -31 -R 53 -R -86" # My specific personal excludes
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
 sSensorMatch=".*" # any sensor name will have to match this regex
 sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 1+2*x (see below)
@@ -338,7 +337,7 @@ _startup="$( $rtl433_command "${rtl433_opts[@]}" -T 1 2>&1 )"
 sdr_tuner="$(  awk -- '/^Found /   { print gensub("Found ", "",1, gensub(" tuner$", "",1,$0)) ; exit }' <<< "$_startup" )" # matches "Found Fitipower FC0013 tuner"
 sdr_freq="$(   awk -- '/^Tuned to/ { print gensub("MHz.", "",1,$3)                            ; exit }' <<< "$_startup" )" # matches "Tuned to 433.900MHz."
 conf_files="$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_startup" | xargs ls -1 2>/dev/null )" # try to find an existing config file
-sFreq="${sdr_freq/%.*/}" # reduces to "433"
+sFreq="${sdr_freq/%.*/}" # reduces val to "433"
 basetopic="$sRtlPrefix/$sFreq" # derives first setting for basetopic
 
 echo_if_not_duplicate() {
@@ -415,12 +414,12 @@ trap 'trap_other' URG XCPU XFSZ VTALRM PROF WINCH PWR SYS  IO
 if [[ $replayfile ]] ; then
     coproc rtlcoproc ( cat "$replayfile" )
 else
-    if [ -z "$conf_files" ] ; then
-        conf_file="$( mktemp /tmp/$sName.XXXXX.conf )"
-        # create file of all supported protocols:
-        rtl_433 -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { gsub("[\\]\\[\\*]","",$1) ; print "protocol " $1 }' >> $conf_file || { log_more "Can't fill $conf_file" ; exit 1 ; }
-        dbg "CREATED conf file: $conf_file"
-    fi
+    # if [ -z "$conf_files" ] ; then
+    #    conf_file="$( mktemp /tmp/$sName.XXXXX.conf )"
+    #    # create file of all supported protocols:
+    #    rtl_433 -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { gsub("[\\]\\[\\*]","",$1) ; print "protocol " $1 }' >> $conf_file || { log_more "Can't fill $conf_file" ; exit 1 ; }
+    #    dbg "CREATED conf file: $conf_file"
+    # fi
     if [[ $bVerbose || -t 1 ]] ; then
         log_more "options for rtl_433 are: ${rtl433_opts[@]}"
         (( nMinOccurences > 1 )) && log_more "Will do MQTT announcements only after at least $nMinOccurences occurences..."
@@ -478,17 +477,18 @@ do
     channel="$(extract_json_val channel "$data" )"
     model="$(   extract_json_val model  "$data" )"    
     id="$(      extract_json_val id     "$data" )"
+    sFreq="$(    extract_json_val freq   "$data" )" && sFreq=${sFreq%.[0-9]*} &&  basetopic="$sRtlPrefix/$sFreq"
     ident="${channel:-$id}" # prefer the channel over the id as the unique identifier, if present
-    # protocol="$( extract_json_val protocol protocol "$data" )"
+    # protocol="$( extract_json_val protocol "$data" )"
     model_ident="${model}${ident:+_$ident}"
     [[ $bVerbose ]] || expr "$model_ident" : "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
-    [ "$sFreq" ]    && data="$( append_json_keyval FREQ "$sFreq" "$data" )"
-    # exit
+    # [ "$sFreq" ]    && data="$( append_json_keyval FREQ "$sFreq" "$data" )"
 
     if [ "$model_ident" = "_" ] ; then
         : # pass-through für "-M stats" messages
     elif [[ $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
-        data="$( del_json_attr "model protocol" "$data" )" # other stuff: id rssi subtype channel mod snr noise
+        data="$( del_json_attr "model protocol mod rssi snr noise" "$data" )" # other stuff: id rssi subtype channel mod snr noise
+        # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
 
         _tmp="$( has_json_attr temperature_C "$data" && jq -e -r "if .temperature_C then .temperature_C / $sRoundTo + 0.5 | floor * $sRoundTo else empty end" <<< "$data" )" # round to 0.5° C
         if [[ $_tmp ]] ; then
@@ -523,6 +523,7 @@ do
         fi
         [[ $sDoLog == "dir" && $model ]] && echo "$(_date %H:%M:%S) $data" >> "$logbase/model/$model_ident"
         data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
+        data="$( del_json_attr "freq" "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
     fi
 
     nTimeStamp="$(_date %s)"
