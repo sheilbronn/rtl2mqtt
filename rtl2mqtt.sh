@@ -120,7 +120,7 @@ publish_to_mqtt_starred() {		# options: ( [expandableTopic ,] starred_message, m
   }
 
 publish_to_mqtt_state() {	
-    _statistics="*sensors*:${nReadings:-0},*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*lastfreq*:$sFreq,*currtime*:*$(_date)*"
+    _statistics="*sensors*:${nReadings:-0},*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*lastfreq*:$sBand,*currtime*:*$(_date)*"
     publish_to_mqtt_starred state "{$_statistics${1:+,$1}}"
 }
 
@@ -149,7 +149,7 @@ hass_announce() {
     local _dev_class="${6#none}" # dont wont "none" as string for dev_class
 	local _state_class
     local _jsonpath="${5#value_json.}" # && _jsonpath="${_jsonpath//[ \/-]/}"
-    local _jsonpath_red="$( echo "$_jsonpath" | tr -d "][ /-_" )" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
+    local _jsonpath_red="$( echo "$_jsonpath" | tr -d "][ /-_" )$sBand" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
     local _configtopicpart="$( echo "$3" | tr -d "][ /-" | tr "[:upper:]" "[:lower:]" )"
     local _topic="${sHassPrefix}/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
           _configtopicpart="${_configtopicpart^[a-z]*}" # uppercase first letter for readability
@@ -200,6 +200,7 @@ hass_remove_announce() {
 # append_json_keyval "x:2" '{one:1}'  --> '{one:1,x:2}'
 append_json_keyval() {
     local - && set +x
+    [ "$2" ] || echo "$3"
     echo "${3/%\}/,\"$1\":$2\}}"
 }
 
@@ -273,15 +274,15 @@ do
     w)  sRoundTo="${OPTARG}" # round temperature to this value and humidity to 5-times this value
         ;;
     F)  if [ "$OPTARG" = "868" ] ; then
-            rtl433_opts=( "${rtl433_opts[@]}" -f 868.3M -s 256k -Y minmax ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
+            rtl433_opts=( "${rtl433_opts[@]}" -f 868.3M -s 1024k -Y minmax ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
         elif [ "$OPTARG" = "433" ] ; then
             rtl433_opts=( "${rtl433_opts[@]}" -f 433.9M ) #  -s 256k -f 433.92M for frequency 433... MhZ
         else
             rtl433_opts=( "${rtl433_opts[@]}" -f "$OPTARG" )
         fi
         basetopic="$sRtlPrefix/$OPTARG"
-        nHopSecs=${nHopSecs:-23} # ${nHopSecs:-61} # (60/2)+11 or 60+1 or 60+21 or 7, i.e. should be a coprime to 60sec
-        nStatsSec=$(( nHopSecs - 1 ))
+        nHopSecs=${nHopSecs:-61} # ${nHopSecs:-61} # (60/2)+11 or 60+1 or 60+21 or 7, i.e. should be a coprime to 60sec
+        nStatsSec=$(( 3 * (nHopSecs - 1) ))
         ;;
     M)  rtl433_opts=( "${rtl433_opts[@]}" -M "$OPTARG" )
         ;;
@@ -338,8 +339,8 @@ _startup="$( $rtl433_command "${rtl433_opts[@]}" -T 1 2>&1 )"
 sdr_tuner="$(  awk -- '/^Found /   { print gensub("Found ", "",1, gensub(" tuner$", "",1,$0)) ; exit }' <<< "$_startup" )" # matches "Found Fitipower FC0013 tuner"
 sdr_freq="$(   awk -- '/^Tuned to/ { print gensub("MHz.", "",1,$3)                            ; exit }' <<< "$_startup" )" # matches "Tuned to 433.900MHz."
 conf_files="$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_startup" | xargs ls -1 2>/dev/null )" # try to find an existing config file
-sFreq="${sdr_freq/%.*/}" # reduces val to "433"
-basetopic="$sRtlPrefix/$sFreq" # derives first setting for basetopic
+sBand="${sdr_freq/%.*/}" # reduces val to "433" ... 
+basetopic="$sRtlPrefix/$sBand" # derives first setting for basetopic
 
 echo_if_not_duplicate() {
     local - && set +x
@@ -393,7 +394,7 @@ trap 'trap_int' INT
 
 trap_usr1() {    # toggle verbosity 
     [ "$bVerbose" ] && bVerbose="" || bVerbose="yes"
-    _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}"
+    _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs"
     log "$sName $_msg"
     publish_to_mqtt_starred log "{*note*:*$_msg*}"
   }
@@ -446,44 +447,47 @@ do
     _beginpid=$(cPid) # support debugging/optimizing number of processes started in within the loop
     # dbg "diffpid=$(awk "BEGIN {print ( $(cPid) - $_beginpid - 3) }" )" 
 
-    if [ "${data#{}" = "$data" ] ; then # possibly eliminating any non-JSON line (= starting with "{"), e.g. from rtl_433 debugging/error output
+    if [ "${data#rtlsdr_set_center_freq}" != "$data" ] ; then 
+        # convert frnug msg "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON)
+        data="$( awk '{ printf "{\"center_frequency\":%d}",$2 }' <<< "$data" )"
+    elif [ "${data#{}" = "$data" ] ; then # possibly eliminating any non-JSON line (= starting with "{"), e.g. from rtl_433 debugging/error output
         _garbage1="Allocating " # "Allocating 15 zero-copy buffers"
         if [ "${data#$_garbage1}" = "$data" ] ; then # unless verbose...
             log "Non-JSON: $data"
-            [[ $bVerbose ]] && publish_to_mqtt_starred log "{*note*:*$sName: ${data//\*/+}*}"
+            [[ $bVerbose ]] && publish_to_mqtt_starred log "{*note*:*${data//\*/+}*}" # convert to simple JSON msg
         fi
         data='""'
         continue
-    else 
-        dbg "RAW: $data"
     fi
-    if [[ $data  =~ "center_frequency" ]] ; then
+    dbg "RAW: $data"
+    if [[ $data =~ "center_frequency" ]] ; then
         data="${data//\" : /\":}" # beautify a bit, removing space(s)
-        sFreq="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
-        basetopic="$sRtlPrefix/$sFreq"
+        sBand="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
+        basetopic="$sRtlPrefix/$sBand"
         [[ $bVerbose ]] && echo_if_not_duplicate "RAW: $data" && publish_to_mqtt_starred log "${data//\"/*}"
         continue
     fi
     nReceivedCount=$(( nReceivedCount + 1 ))
     
     _time="$( extract_json_val time "$data" )"  # ;  msgTime="2021-11-01 03:05:07"
-    declare +i _str # to avoid octal interpretation
+    declare +i _str # to avoid octal interpretation from leading zeroes
     _str="${_time:(-8):2}" ; msgHour="${_str#0}" 
     _str="${_time:(-5):2}" ; msgMinute="${_str#0}" 
     _str="${_time:(-2):2}" ; msgSecond="${_str#0}"
 
     data="$( del_json_attr "time $sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )" # delete attributes and remove double-quotes around numbers
-    log "$data"
     [[ $bMoreVerbose ]] && echo_if_not_duplicate "READ: $data"
     channel="$(extract_json_val channel "$data" )"
     model="$(   extract_json_val model  "$data" )"    
     id="$(      extract_json_val id     "$data" )"
-    sFreq="$(    extract_json_val freq   "$data" )" && sFreq=${sFreq%.[0-9]*} &&  basetopic="$sRtlPrefix/$sFreq"
+    has_json_attr freq && sBand="$(extract_json_val freq "$data")" && sBand=${sBand%.[0-9]*} && sBand=${sBand/434/433} &&  basetopic="$sRtlPrefix/$sBand"
+    # [[ $_tmp ]] && sBand="$_tmp"
     ident="${channel:-$id}" # prefer the channel over the id as the unique identifier, if present
     # protocol="$( extract_json_val protocol "$data" )"
     model_ident="${model}${ident:+_$ident}"
+
+    log "$(append_json_keyval BAND "${model:+$sBand}" "$data")" # only append band when model is given, i.e. not for non-sensor messages.
     [[ $bVerbose ]] || expr "$model_ident" : "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
-    # [ "$sFreq" ]    && data="$( append_json_keyval FREQ "$sFreq" "$data" )"
 
     if [[ $model_ident && $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
         data="$( del_json_attr "model protocol mod rssi snr noise" "$data" )" # other stuff: id rssi subtype channel mod snr noise
@@ -498,7 +502,7 @@ do
             _bHasTemperature=""
         fi
 
-        _tmp="$( has_json_attr humidity "$data" && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 2 + 1 ) + 0.5 | floor * ( $sRoundTo * 5 ) | floor else empty end" <<< "$data" )" # round to 2,5%
+        _tmp="$( has_json_attr humidity "$data" && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 2 + 1 ) + 0.5 | floor * ( $sRoundTo * 2 + 1 ) | floor else empty end" <<< "$data" )" # round to 2,5%
         if [[ $_tmp ]] ; then
             _bHasHumidity="1"
             data="$( jq -cer ".humidity = $_tmp" <<< "$data" )"
@@ -524,6 +528,10 @@ do
         data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
         # data="$( del_json_attr "freq2" "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
         has_json_attr freq "$data"  &&  data="$( jq -cer '.freq=(.freq|floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
+        _factor=1
+        has_json_attr freq1 "$data" &&  data="$( jq -cer ".freq1=(.freq1 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq1
+        has_json_attr freq2 "$data" &&  data="$( jq -cer ".freq2=(.freq2 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq2
+        data="$( append_json_keyval BAND "$sBand" "$data" )"
     fi
 
     nTimeStamp="$(_date %s)"
@@ -561,12 +569,12 @@ do
         if (( _bReady )) ; then
             # For now, only the following certain types of sensors are announced for auto-discovery:
             if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd )) ; then
-                (( _bHasTemperature )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"   "value_json.temperature" temperature
-                (( _bHasHumidity    )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"  "value_json.humidity" humidity
-                (( _bHasPressureKPa )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
-                (( _bHasBatteryOK   )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery" "value_json.battery_ok" battery_ok
-                (( _bHasCmd         )) && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd" "value_json.cmd" motion
-            #   [ "$sFreq"          ]  && hass_announce "$basetopic" "$model ${sFreq}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Freq" "value_json.FREQ" frequency
+                (( _bHasTemperature )) && hass_announce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"   "value_json.temperature" temperature
+                (( _bHasHumidity    )) && hass_announce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"  "value_json.humidity" humidity
+                (( _bHasPressureKPa )) && hass_announce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
+                (( _bHasBatteryOK   )) && hass_announce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery" "value_json.battery_ok" battery_ok
+                (( _bHasCmd         )) && hass_announce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd" "value_json.cmd" motion
+            #   [ "$sBand"          ]  && hass_announce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Freq" "value_json.FREQ" frequency
                 publish_to_mqtt_starred log "{*note*:*announced MQTT discovery: $model_ident*}"
                 nAnnouncedCount=$(( nAnnouncedCount + 1 ))
                 publish_to_mqtt_state
