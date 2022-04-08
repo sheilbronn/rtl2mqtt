@@ -3,18 +3,17 @@
 # rtl2mqtt receives events from a RTL433 SDR and forwards them to a MQTT broker
 
 # Adapted and enhanced for flexibility by "sheilbronn"
-# (inspired by work from "IT-Berater" and M.  Verleun)
+# (inspired by work from "IT-Berater" and M. Verleun)
 
 # set -o noglob     # file name globbing is neither needed nor wanted (for security reasons)
 set -o noclobber  # disable for security reasons
-# set -o pipefail
 sName="${0##*/}" && sName="${sName%.sh}"
 sMID="$( basename "${sName// /}" .sh )"
-sID="${sMID}"
+sID="$sMID"
 rtl2mqtt_optfile="$HOME/.$sName"
 
 commandArgs="$*"
-logbase="/var/log/$( basename "${sName// /}" .sh )" # /var/log is preferred, but will default to /tmp if not useable
+dLog="/var/log/$sMID" # /var/log is default, but will be changed to /tmp if not useable
 sManufacturer="RTL"
 sHassPrefix="homeassistant/sensor"
 sRtlPrefix="rtl"
@@ -22,7 +21,6 @@ basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
 rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
-# rtl433_opts=( -G 4 -M protocol -M noise:300 -C si )  # generic options for everybody, e.g. -M level , -G deprecated
 rtl433_opts=(      -M protocol -M noise:300 -M level -C si )  # generic options for everybody, e.g. -M level 
 # rtl433_opts=( "${rtl433_opts[@]}" $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 rtl433_opts_more="-R -31 -R 53 -R -86" # My specific personal excludes
@@ -34,6 +32,7 @@ sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 1+2*x (see
 
 declare -i nHopSecs
 declare -i nStatsSec=900
+declare -r sSuggSampleRate=1024k
 declare -i nLogMinutesPeriod=60
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
@@ -67,12 +66,12 @@ log() {
     local - && set +x
     [ "$sDoLog" ] || return
     if [ "$sDoLog" = "dir" ] ; then
-        rotate_logdir_sometimes "$logbase"
-        logfile="$logbase/$(_date %H)"
+        rotate_logdir_sometimes "$dLog"
+        logfile="$dLog/$(_date %H)"
         echo "$(_date %d %T)" "$*" >> "$logfile"
         [[ $bVerbose && ${*#{} != "$*" ]] && { printf "%s" "$*" ; echo "" ; } >> "$logfile.JSON"
     else
-        echo "$(_date)" "$@" >> "$logbase.log"
+        echo "$(_date)" "$@" >> "$dLog.log"
     fi    
   }
 
@@ -273,18 +272,18 @@ do
         fi
         bRewrite="yes"  # rewrite and simplify output
         ;;
-    l)  logbase="$OPTARG" 
+    l)  dLog="$OPTARG" 
         ;;
     f)  fReplayfile="$OPTARG" # file to replay (e.g. for debugging), instead of rtl_433 output
         ;;
     w)  sRoundTo="${OPTARG}" # round temperature to this value and humidity to 5-times this value
         ;;
     F)  if [ "$OPTARG" = "868" ] ; then
-            rtl433_opts=( "${rtl433_opts[@]}" -f 868.3M -s 1024k -Y minmax ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
+            rtl433_opts=( "${rtl433_opts[@]}" -f 868.3M -s $sSuggSampleRate -Y minmax ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
         elif [ "$OPTARG" = "915" ] ; then
-            rtl433_opts=( "${rtl433_opts[@]}" -f 915M -s 1024k -Y minmax ) 
+            rtl433_opts=( "${rtl433_opts[@]}" -f 915M -s $sSuggSampleRate -Y minmax ) 
         elif [ "$OPTARG" = "27" ] ; then
-            rtl433_opts=( "${rtl433_opts[@]}" -f 27.161M -s 1024k -Y minmax ) 
+            rtl433_opts=( "${rtl433_opts[@]}" -f 27.161M -s $sSuggSampleRate -Y minmax ) 
         elif [ "$OPTARG" = "433" ] ; then
             rtl433_opts=( "${rtl433_opts[@]}" -f 433.9M ) #  -s 256k -f 433.92M for frequency 433... MhZ
         else
@@ -330,17 +329,17 @@ shift "$((OPTIND-1))"   # Discard options processed by getopts, any remaining op
 rtl433_opts=( "${rtl433_opts[@]}" ${nHopSecs:+-H $nHopSecs} ${nStatsSec:+-M stats:1:$nStatsSec} )
 # echo "${rtl433_opts[@]}" && exit 1
 
-if [ -f "${logbase}.log" ] ; then  # one logfile only
+if [ -f "${dLog}.log" ] ; then  # one logfile only
     sDoLog="file"
 else
     sDoLog="dir"
-    if mkdir -p "$logbase/model" && [ -w "$logbase" ] ; then
+    if mkdir -p "$dLog/model" && [ -w "$dLog" ] ; then
         :
     else
-        logbase="/tmp/${sName// /}" && log_more "Defaulting to logbase $logbase"
-        mkdir -p "$logbase/model" || { log "Can't mkdir $logbase/model" ; exit 1 ; }
+        dLog="/tmp/${sName// /}" && log_more "Defaulting to dLog $dLog"
+        mkdir -p "$dLog/model" || { log "Can't mkdir $dLog/model" ; exit 1 ; }
     fi
-    cd "$logbase" || { log "Can't cd to $logbase" ; exit 1 ; }
+    cd "$dLog" || { log "Can't cd to $dLog" ; exit 1 ; }
 fi
 
 [ "$( command -v jq )" ] || { log "$sName: jq must be available!" ; exit 1 ; }
@@ -370,7 +369,7 @@ echo_if_not_duplicate() {
     fi
  }
 
-_info="*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[@]}*,*logto*:*$logbase ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
+_info="*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[@]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
 if [ -t 1 ] ; then # probably on a terminal
     log "$sName starting at $(_date)"
     publish_to_mqtt_starred log "{*event*:*starting*,$_info}"
@@ -548,7 +547,7 @@ do
 
             bSkipLine="$( jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
         fi
-        [[ $sDoLog == "dir" && $model ]] && echo "$(_date %d %H:%M:%S) $data" >> "$logbase/model/$model_ident"
+        [[ $sDoLog == "dir" && $model ]] && echo "$(_date %d %H:%M:%S) $data" >> "$dLog/model/$model_ident"
         data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
         # data="$( del_json_attr "freq2" "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
         has_json_attr freq "$data"  &&  data="$( jq -cer '.freq=(.freq|floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
@@ -647,7 +646,7 @@ do
                 _comma=","
             done
         )] "
-        log "$( expand_starred_string "$_collection" )" 
+        log "$( expand_starred_string "$_collection")" 
         publish_to_mqtt_state "*note*:*regular log*,*collected_model_ids*:*${!aLastReadings[*]}*, $_collection"
         nLastStatusSeconds=$nTimeStamp
     elif (( nReadings > (msgSecond*msgSecond+2)*(msgMinute+1)*(msgHour+1) || nMqttLines%5000==0 || nReceivedCount % 10000 == 0 )) ; then # reset whole array to empty once in a while = starting over
