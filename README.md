@@ -84,3 +84,38 @@ Don't forget to adapt the variables to your local installation. Run ```systemctl
 ## Hardware
 
 I'm using a [CSL DVB-T USB Stick](https://www.amazon.de/CSL-Realtek-Chip-Fernbedienung-Antenne-Windows/dp/B00CIQKFAO) plugged into a Raspberry Pi to receive the 433MhZ signals. They may be bought on Ebay for a few Euros only. Other sticks might work, too. Just let me know, e.g. open an issue, and I'll put it in the README.
+
+## Comparison
+
+This is how the original MQTT output from ```rtl_433 -M mqtt ...''' looks like - it is split across multiple, redudant MQTT messages (which might be ok for many)
+```log
+132122 rtl_433/openhabian/events {"time":"2022-04-19 13:21:22","protocol":52,"model":"Bresser-3CH","id":20,"channel": 1,"battery_ok": 1,"temperature_C":16.61111,"humidity":39,"mic":"CHECKSUM","mod":"ASK","freq":433.9824,"rssi":-0.965191,"snr":26.70743,"noise":-27.6726}
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/time 2022-04-19 13:21:22
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/protocol 52
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/id 20
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/channel 1
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/battery_ok 1
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/temperature_C 16.61111
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/humidity 39
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/mic CHECKSUM
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/mod ASK
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/freq 433.9824
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/rssi -0.965191
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/snr 26.70743
+132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/noise -27.6726
+132123 rtl_433/openhabian/events {"time":"2022-04-19 13:21:22","protocol":52,"model":"Bresser-3CH","id":20,"channel": 1,"battery_ok": 1,"temperature_C":16.61111,"humidity":39,"mic":"CHECKSUM","mod":"ASK","freq":434.01501,"rssi":-0.496212,"snr":26.87678,"noise":-27.373}
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/time 2022-04-19 13:21:22
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/protocol 52
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/id 20
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/channel 1
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/battery_ok 1
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/temperature_C 16.61111
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/humidity 39
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/mic CHECKSUM
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/mod ASK
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/freq 434.01501
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/rssi -0.496212
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/snr 26.87678
+132123 rtl_433/openhabian/devices/Bresser-3CH/1/20/noise -27.373
+...
+```
