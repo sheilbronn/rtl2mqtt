@@ -277,7 +277,8 @@ do
         ;;
     t)  basetopic="$OPTARG" # other base topic for MQTT
         ;;
-    S)  sSensorMatch="${OPTARG}.*"
+    S)  rtl433_opts=( "${rtl433_opts[@]}" -S "$OPTARG" ) # pass signal autosave option to rtl_433
+        # sSensorMatch="${OPTARG}.*"   # this was the previous meaning of -S
         ;;
     d)  bRemoveAnnouncements="yes" # delete (remove) all retained MQTT auto-discovery announcements (before starting), needs a newer mosquitto_sub
         ;;
@@ -485,6 +486,7 @@ do
         # convert msg "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) and process further down
         data="$( awk '{ printf "{\"center_frequency\":%d}",$2 }' <<< "$data" )"
     elif [ "${data#{}" = "$data" ] ; then # possibly eliminating any non-JSON line (= starting with "{"), e.g. from rtl_433 debugging/error output
+        data=${data#*** } # Remove any leading "*** "
         _garbage1="Allocating " # "Allocating 15 zero-copy buffers"
         if [ "${data#$_garbage1}" = "$data" ] ; then # unless verbose...
             log "Non-JSON: $data"

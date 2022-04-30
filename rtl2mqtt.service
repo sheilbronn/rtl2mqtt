@@ -4,6 +4,8 @@ After=network.target
 After=syslog.target
 Wants=mosquitto.service
 Documentation=https://github.com/sheilbronn/rtl2mqtt
+StartLimitIntervalSec=30
+StartLimitBurst=5
 
 [Service]
 Type=simple
