@@ -551,6 +551,8 @@ do
         _bHasBatteryOK="$( cAssureJsonVal battery_ok "<=2" "$data" )"
         _bHasPressureKPa="$(cAssureJsonVal pressure_kPa "<=9999" "$data" )"
         _bHasCmd="$(cHasJsonKey cmd "$data" && echo 1 )"
+        _bHasCounter="$(cHasJsonKey counter "$data" && echo 1 )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
+        _bHasCode="$(   cHasJsonKey code "$data" && echo 1 )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
         _bHasButtonR="$(cHasJsonKey rbutton "$data" && echo 1 )" #  rtl/433/Cardin-S466/00 {"dipswitch":"++---o--+","rbutton":"11R"}
         _bHasDipSwitch="$(cHasJsonKey dipswitch "$data" && echo 1 )" #  rtl/433/Cardin-S466/00 {"dipswitch":"++---o--+","rbutton":"11R"}
         _bHasNewBattery="$( cHasJsonKey newbattery "$data" && echo 1 )" #  {"id":13,"battery_ok":1,"newbattery":0,"temperature_C":24,"humidity":42}
@@ -609,12 +611,14 @@ do
             # For now, only the following certain types of sensors are announced for auto-discovery:
             _name="${aNames[$protocol]}" 
             _name="${_name:-$model}"
-            if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasButtonR || _bHasDipSwitch )) ; then
+            if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasButtonR || _bHasDipSwitch || _bHasCounter )) ; then
                 (( _bHasTemperature )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"     "value_json.temperature" temperature
                 (( _bHasHumidity    )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"    "value_json.humidity" humidity
                 (( _bHasPressureKPa )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
                 (( _bHasBatteryOK   )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery"  "value_json.battery_ok" battery_ok
                 (( _bHasCmd         )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd"      "value_json.cmd" motion
+                (( _bHasCounter     )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Counter"      "value_json.counter" counter
+                (( _bHasCode        )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Code"      "value_json.code" lock
                 (( _bHasButtonR     )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }ButtonR"  "value_json.buttonr" button
                 (( _bHasDipSwitch   )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch" dipswitch
                 (( _bHasNewBattery  )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }NewBatttery"  "value_json.newbattery" newbattery
