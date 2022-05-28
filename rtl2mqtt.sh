@@ -203,7 +203,6 @@ cHassAnnounce() {
 #   "device":{"model": "Smoke-GS558", "identifiers": "Smoke-GS558-25612", "name": "Smoke-GS558-25612", "manufacturer": "rtl_433"}, 
 #   "device_class": "signal_strength", "state_topic": "rtl_433/openhabian/devices/Smoke-GS558/25612/rssi", "unique_id": "Smoke-GS558-25612-rssi"}
 
-
 cHassRemoveAnnounce() {
     _topic="$sHassPrefix/sensor/#" 
     _topic="$( dirname $sHassPrefix )/#" # deletes eveything below "homeassistant/sensor/..." !
@@ -301,7 +300,7 @@ do
         elif [ "$OPTARG" = "27" ] ; then
             rtl433_opts=( "${rtl433_opts[@]}" -f 27.161M -s $sSuggSampleRate -Y minmax ) 
         elif [ "$OPTARG" = "433" ] ; then
-            rtl433_opts=( "${rtl433_opts[@]}" -f 433.9M ) #  -s 256k -f 433.92M for frequency 433... MhZ
+            rtl433_opts=( "${rtl433_opts[@]}" -f 433.91M ) #  -s 256k -f 433.92M for frequency 433... MhZ
         else
             rtl433_opts=( "${rtl433_opts[@]}" -f "$OPTARG" )
         fi
@@ -484,11 +483,11 @@ do
 
     if [ "${data#rtlsdr_set_center_freq}" != "$data" ] ; then 
         # convert msg "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) and process further down
-        data="$( awk '{ printf "{\"center_frequency\":%d}",$2 }' <<< "$data" )"
+        data="$( awk '{ printf "{\"center_frequency\":%d,\"BAND\":%d}" , $2 , int(($2/1000000+1)/2)*2-1  }' <<< "$data" )"   #  printf "%.0f\n"
     elif [ "${data#{}" = "$data" ] ; then # possibly eliminating any non-JSON line (= starting with "{"), e.g. from rtl_433 debugging/error output
         data=${data#*** } # Remove any leading "*** "
         _garbage1="Allocating " # "Allocating 15 zero-copy buffers"
-        if [ "${data#$_garbage1}" = "$data" ] ; then # unless verbose...
+        if [ "${data#"$_garbage1"}" = "$data" ] ; then # unless verbose...
             log "Non-JSON: $data"
             [[ $bVerbose ]] && cMqttStarred log "{*note*:*${data//\*/+}*}" # convert to simple JSON msg
         fi
