@@ -48,7 +48,7 @@ The only prerequisites are bash, jq, and mosquitto_pub (from mosquitto).
 A very simple technique to make it run after each reboot is adding something like the following line to the crontab file:
 
 ```crontab
-@reboot /usr/local/bin/rtl2mqtt.sh -l /tmp -f localhost -r -r -q
+@reboot /usr/local/bin/rtl2mqtt.sh -l /tmp -h localhost -r -r -q
 ```
 
 However, a better way for daemonizing rtl2mqtt, especially on Raspbian, is to copy this supplied [systemd service file](https://www.raspberrypi.org/documentation/linux/usage/systemd.md) "rtl2mqtt.service" to /etc/systemd/system/multi-user.target.wants, e.g. with these contents:

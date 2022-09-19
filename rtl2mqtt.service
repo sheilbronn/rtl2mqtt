@@ -15,7 +15,7 @@ Environment="MQTTBROKER=localhost"
 ExecStartPre=+/bin/sh -c "/bin/mkdir -p $LOGBASE && chown $USER $LOGBASE && logger $LOGBASE in place"
 ExecStart=/usr/local/bin/rtl2mqtt.sh -l $LOGBASE -h $MQTTBROKER -r -r -q 
 User=openhabian
-WorkingDirectory=$LOGBASE
+WorkingDirectory=/tmp
 StandardOutput=inherit
 StandardError=inherit
 Restart=on-failure

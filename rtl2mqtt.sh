@@ -33,7 +33,7 @@ sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 1+2*x (see
 declare -i nHopSecs
 declare -i nStatsSec=900
 declare -r sSuggSampleRate=1024k
-declare -i nLogMinutesPeriod=60
+declare -i nLogMinutesPeriod=60 # once per hour
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
 declare -i nMinSecondsOther=10 # only at least every 10 seconds
@@ -485,7 +485,7 @@ do
         # convert msg "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) and process further down
         data="$( awk '{ printf "{\"center_frequency\":%d,\"BAND\":%d}" , $2 , int(($2/1000000+1)/2)*2-1  }' <<< "$data" )"   #  printf "%.0f\n"
     elif [ "${data#{}" = "$data" ] ; then # possibly eliminating any non-JSON line (= starting with "{"), e.g. from rtl_433 debugging/error output
-        data=${data#*** } # Remove any leading "*** "
+        data=${data#\*\*\* } # Remove any leading "*** "
         _garbage1="Allocating " # "Allocating 15 zero-copy buffers"
         if [ "${data#"$_garbage1"}" = "$data" ] ; then # unless verbose...
             log "Non-JSON: $data"
@@ -518,7 +518,7 @@ do
     model="$(   cExtractJsonVal model  "$data" )"    
     id="$(      cExtractJsonVal id     "$data" )"
     [[ $model && ! $id ]] && id="$( cExtractJsonVal address "$data" )" # address might be unique alternative to id, still to TEST ! (FIXME)
-    cHasJsonKey freq && sBand="$(cExtractJsonVal freq "$data")" && sBand=${sBand%.[0-9]*} && sBand=${sBand/434/433} &&  basetopic="$sRtlPrefix/$sBand"
+    cHasJsonKey freq && sBand="$(cExtractJsonVal freq "$data")" && sBand=${sBand%.[0-9]*} && sBand=${sBand/434/433} && basetopic="$sRtlPrefix/$sBand"
     ident="${channel:-$id}" # prefer the channel over the id as the unique identifier, if present
     model_ident="${model}${ident:+_$ident}"
 
@@ -550,6 +550,9 @@ do
         _bHasRain="$( cAssureJsonVal rain_mm ">0" "$data" )"
         _bHasBatteryOK="$( cAssureJsonVal battery_ok "<=2" "$data" )"
         _bHasPressureKPa="$(cAssureJsonVal pressure_kPa "<=9999" "$data" )"
+        _bHasZone="$(cHasJsonKey zone "$data" && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
+        _bHasChannel="$(cHasJsonKey channel "$data" && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
+        _bHasControl="$(cHasJsonKey control "$data" && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
         _bHasCmd="$(cHasJsonKey cmd "$data" && echo 1 )"
         _bHasCounter="$(cHasJsonKey counter "$data" && echo 1 )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
         _bHasCode="$(   cHasJsonKey code "$data" && echo 1 )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
@@ -581,9 +584,12 @@ do
         dbg "SKIPPING: $data"
         bSkipLine=""
         continue
+
     elif [ -z "$model_ident" ] ; then # stats message
         [[ $bVerbose ]] && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
-    elif [[ $bAlways || $data != "$prev_data" || $nTimeStamp -gt $((prev_time+nMinSecondsOther)) ]] ; then
+
+    elif [[ $bAlways || ${data/"freq":434/} != "${prev_data/"freq":434/}" || $nTimeStamp -gt $((prev_time+nMinSecondsOther)) ]] ; then
+        # ignore freq changes within the 433/434 range when comparing for a change....
         if [[ $bVerbose ]] ; then
             [[ $bRewrite ]] && cEchoIfNotDuplicate "" "CLEANED: $model_ident = $data" # resulting message for MQTT
             expr match "$model_ident" "$sSensorMatch.*"  > /dev/null || continue # skip if match
@@ -601,17 +607,18 @@ do
         fi
         _nTimeDiff=$(( (_bHasTemperature || _bHasHumidity) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
         [[ $data == "$prevval" && ! $bMoreVerbose ]] && _nTimeDiff=$(( _nTimeDiff * 2 )) # delay outputting further if values are the same as last time
-        _bReady=$(( bAnnounceHass && aAnnounced[$model_ident]!=1 && aCounts[$model_ident] >= nMinOccurences ))
+        _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident]!=1 && aCounts[$model_ident] >= nMinOccurences ))
         if [[ $bVerbose ]] ; then
-            echo "_nTimeDiff=$_nTimeDiff, _bReady=$_bReady, hasTemperature=$_bHasTemperature, hasHumidity=$_bHasHumidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery"
+            echo "_nTimeDiff=$_nTimeDiff, _bAnnounceReady=$_bAnnounceReady, hasTemperature=$_bHasTemperature, hasHumidity=$_bHasHumidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery"
             # (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 ))
             echo "model_ident=$model_ident, Readings=${aLastReadings[$model_ident]}, Counts=${aCounts[$model_ident]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] ))"
         fi
-        if (( _bReady )) ; then
+        if (( _bAnnounceReady )) ; then
             # For now, only the following certain types of sensors are announced for auto-discovery:
-            _name="${aNames[$protocol]}" 
-            _name="${_name:-$model}"
-            if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasButtonR || _bHasDipSwitch || _bHasCounter )) ; then
+            if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasButtonR || _bHasDipSwitch || _bHasCounter || _bHasZone )) ; then
+                _name="${aNames[$protocol]}" 
+                _name="${_name:-$model}" # fallback
+                # if the sensor has one of the above attributes, announce all other attributes...:
                 (( _bHasTemperature )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"     "value_json.temperature" temperature
                 (( _bHasHumidity    )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"    "value_json.humidity" humidity
                 (( _bHasPressureKPa )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
@@ -622,7 +629,10 @@ do
                 (( _bHasButtonR     )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }ButtonR"  "value_json.buttonr" button
                 (( _bHasDipSwitch   )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch" dipswitch
                 (( _bHasNewBattery  )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }NewBatttery"  "value_json.newbattery" newbattery
-           #   [ "$sBand"           ]  && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
+                (( _bHasZone        )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Zone"     "value_json.zone" zone
+                (( _bHasChannel        )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Channel"     "value_json.channel" channel
+                (( _bHasControl        )) && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Control"     "value_json.control" control
+                #   [ "$sBand"      ]  && cHassAnnounce "$basetopic" "$model ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
                 cMqttStarred log "{*note*:*announced MQTT discovery: $model_ident ($_name)*}"
                 nAnnouncedCount=$(( nAnnouncedCount + 1 ))
                 cMqttState
@@ -630,15 +640,15 @@ do
             else
                 cMqttStarred log "{*note*:*not announced for MQTT discovery: $model_ident*}"
             fi
-            aAnnounced[$model_ident]=1 # 1=dont reconsider for announcement 
+            aAnnounced[$model_ident]=1 # 1 = took place ()= dont reconsider for announcement)
         fi
-        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || "$_bReady" -eq 1 ]] ; then # rcvd data should be different from previous reading(s)!
+        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || "$_bAnnounceReady" -eq 1 ]] ; then # rcvd data should be different from previous reading(s)!
             aLastReadings[$model_ident]="$data"
             if [[ $bRewrite && ( $_bHasTemperature || $_bHasHumidity ) ]] ; then
                 if [[ $data != "$prevval" ]] ; then
                     data="$( jq -cer '.NOTE  = "changed"' <<< "$data" )"
                 elif [[ $data == "$prevvals" ]] ; then
-                    [[ $bVerbose ]] && data="$( jq -cer ".NOTE2 = \"=2nd (#${aCounts[$model_ident]},_bR=$_bReady,${_nTimeDiff}s)\"" <<< "$data" )"
+                    [[ $bVerbose ]] && data="$( jq -cer ".NOTE2 = \"=2nd (#${aCounts[$model_ident]},_bR=$_bAnnounceReady,${_nTimeDiff}s)\"" <<< "$data" )"
                 fi
                 aSecondLastReadings[$model_ident]="$prevval"
             fi
@@ -652,7 +662,7 @@ do
     fi
     nReadings=${#aLastReadings[@]} # && nReadings=${nReadings#0} # remove any leading 0
 
-    if (( nReadings > nPrevMax )) ; then   # a new max means we have a new sensor
+    if (( nReadings > nPrevMax )) ; then   # a new max implies we have a new sensor
         nPrevMax=nReadings
         _sensors="${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}${_bHasRain:+*rain*,}"
         cMqttStarred log "{*note*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$channel*,*desc*:*${aNames[$protocol]}*, *sensors*:[${_sensors%,}]}"
