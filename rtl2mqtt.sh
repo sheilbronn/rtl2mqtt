@@ -184,8 +184,8 @@ cHassAnnounce() {
     esac
 
     _icon_str="${_icon_str:+,*icon*:*mdi:$_icon_str*}"
-    local  _device_string="*device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aNames[$protocol]}) }with id $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433_version*}"
-    local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device_string,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
+    local  _device="*device*:{*identifiers*:[*${sID}${_configtopicpart}*],*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aNames[$protocol]}) ($protocol) }with id $_devid*,*name*:*$_devname*,*sw_version*:*rtl_433 $rtl433_version*}"
+    local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
            # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
            # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
 
@@ -213,14 +213,14 @@ cHassRemoveAnnounce() {
     cMqttStarred log "{*note*:*removed all announcements starting with $_topic returned $_rc.* }"
 }
 
-# cAppendJsonKeyVal "key" "non-empty val" "jsondata" # N.B.: keys for EMPTY values are NOT appended
-cAppendJsonKeyVal() {
+cAppendJsonKeyVal() {  # cAppendJsonKeyVal "key" "val" "jsondata"
     local - && set +x
     _val="$2"
     [ "$_val" ] || echo "$3" 
     echo "${3/%\}/,\"$1\":\"$_val\"\}}"
 }
-# cAppendJsonKeyVal "x" "2" '{one:1}' ; exit  # returns: '{one:1,x:"2"}'
+# cAppendJsonKeyVal "x" "2" '{one:1}' ; exit  # returns: '{one:1,"x":"2"}'
+# cAppendJsonKeyVal "donot" "" '{"one":1}' ; exit  # returns: '{"one":1,"donot":""}'
 
 cDeleteJsonKey() {
     local - && set +x  # del(.[] | .Country, .number, .Language)    OR   
@@ -253,8 +253,8 @@ cAssureJsonVal() { # cAssureJsonVal("battery",">9",'{"action":"null","battery":1
 }
 # j='{"action":"null","battery":100}' ; cAssureJsonVal battery ">999" "$j" ; cAssureJsonVal battery ">9" "$j" ;  exit
 
-_moreopts="$( [ -r "$rtl2mqtt_optfile" ] && grep -v '#' < "$rtl2mqtt_optfile" | tr -c -d '[:alnum:]_. -' )"
-cLogMore "all options: $_moreopts $*"
+[ -r "$rtl2mqtt_optfile" ] && _moreopts="$( grep -v '#' < "$rtl2mqtt_optfile" | tr -c -d '[:alnum:]_. -' )" && dbg "Read _moreoptrs from $rtl2mqtt_optfile"
+cLogMore "all options: $* $_moreopts"
 
 while getopts "?qh:pt:S:drl:f:F:M:H:AR:Y:w:c:as:t:T:2vx" opt $_moreopts  "$@"
 do
@@ -359,13 +359,17 @@ fi
 
 [ "$( command -v jq )" ] || { log "$sName: jq must be available!" ; exit 1 ; }
 
-_startup="$( $rtl433_command "${rtl433_opts[@]}" -T 1 2>&1 )"
-# echo "$_startup" ; exit
-sdr_tuner="$(  awk -- '/^Found /   { print gensub("Found ", "",1, gensub(" tuner$", "",1,$0)) ; exit }' <<< "$_startup" )" # matches "Found Fitipower FC0013 tuner"
-sdr_freq="$(   awk -- '/^Tuned to/ { print gensub("MHz.", "",1,$3)                            ; exit }' <<< "$_startup" )" # matches "Tuned to 433.900MHz."
-conf_files="$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_startup" | xargs ls -1 2>/dev/null )" # try to find an existing config file
-sBand="${sdr_freq/%.*/}" # reduces val to "433" ... 
-basetopic="$sRtlPrefix/$sBand" # derives first setting for basetopic
+if [[ $fReplayfile ]]; then
+    sBand=999
+else
+    _startup="$( $rtl433_command "${rtl433_opts[@]}" -T 1 2>&1 )"
+    # echo "$_startup" ; exit
+    sdr_tuner="$(  awk -- '/^Found /   { print gensub("Found ", "",1, gensub(" tuner$", "",1,$0)) ; exit }' <<< "$_startup" )" # matches "Found Fitipower FC0013 tuner"
+    sdr_freq="$(   awk -- '/^Tuned to/ { print gensub("MHz.", "",1,$3)                            ; exit }' <<< "$_startup" )" # matches "Tuned to 433.900MHz."
+    conf_files="$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_startup" | xargs ls -1 2>/dev/null )" # try to find an existing config file
+    sBand="${sdr_freq/%.*/}" # reduces val to "433" ... 
+fi
+basetopic="$sRtlPrefix/$sBand" # derives intial setting for basetopic
 
 # Enumerate the supported protocols and their names, put them into an array
 _protos="$( $rtl433_command -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { p=$1 ; printf "%d" , gensub("[\\]\\[\\*]","","g",$1)  ; $1="" ; print $0}' )" # ; exit
@@ -407,8 +411,8 @@ trap_exit() {   # stuff to do when exiting
     # sleep 1
     nReadings=${#aLastReadings[@]}
     cMqttState "*collected_sensors*:*${!aLastReadings[*]}*"
-    cMqttStarred log "{*note*:*exiting*}"
-    rm -f "$conf_file" # remove a created pseudo-conf file if any
+    cMqttStarred log "{*event*:*exiting*,*note*:*exiting*}"
+    # rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
 
@@ -435,7 +439,7 @@ trap_usr2() {    # remove all home assistant announcements
   }
 trap 'trap_usr2' USR2 
 
-trap_other() {    # remove all home assistant announcements 
+trap_other() {
     _msg="received other signal ..."
     log "$sName $_msg"
     cMqttStarred log "{*note*:*$_msg*}"
@@ -443,18 +447,8 @@ trap_other() {    # remove all home assistant announcements
 trap 'trap_other' URG XCPU XFSZ VTALRM PROF WINCH PWR SYS
 
 if [[ $fReplayfile ]] ; then
-    coproc rtlcoproc ( cat "$fReplayfile" )
-    exec 9<"$fReplayfile" # FIXME
+    coproc rtlcoproc ( while read -r l ; do echo "$l"; sleep 1 ; done < "$fReplayfile" ; sleep 1 )
 else
-    # if [ -z "$conf_files" ] ; then
-    #    conf_file="$( mktemp /tmp/$sName.XXXXX.conf )"
-    #    # create file of all supported protocols:
-        #    rtl_433 -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { gsub("[\\]\\[\\*]","",$1) ; print "{\"protocol\":" " $1 "}"}' >> $conf_file || { cLogMore "Can't fill $conf_file" ; exit 1 ; }
-    #    dbg "CREATED conf file: $conf_file"
-    # fi
-    # rtl_433 -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { p=$1 ; printf "{\"protocol\":%d,\"enabled\":%d," , gensub("[\\]\\[\\*]","","g",p) , (p~/.*\*/ ? 0 : 1)  ; $1="" ; printf "\"name\":\"%s\"}\n" , $0}' ; exit
-    # set -x ; declare -a arr ; x="$( rtl_433 -R 99999 2>&1 )" ; readarray arr <<< "$x" ; exit
-
     if [[ $bVerbose || -t 1 ]] ; then
         cLogMore "options for rtl_433 are: ${rtl433_opts[@]}"
         (( nMinOccurences > 1 )) && cLogMore "Will do MQTT announcements only after at least $nMinOccurences occurences..."
@@ -474,8 +468,6 @@ else
     fi
 fi 
 
-# while read -r data <&9 || read -r data <&"${rtlcoproc[0]}" ; _rc=$? && (( _rc==0  || _rc==27 ))      # ... and enter the loop
-
 while read -r data <&"${rtlcoproc[0]}" ; _rc=$? && (( _rc==0  || _rc==27 ))      # ... and enter the loop
 do
     _beginpid=$(cPid) # support counting/debugging/optimizing number of processes started in within the loop
@@ -484,14 +476,15 @@ do
     if [ "${data#rtlsdr_set_center_freq}" != "$data" ] ; then 
         # convert msg "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) and process further down
         data="$( awk '{ printf "{\"center_frequency\":%d,\"BAND\":%d}" , $2 , int(($2/1000000+1)/2)*2-1  }' <<< "$data" )"   #  printf "%.0f\n"
-    elif [ "${data#{}" = "$data" ] ; then # possibly eliminating any non-JSON line (= starting with "{"), e.g. from rtl_433 debugging/error output
+    elif [ "${data#{}" = "$data" ] ; then # possibly eliminating any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
         data=${data#\*\*\* } # Remove any leading "*** "
-        _garbage1="Allocating " # "Allocating 15 zero-copy buffers"
-        if [ "${data#"$_garbage1"}" = "$data" ] ; then # unless verbose...
-            log "Non-JSON: $data"
+        if [ "${data#Please increase your allowed usbfs buffer size}" != "$data" ] ; then # "Please increase your allowed usbfs buffer ...."
+            cMqttStarred log "{*event*:*warning*,*note*:*${data//\*/+}*}" # convert to simple JSON msg
+        elif [ "${data#Allocating }" != "$data" ] ; then # "Allocating 15 zero-copy buffers"
             [[ $bVerbose ]] && cMqttStarred log "{*note*:*${data//\*/+}*}" # convert to simple JSON msg
         fi
-        data='""'
+        log "Non-JSON: $data"
+        # data='""'
         continue
     fi
     if [[ $data =~ "center_frequency" ]] ; then
@@ -513,12 +506,12 @@ do
 
     data="$( cDeleteJsonKey "time $sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )" # delete attributes and remove double-quotes around numbers
     [[ $bMoreVerbose ]] && cEchoIfNotDuplicate "READ: $data"
-    protocol="$( cExtractJsonVal protocol "$data" )"
+    protocol="$(cExtractJsonVal protocol "$data")"
     channel="$( cExtractJsonVal channel "$data" )"
-    model="$(   cExtractJsonVal model  "$data" )"    
-    id="$(      cExtractJsonVal id     "$data" )"
+    model="$(   cExtractJsonVal model  "$data"  )"    
+    id="$(      cExtractJsonVal id     "$data"  )"
     [[ $model && ! $id ]] && id="$( cExtractJsonVal address "$data" )" # address might be unique alternative to id, still to TEST ! (FIXME)
-    cHasJsonKey freq && sBand="$(cExtractJsonVal freq "$data")" && sBand=${sBand%.[0-9]*} && sBand=${sBand/434/433} && basetopic="$sRtlPrefix/$sBand"
+    cHasJsonKey freq "$data" && sBand="$(cExtractJsonVal freq "$data")" && sBand=${sBand%.[0-9]*} && sBand=${sBand/434/433} && basetopic="$sRtlPrefix/$sBand"
     ident="${channel:-$id}" # prefer the channel over the id as the unique identifier, if present
     model_ident="${model}${ident:+_$ident}"
 
@@ -609,13 +602,13 @@ do
         [[ $data == "$prevval" && ! $bMoreVerbose ]] && _nTimeDiff=$(( _nTimeDiff * 2 )) # delay outputting further if values are the same as last time
         _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident]!=1 && aCounts[$model_ident] >= nMinOccurences ))
         if [[ $bVerbose ]] ; then
-            echo "_nTimeDiff=$_nTimeDiff, _bAnnounceReady=$_bAnnounceReady, hasTemperature=$_bHasTemperature, hasHumidity=$_bHasHumidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery"
+            echo "_nTimeDiff=$_nTimeDiff, _bAnnounceReady=$_bAnnounceReady, hasTemperature=$_bHasTemperature, hasHumidity=$_bHasHumidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
             # (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 ))
             echo "model_ident=$model_ident, Readings=${aLastReadings[$model_ident]}, Counts=${aCounts[$model_ident]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] ))"
         fi
         if (( _bAnnounceReady )) ; then
             # For now, only the following certain types of sensors are announced for auto-discovery:
-            if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasButtonR || _bHasDipSwitch || _bHasCounter || _bHasZone )) ; then
+            if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasButtonR || _bHasDipSwitch || _bHasCounter || _bHasControl )) ; then
                 _name="${aNames[$protocol]}" 
                 _name="${_name:-$model}" # fallback
                 # if the sensor has one of the above attributes, announce all other attributes...:
@@ -642,7 +635,7 @@ do
             fi
             aAnnounced[$model_ident]=1 # 1 = took place ()= dont reconsider for announcement)
         fi
-        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || "$_bAnnounceReady" -eq 1 ]] ; then # rcvd data should be different from previous reading(s)!
+        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || "$_bAnnounceReady" -eq 1 || $fReplayfile ]] ; then # rcvd data should be different from previous reading(s) but not if coming from replayfile
             aLastReadings[$model_ident]="$data"
             if [[ $bRewrite && ( $_bHasTemperature || $_bHasHumidity ) ]] ; then
                 if [[ $data != "$prevval" ]] ; then
@@ -665,7 +658,7 @@ do
     if (( nReadings > nPrevMax )) ; then   # a new max implies we have a new sensor
         nPrevMax=nReadings
         _sensors="${_bHasTemperature:+*temperature*,}${_bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}${_bHasRain:+*rain*,}"
-        cMqttStarred log "{*note*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$channel*,*desc*:*${aNames[$protocol]}*, *sensors*:[${_sensors%,}]}"
+        cMqttStarred log "{*note*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$channel*,*desc*:*${aNames[$protocol]}*,*protocol*:*$protocol*, *sensors*:[${_sensors%,}]}"
         cMqttState
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   
         # log once in a while, good heuristic in a generalized neighbourhood
@@ -685,15 +678,15 @@ do
         unset aLastReadings && declare -A aLastReadings # reset the whole collection array
         unset aCounts   && declare -A aCounts
         unset aAnnounced && declare -A aAnnounced
-        nPrevMax=$(( nPrevMax / 3 ))            # reduce it (but not back to 0) to reduce future log messages
+        nPrevMax=$(( nPrevMax / 3 ))            # reduce it quite a bit (but not back to 0) to reduce future log messages
         [[ $bRemoveAnnouncements ]] && cHassRemoveAnnounce
     fi
 done
 
-_msg="$sName: read failed (rc=$_rc), while-loop ended $(printf "%()T"), rtlprocid now :${rtlcoproc_PID}:"
+_msg="$sName: read failed (rc=$_rc), while-loop ended $(printf "%()T"), rtlprocid now :${rtlcoproc_PID}:, last data=$data"
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*note*:*$_msg*}"
-
+sleep 1
 exit 1
 
 # now the exit trap function will be processed...
