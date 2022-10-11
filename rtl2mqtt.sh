@@ -10,7 +10,7 @@ set -o noclobber  # disable for security reasons
 sName="${0##*/}" && sName="${sName%.sh}"
 sMID="$( basename "${sName// /}" .sh )"
 sID="$sMID"
-rtl2mqtt_optfile="$HOME/.$sName"
+rtl2mqtt_optfile="$( [ -r "${XDG_CONFIG_HOME:=$HOME/.config}/.$sName" ] && echo "$XDG_CONFIG_HOME/$sName" || echo "$HOME/.$sName" )" # ~/.config/rtl2mqtt or ~/.rtl2mqtt
 
 commandArgs="$*"
 dLog="/var/log/$sMID" # /var/log is default, but will be changed to /tmp if not useable
@@ -21,7 +21,7 @@ basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
 rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
-rtl433_opts=(      -M protocol -M noise:300 -M level -C si )  # generic options for everybody, e.g. -M level 
+rtl433_opts=( -M protocol -M noise:300 -M level -C si )  # generic options for everybody, e.g. -M level 
 # rtl433_opts=( "${rtl433_opts[@]}" $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 rtl433_opts_more="-R -31 -R 53 -R -86" # My specific personal excludes
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
@@ -90,8 +90,9 @@ dbg() { # output its args to stderr if option -v was set
     return 0 
 	}
 
-cExpandStarredString() {   
-    _string="${1//\"/\'}"  &&  echo "${_string//\*/\"}" 
+cExpandStarredString() {
+    _esc="quote_star_quote" ; _str="$1"
+    _str="${_str//\"\*\"/$_esc}"  &&  _str="${_str//\"/\'}"  &&  _str="${_str//\*/\"}"  &&  _str="${_str//$esc/\"*\"}"  && echo "$_str"
   }
 
 cRotateLogdirSometimes() {           # check for logfile rotation
@@ -427,7 +428,7 @@ trap 'trap_int' INT
 
 trap_usr1() {    # toggle verbosity 
     [ "$bVerbose" ] && bVerbose="" || bVerbose="yes"
-    _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs"
+    _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs, current sBand=$sBand"
     log "$sName $_msg"
     cMqttStarred log "{*note*:*$_msg*}"
   }
@@ -480,8 +481,8 @@ do
         data=${data#\*\*\* } # Remove any leading "*** "
         if [ "${data#Please increase your allowed usbfs buffer size}" != "$data" ] ; then # "Please increase your allowed usbfs buffer ...."
             cMqttStarred log "{*event*:*warning*,*note*:*${data//\*/+}*}" # convert to simple JSON msg
-        elif [ "${data#Allocating }" != "$data" ] ; then # "Allocating 15 zero-copy buffers"
-            [[ $bVerbose ]] && cMqttStarred log "{*note*:*${data//\*/+}*}" # convert to simple JSON msg
+        elif [ "${data#Allocating }" = "$data" ] ; then # "Allocating 15 zero-copy buffers"
+            [[ $bVerbose ]] && cMqttStarred log "{*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
         fi
         log "Non-JSON: $data"
         # data='""'
@@ -519,21 +520,23 @@ do
     [[ $bVerbose ]] || expr "$model_ident" : "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
 
     if [[ $model_ident && $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
-        data="$( cDeleteJsonKey "model protocol mod rssi snr noise" "$data" )" # other stuff: id rssi subtype channel mod snr noise
         # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
 
         _tmp="$( cHasJsonKey temperature_C "$data" && jq -e -r "if .temperature_C then .temperature_C / $sRoundTo + 0.5 | floor * $sRoundTo else empty end" <<< "$data" )" # round to 0.5° C
         if [[ $_tmp ]] ; then
-            _bHasTemperature="1"
+            _bHasTemperature=1
             data="$( jq -cer ".temperature_C = $_tmp" <<< "$data" )" # set to rounded temperature
             [[ ${aPrevTempVals[$model_ident]} ]] || aPrevTempVals[$model_ident]=0
         else 
             _bHasTemperature=""
         fi
+        _delkeys="model mod rssi snr noise"
+        [[ -z $_tmp || $_tmp -lt 15 ]] && _delkeys="$_delkeys protocol"
+        data="$( cDeleteJsonKey "$_delkeys" "$data" )" # other stuff: id rssi subtype channel mod snr noise
 
         _tmp="$( cHasJsonKey humidity "$data" && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 2 + 1 ) + 0.5 | floor * ( $sRoundTo * 2 + 1 ) | floor else empty end" <<< "$data" )" # round to 2,5%
         if [[ $_tmp ]] ; then
-            _bHasHumidity="1"
+            _bHasHumidity=1
             data="$( jq -cer ".humidity = $_tmp" <<< "$data" )"
          else 
             _bHasHumidity=""
@@ -601,6 +604,7 @@ do
         _nTimeDiff=$(( (_bHasTemperature || _bHasHumidity) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
         [[ $data == "$prevval" && ! $bMoreVerbose ]] && _nTimeDiff=$(( _nTimeDiff * 2 )) # delay outputting further if values are the same as last time
         _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident]!=1 && aCounts[$model_ident] >= nMinOccurences ))
+
         if [[ $bVerbose ]] ; then
             echo "_nTimeDiff=$_nTimeDiff, _bAnnounceReady=$_bAnnounceReady, hasTemperature=$_bHasTemperature, hasHumidity=$_bHasHumidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
             # (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 ))
@@ -683,10 +687,10 @@ do
     fi
 done
 
-_msg="$sName: read failed (rc=$_rc), while-loop ended $(printf "%()T"), rtlprocid now :${rtlcoproc_PID}:, last data=$data"
+s=1 && [ ! -t 1 ] && s=30 # sleep a longer time if not on a terminal
+_msg="$sName: read failed (rc=$_rc), while-loop ended $(printf "%()T"), rtlprocid now :${rtlcoproc_PID}:, last data=$data, sleep=${s}s"
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*note*:*$_msg*}"
-sleep 1
+sleep $s
 exit 1
-
 # now the exit trap function will be processed...
