@@ -47,7 +47,7 @@ declare -i nReceivedCount=0
 declare -i nAnnouncedCount=0
 declare -i nMinOccurences=3
 declare -i nPrevMax=1       # start with 1 for non-triviality
-declare -l bAnnounceHass="1" # default is yes for now
+declare -l bAnnounceHass=1 # default is yes for now
 declare -A aLastReadings
 declare -A aSecondLastReadings
 declare -A aCounts
@@ -65,13 +65,12 @@ cPid()  { sh -c 'echo $$' ; }
 
 log() {
     local - && set +x
-    [ "$sDoLog" ] || return
     if [ "$sDoLog" = "dir" ] ; then
         cRotateLogdirSometimes "$dLog"
         logfile="$dLog/$(cDate %H)"
         echo "$(cDate %d %T)" "$*" >> "$logfile"
-        [[ $bVerbose && ${*#{} != "$*" ]] && { printf "%s" "$*" ; echo "" ; } >> "$logfile.JSON"
-    else
+        [[ $bVerbose && $* =~ ^\{ ]] && { printf "%s" "$*" ; echo "" ; } >> "$logfile.JSON"
+    elif [ "$sDoLog" ] ; then
         echo "$(cDate)" "$@" >> "$dLog.log"
     fi    
   }
@@ -86,7 +85,7 @@ cLogMore() {
 
 dbg() { # output its args to stderr if option -v was set
 	local - && set +x
-    [ "$bVerbose" ] || return 1 
+    (( bVerbose )) || return 1 
     echo "DEBUG: " "$@" 1>&2
     return 0 
 	}
@@ -96,8 +95,8 @@ cExpandStarredString() {
     _str="${_str//\"\*\"/$_esc}"  &&  _str="${_str//\"/\'}"  &&  _str="${_str//\*/\"}"  &&  _str="${_str//$esc/\"*\"}"  && echo "$_str"
   }
 
-cRotateLogdirSometimes() {           # check for logfile rotation
-    if (( msgMinute + msgSecond == 67 )) ; then  # try logfile rotation only with probability of 1/60
+cRotateLogdirSometimes() {           # check for logfile rotation only with probability of 1/60
+    if (( msgMinute + msgSecond == 67 )) ; then 
         cd "$1" && _files="$( find . -maxdepth 2 -type f -size +300k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 | xargs -0 )"
         msgSecond=$(( msgSecond + 1 ))
         [[ $_files ]] && cLogMore "Rotated files: $_files"
@@ -106,15 +105,12 @@ cRotateLogdirSometimes() {           # check for logfile rotation
 
 cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquittoOptions)
     local - && set +x
-    if [[ $# -eq 1 ]] ; then
+    if (( $# == 1 )) ; then
         _topic="/bridge/state"
         _msg="$1"
     else
-        if [[ $1 = "state" || $1 = "log" || $1 = "stats" ]] ; then
-            _topic="$sRtlPrefix/bridge/$1"
-        else
-            _topic="$1"
-        fi
+        _topic="$1"
+        [[ $1 =~ ^state$|^log$|^stats$ ]] && _topic="$sRtlPrefix/bridge/$1"
         _msg="$2"
     fi
     _topic="${_topic/#\//$basetopic/}"
@@ -146,7 +142,7 @@ cHassAnnounce() {
 	local -
     local _topicpart="${3%/set}" # if $3 ends in /set it is settable, but remove /set from state topic
  	local _devid="$( basename "$_topicpart" )"
-	local _command_topic_str="$( [ "$3" != "$_topicpart" ] && echo ",*cmd_t*:*~/set*" )"  # determined by suffix ".../set"
+	local _command_topic_str="$( [[ $3 != "$_topicpart" ]] && echo ",*cmd_t*:*~/set*" )"  # determined by suffix ".../set"
 
     local _dev_class="${6#none}" # dont wont "none" as string for dev_class
 	local _state_class
@@ -221,12 +217,11 @@ cHassRemoveAnnounce() {
     cMqttStarred log "{*event*:*debug*,*note*:*removed all announcements starting with $_topic returned $_rc.* }"
 }
 
-cAppendJsonKeyVal() {  # cAppendJsonKeyVal "key" "val" "jsondata" (use $data if $3 empty, no quoting for numbers)
+cAppendJsonKeyVal() {  # cAppendJsonKeyVal "key" "val" "jsondata" (use $data if $3 empty, no quotes around numbers)
     local - && set +x
-    shopt -s extglob
     _val="$2" ; _d="${3:-$data}"
-    [ -z "$_val" ] && echo "$_d"
-    [ -n "${_val//@(-[0-9.]*|[0-9][0-9.]*)/}" ] && _val="\"$_val\"" # surround by double quotes only if not-a-number
+    # [ -z "$_val" ] && echo "$_d" # don't append the pair if val is empty !
+    [[ ! $_val =~ ^[-+]?[0-9]*(\.[0-9]+) ]] && _val="\"$_val\"" # surround _val by double quotes only if not-a-number
     echo "${_d/%\}/,\"$1\":$_val\}}"
 }
 # set -x ; data='{"one":1}' ; cAppendJsonKeyVal "x" "2x" ; cAppendJsonKeyVal "n" "2.3" ; cAppendJsonKeyVal "m" "-" ; exit  # returns: '{one:1,"x":"2"}'
@@ -247,14 +242,13 @@ cDeleteJsonKey() { # cDeleteJsonKey "key1" "key2" ... "jsondata" (jsondata must 
 
 cHasJsonKey() {
     local - && set +x
-    _d="${2:-$data}"
-    [ "${_d//\"$1\":}" != "$_d" -o "${_d//\"$1\"[ ]*:}" != "$_d" ]
+    [[ ${2:-$data} =~ \"$1\"\ *: ]]
 }
-# j='{"action":"null","battery":100}' ; cHasJsonKey action "$j" && echo yes ; cHasJsonKey jessy "$j" && echo no ; exit
+# set -x ; j='{"action":"null","battery" :100}' ; cHasJsonKey action "$j" && echo yes ; cHasJsonKey battery "$j" && echo yes ; cHasJsonKey jessy "$j" || echo no ; exit
 # j='{"dipswitch":"++---o--+","rbutton":"11R"}' ; cHasJsonKey dipswitch "$j" && echo yes ; cHasJsonKey jessy "$j" || echo no ; exit
 
 cExtractJsonVal() {
-    local - # && set +x
+    local - && set +x
     cHasJsonKey "$1" && jq -r ".$1 // empty" <<< "${2:-$data}"
 }
 # set -x ; data='{"action":"good","battery":100}' ; cExtractJsonVal action && echo yes ; cExtractJsonVal notthere || echo no ; exit
@@ -273,7 +267,7 @@ do
     \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x" 1>&2
         exit 1
         ;;
-    q)  bQuiet="yes"
+    q)  bQuiet=1
         ;;
     h)  # configure the broker host here or in $HOME/.config/mosquitto_sub
         case "$OPTARG" in     #  http://www.steves-internet-guide.com/mqtt-hosting-brokers-and-servers/
@@ -283,20 +277,18 @@ do
 		*)       mqtthost="$( echo "$OPTARG" | tr -c -d '0-9a-z_.' )" ;; # clean up for sec purposes
 		esac
         ;;
-    p)  bAnnounceHass="1"
+    p)  bAnnounceHass=1
         ;;
     t)  basetopic="$OPTARG" # other base topic for MQTT
         ;;
     S)  rtl433_opts=( "${rtl433_opts[@]}" -S "$OPTARG" ) # pass signal autosave option to rtl_433
         # sSensorMatch="${OPTARG}.*"   # this was the previous meaning of -k
         ;;
-    d)  bRemoveAnnouncements="yes" # delete (remove) all retained MQTT auto-discovery announcements (before starting), needs a newer mosquitto_sub
+    d)  bRemoveAnnouncements=1 # delete (remove) all retained MQTT auto-discovery announcements (before starting), needs a newer mosquitto_sub
         ;;
     r)  # rewrite and simplify output
-        if [ "$bRewrite" ] ; then
-            bRewriteMore="yes" && dbg "Rewriting even more ..."
-        fi
-        bRewrite="yes"  # rewrite and simplify output
+        (( bRewrite )) && bRewriteMore=1 && dbg "Rewriting even more ..."
+        bRewrite=1  # rewrite and simplify output
         ;;
     l)  dLog="$OPTARG" 
         ;;
@@ -333,16 +325,16 @@ do
         ;;
     T)  nMinSecondsOther="$OPTARG" # seconds before repeating the same reading
         ;;
-    a)  bAlways="yes"
+    a)  bAlways=1
         rtl433_opts=( "${rtl433_opts[@]}" $rtl433_opts_more ) # FIXME: prevent shell expansion
         nMinOccurences=1
         ;;
     s)  sSuppressAttrs="$sSuppressAttrs ${OPTARG//[^a-zA-Z0-9_]}" # sensor attributes that will be always eliminated
         ;;
-    2)  bTryAlternate="yes" # ease experiments (not used in production)
+    2)  bTryAlternate=1 # ease experiments (not used in production)
         ;;
-    v)  [ "$bVerbose" = "yes" ] && { bMoreVerbose="yes" ; rtl433_opts=( "-M noise:60" "${rtl433_opts[@]}" -v ) ; }
-        bVerbose="yes" # more output for debugging purposes
+    v)  (( bVerbose )) && bMoreVerbose=1 && rtl433_opts=( "-M noise:60" "${rtl433_opts[@]}" -v )
+        bverbose=1 # more output for debugging purposes
         ;;
     x)  set -x # turn on shell debugging from here on
         ;;
@@ -389,17 +381,17 @@ declare -A aNames ; while read -r p name ; do aNames["$p"]="$name" ; done <<< "$
 cEchoIfNotDuplicate() {
     local - && set +x
     if [[ "$1..$2" != "$gPrevData" ]] ; then
-        [[ $bWasDuplicate ]] && echo "" # echo a newline after some dots
+        (( bWasDuplicate )) && echo "" # echo a newline after some dots
         echo -e "$1${2:+\n$2}"
         gPrevData="$1..$2" # save the previous data
         bWasDuplicate=""
     else
         printf "."
-        bWasDuplicate="yes"
+        bWasDuplicate=1
     fi
  }
 
-_info="*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
+_info="*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
 if [ -t 1 ] ; then # probably on a terminal
     log "$sName starting at $(cDate)"
     cMqttStarred log "{*event*:*starting*,$_info}"
@@ -411,12 +403,12 @@ else               # probably non-terminal
 fi
 
 # Optionally remove any matching retained announcements
-[[ $bRemoveAnnouncements ]] && cHassRemoveAnnounce
+(( bRemoveAnnouncements )) && cHassRemoveAnnounce
 
 trap_exit() {   # stuff to do when exiting
     local - && set +x
     log "$sName exit trapped at $(cDate): removing announcements, then logging state."
-    [ "$bRemoveAnnouncements" ] && cHassRemoveAnnounce
+    (( bRemoveAnnouncements )) && cHassRemoveAnnounce
     _cppid="$rtlcoproc_PID" # avoid race condition after killing coproc
     [ "$rtlcoproc_PID" ] && kill "$rtlcoproc_PID" && dbg "Killed coproc PID $_cppid"
     # sleep 1
@@ -438,7 +430,7 @@ trap_int() {    # log all collected sensors to MQTT
 trap 'trap_int' INT 
 
 trap_usr1() {    # toggle verbosity 
-    [ "$bVerbose" ] && bVerbose="" || bVerbose="yes"
+    (( bVerbose )) && bVerbose="" || bverbose=1 # switch bVerbose
     _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs, current sBand=$sBand"
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*note*:*$_msg*}"
@@ -470,7 +462,7 @@ else
     # -F "mqtt://$mqtthost:1883,events,devices"
     renice -n 17 "${rtlcoproc_PID}"
 
-    if [[ $rtlcoproc_PID && $bAnnounceHass ]] ; then
+    if (( rtlcoproc_PID && bAnnounceHass )) ; then
         # _statistics="*sensorcount*:*${nReadings:-0}*,*announcedcount*:*$nAnnouncedCount*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,*readingscount*:*$nReadings*"
         ## cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "TestVal" "value_json.mcheck" "mcheck"
         cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount" "value_json.announceds" "counter"
@@ -487,25 +479,24 @@ do
     _beginpid=$(cPid) # support counting/debugging/optimizing number of processes started in within the loop
     # dbg "diffpid=$(awk "BEGIN {print ( $(cPid) - $_beginpid - 3) }" )" 
 
-    if [ "${data#rtlsdr_set_center_freq}" != "$data" ] ; then 
-        # convert msg "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) and process further down
+    if [[ $data =~ ^rtlsdr_set_center_freq ]] ; then 
+        # convert msg "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) to be processed further down
         data="$( awk '{ printf "{\"center_frequency\":%d,\"BAND\":%d}" , $2 , int(($2/1000000+1)/2)*2-1  }' <<< "$data" )"   #  printf "%.0f\n"
-    elif [ "${data#{}" = "$data" ] ; then # possibly eliminating any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
+    elif [[ $data =~ ^[^{] ]] ; then # possibly eliminating any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
         data=${data#\*\*\* } # Remove any leading "*** "
-        if [ "${data#Please increase your allowed usbfs buffer size}" != "$data" ] ; then # "Please increase your allowed usbfs buffer ...."
+        if [[ $data =~ ^"Please increase your allowed usbfs buffer size" ]] ; then
             cMqttStarred log "{*event*:*warning*,*note*:*${data//\*/+}*}" # convert to simple JSON msg
-        elif [ "${data#Allocating }" = "$data" ] ; then # "Allocating 15 zero-copy buffers"
-            [[ $bVerbose ]] && cMqttStarred log "{*event*:*debug*,*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
+        elif [[ $data =~ ^"Allocating " ]] ; then # "Allocating 15 zero-copy buffers"
+            (( bVerbose )) && cMqttStarred log "{*event*:*debug*,*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
         fi
         log "Non-JSON: $data"
-        # data='""'
         continue
     fi
     if [[ $data =~ "center_frequency" ]] ; then
-        data="${data//\" : /\":}" # beautify a bit, removing space(s)
+        data="${data//\" : /\":}" # beautify a bit, removing extra space(s)
         sBand="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
         basetopic="$sRtlPrefix/$sBand"
-        [[ $bVerbose ]] && cEchoIfNotDuplicate "CENTER: $data" && cMqttStarred log "*event*:*debug*,${data//\"/*}"
+        (( bVerbose )) && cEchoIfNotDuplicate "CENTER: $data" && cMqttStarred log "*event*:*debug*,${data//\"/*}"
         nLastCenterMessage="$(cDate)" # prepare for avoiding race condition after freq hop (not implemented yet)
         continue
     fi
@@ -513,31 +504,29 @@ do
     nReceivedCount=$(( nReceivedCount + 1 ))
     
     _time="$(cExtractJsonVal time)"  # ;  msgTime="2021-11-01 03:05:07"
-    declare +i _str # to avoid octal interpretation from leading zeroes
+    declare +i _str # to avoid octal interpretation of leading zeroes
     _str="${_time:(-8):2}" ; msgHour="${_str#0}" 
     _str="${_time:(-5):2}" ; msgMinute="${_str#0}" 
     _str="${_time:(-2):2}" ; msgSecond="${_str#0}"
-    # data="$( cDeleteJsonKey "time $sSuppressAttrs" "$data"  )" # delete attributes and remove double-quotes around numbers
-    # dbg ONE "$data"
     data="$( cDeleteJsonKey "time $sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )" # delete attributes and remove double-quotes around numbers
-    [[ $bMoreVerbose ]] && cEchoIfNotDuplicate "READ: $data"
+    (( bMoreVerbose )) && cEchoIfNotDuplicate "READ: $data"
     protocol="$(cExtractJsonVal protocol)"
     channel="$( cExtractJsonVal channel)"
     model="$(   cExtractJsonVal model)"    
     id="$(      cExtractJsonVal id)"
     rssi="$(    cExtractJsonVal rssi)"
-    [[ $model && ! $id ]] && id="$( cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
+    [[ $model && ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
     cHasJsonKey freq && sBand="$(cExtractJsonVal freq)" && sBand=${sBand%.[0-9]*} && sBand=${sBand/434/433} && basetopic="$sRtlPrefix/$sBand"
-    ident="${channel:-$id}" # prefer the channel over the id as the unique identifier, if present
+    ident="${channel:-$id}" # prefer channel (if present) over id as the unique identifier.
     model_ident="${model}${ident:+_$ident}"
 
     log "$(cAppendJsonKeyVal BAND "${model:+$sBand}")" # only append band when model is given, i.e. not for non-sensor messages.
-    [[ $bVerbose ]] || expr "$model_ident" : "$sSensorMatch.*" > /dev/null || continue # skip unwanted readings (regexp) early (if not verbose)
+    [[ ! $bVerbose && $model_ident =~ $sSensorMatch ]] && continue # skip unwanted readings (regexp) early (if not verbose)
 
     if [[ $model_ident && $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
         # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
 
-        _temp="$( cHasJsonKey temperature_C && jq -e -r "if .temperature_C then .temperature_C / $sRoundTo + 0.5 | floor * $sRoundTo else empty end" <<< "$data" )" # round to 0.5° C
+        _temp="$(cHasJsonKey temperature_C && jq -e -r "if .temperature_C then .temperature_C / $sRoundTo + 0.5 | floor * $sRoundTo else empty end" <<< "$data" )" # round to 0.5° C
         if [[ $_temp ]] ; then
             _bHasTemperature=1
             data="$( jq -cer ".temperature_C = $_temp" <<< "$data" )" # set to rounded temperature
@@ -553,10 +542,9 @@ do
         if [[ $_temp ]] ; then
             _bHasHumidity=1
             data="$( jq -cer ".humidity = $_temp" <<< "$data" )"
-         else 
+        else 
             _bHasHumidity=""
         fi
-        # _bHasHumidity="$( cAssureJsonVal humidity "<=100")"
         _bHasRain="$( cAssureJsonVal rain_mm ">0")"
         _bHasBatteryOK="$( cAssureJsonVal battery_ok "<=2")"
         _bHasPressureKPa="$(cAssureJsonVal pressure_kPa "<=9999" )"
@@ -573,7 +561,7 @@ do
         _bHasNewBattery="$( cHasJsonKey newbattery && echo 1 )" #  {"id":13,"battery_ok":1,"newbattery":0,"temperature_C":24,"humidity":42}
         _bHasRssi="$(cHasJsonKey rssi && echo 1 )"
 
-        if [[ $bRewriteMore ]] ; then
+        if (( bRewriteMore )) ; then
             data="$( cDeleteJsonKey ".transmit test" "$data" )"
             # data="$( cHasJsonKey button &&  jq -c 'if .button     == 0 then del(.button) else . end' <<< "$data" || echo "$data" )"
             # data="$( cHasJsonKey battery_ok  &&   jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" || echo "$data" )"
@@ -583,7 +571,6 @@ do
         fi
         [[ $sDoLog == "dir" && $model ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dLog/model/$model_ident"
         data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
-        # data="$( cDeleteJsonKey "freq2" "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
         cHasJsonKey freq  &&  data="$( jq -cer '.freq=(.freq + 0.5 | floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
         _factor=1
         cHasJsonKey freq1 &&  data="$( jq -cer ".freq1=(.freq1 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq1
@@ -597,16 +584,15 @@ do
         dbg "SKIPPING: $data"
         bSkipLine=""
         continue
-
     elif [ -z "$model_ident" ] ; then # stats message
         dbg "DEBUG: model_ident is empty"
-        [[ $bVerbose ]] && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
+        (( bVerbose )) && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
 
     elif [[ $bAlways || ${data/"freq":434/} != "${prev_data/"freq":434/}" || $nTimeStamp -gt $((prev_time+nMinSecondsOther)) ]] ; then
-        # ignore freq changes within the 433/434 range when comparing for a change....
-        if [[ $bVerbose ]] ; then
-            [[ $bRewrite ]] && cEchoIfNotDuplicate "" "CLEANED: $model_ident = $data" # resulting message for MQTT
-            expr match "$model_ident" "$sSensorMatch.*"  > /dev/null || continue # skip if match
+        # ignore frequency changes within the 433/434 range when comparing for a change....
+        if (( bVerbose )) ; then
+            (( bRewrite )) && cEchoIfNotDuplicate "" "CLEANED: $model_ident = $data" # resulting message for MQTT
+            [[ $model_ident =~ $sSensorMatch ]] && continue # skip if match
         fi
         prev_data="$data"
         prev_time="$nTimeStamp"
@@ -615,7 +601,7 @@ do
         aLastReadings[$model_ident]="$data"
         aCounts[$model_ident]="$(( aCounts[$model_ident] + 1 ))"
         # aProtocols[${protocol}]="$model"
-        if [[ $bMoreVerbose && ! $bQuiet ]] ; then
+        if (( bMoreVerbose && ! bQuiet )) ; then
             _prefix="SAME:  "  &&  [[ ${aLastReadings[$model_ident]} != "$prevval" ]] && _prefix="CHANGE(${#aLastReadings[@]}):"
             grep -E --color=auto '^[^/]*|/' <<< "$_prefix $model_ident /${aLastReadings[$model_ident]}/$prevval/"
         fi
@@ -623,11 +609,12 @@ do
         [[ $data == "$prevval" && ! $bMoreVerbose ]] && _nTimeDiff=$(( _nTimeDiff * 2 )) # delay outputting further if values are the same as last time
         _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident]!=1 && aCounts[$model_ident] >= nMinOccurences ))
 
-        if [[ $bVerbose ]] ; then
-            echo "_nTimeDiff=$_nTimeDiff, _bAnnounceReady=$_bAnnounceReady, hasTemperature=$_bHasTemperature, hasHumidity=$_bHasHumidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
+        if (( bVerbose )) ; then
+            echo "_nTimeDiff=$_nTimeDiff, announceReady=$_bAnnounceReady, hasTemperature=$_bHasTemperature, hasHumidity=$_bHasHumidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
             # (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 ))
             echo "model_ident=$model_ident, Readings=${aLastReadings[$model_ident]}, Counts=${aCounts[$model_ident]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] ))"
         fi
+        
         if (( _bAnnounceReady )) ; then
             # For now, only the following certain types of sensors are announced for auto-discovery:
             if (( _bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasCode || _bHasButtonR || _bHasDipSwitch || _bHasCounter || _bHasControl )) ; then
@@ -660,16 +647,14 @@ do
             fi
             aAnnounced[$model_ident]=1 # 1 = took place ()= dont reconsider for announcement)
         fi
-        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || "$_bAnnounceReady" -eq 1 || $fReplayfile ]] ; then # rcvd data should be different from previous reading(s) but not if coming from replayfile
+        if [[ $data != "$prevval" || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data should be different from previous reading(s) but not if coming from replayfile
             aLastReadings[$model_ident]="$data"
-            if [[ $bRewrite ]] ; then   #  && ( $_bHasTemperature || $_bHasHumidity ) 
+            if (( bRewrite )) ; then
                 [ "$rssi" ] && data="$(cAppendJsonKeyVal rssi "$rssi")" # put rssi back in
                 if [[ $data != "$prevval" ]] ; then
-                    # data="$( jq -cer '.NOTE = "changed"' <<< "$data" )"
                     data="$( cAppendJsonKeyVal NOTE "changed" )"
                 elif [[ $data == "$prevvals" ]] ; then
-                    # [[ $bVerbose ]] && data="$( jq -cer ".NOTE2 = \"=2nd (#${aCounts[$model_ident]},_bR=$_bAnnounceReady,${_nTimeDiff}s)\"" <<< "$data" )"
-                    [[ $bVerbose ]] && data="$( cAppendJsonKeyVal NOTE2 "=2nd (#${aCounts[$model_ident]},_bR=$_bAnnounceReady,${_nTimeDiff}s)" )"
+                    (( bVerbose )) && data="$( cAppendJsonKeyVal NOTE2 "=2nd (#${aCounts[$model_ident]},_bR=$_bAnnounceReady,${_nTimeDiff}s)" )"
                 fi
                 aSecondLastReadings[$model_ident]="$prevval"
             fi
@@ -689,7 +674,7 @@ do
         cMqttStarred log "{*event*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$channel*,*desc*:*${aNames[$protocol]}*,*protocol*:*$protocol*, *sensors*:[${_sensors%,}]}"
         cMqttState
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   
-        # log once in a while, good heuristic in a generalized neighbourhood
+        # log the status once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*:[$(  _comma=""
             for KEY in "${!aLastReadings[@]}"; do
                 _reading="${aLastReadings[$KEY]}" && _reading="${_reading/{/}" && _reading="${_reading/\}/}"
@@ -707,11 +692,11 @@ do
         unset aCounts   && declare -A aCounts
         unset aAnnounced && declare -A aAnnounced
         nPrevMax=$(( nPrevMax / 3 ))            # reduce it quite a bit (but not back to 0) to reduce future log messages
-        [[ $bRemoveAnnouncements ]] && cHassRemoveAnnounce
+        (( bRemoveAnnouncements )) && cHassRemoveAnnounce
     fi
 done
 
-s=1 && [ ! -t 1 ] && s=30 # sleep a longer time if not on a terminal
+s=1 && [ ! -t 1 ] && s=30 # sleep a little longer if not running on a terminal
 _msg="$sName: read failed (rc=$_rc), while-loop ended $(printf "%()T"), rtlprocid now :${rtlcoproc_PID}:, last data=$data, sleep=${s}s"
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*note*:*$_msg*}"
