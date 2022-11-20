@@ -10,7 +10,7 @@ set -o noclobber  # disable for security reasons
 sName="${0##*/}" && sName="${sName%.sh}"
 sMID="$( basename "${sName// /}" .sh )"
 sID="$sMID"
-rtl2mqtt_optfile="$( [ -r "${XDG_CONFIG_HOME:=$HOME/.config}/.$sName" ] && echo "$XDG_CONFIG_HOME/$sName" || echo "$HOME/.$sName" )" # ~/.config/rtl2mqtt or ~/.rtl2mqtt
+rtl2mqtt_optfile="$( [ -r "${XDG_CONFIG_HOME:=$HOME/.config}/$sName" ] && echo "$XDG_CONFIG_HOME/$sName" || echo "$HOME/.$sName" )" # ~/.config/rtl2mqtt or ~/.rtl2mqtt
 
 commandArgs="$*"
 dLog="/var/log/$sMID" # /var/log is default, but will be changed to /tmp if not useable
@@ -59,12 +59,12 @@ declare -A aAnnounced
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" # increases security
 
-alias _nx="local - && set +x" # alias to stop local verbosity (within function)
+# alias _nx="local - && set +x" # alias to stop local verbosity (within function)
 cDate() { printf "%($*)T" ; } # avoid invocating a seperate process
 cPid()  { sh -c 'echo $$' ; }
 
 log() {
-    _nx
+    local - && set +x
     if [ "$sDoLog" = "dir" ] ; then
         cRotateLogdirSometimes "$dLog"
         logfile="$dLog/$(cDate %H)"
@@ -76,7 +76,7 @@ log() {
   }
 
 cLogMore() {
-    _nx
+    local - && set +x
     [ "$sDoLog" ] || return
     echo "$sName:" "$@" 1>&2
     logger -p daemon.info -t "$sID" -- "$*"
@@ -84,7 +84,7 @@ cLogMore() {
   }
 
 dbg() { # output its args to stderr if option -v was set
-	_nx
+	local - && set +x
     (( bVerbose )) || return 1 
     echo "DEBUG: " "$@" 1>&2
     return 0 
@@ -97,14 +97,14 @@ cExpandStarredString() {
 
 cRotateLogdirSometimes() {           # check for logfile rotation only with probability of 1/60
     if (( msgMinute + msgSecond == 67 )) ; then 
-        cd "$1" && _files="$( find . -maxdepth 2 -type f -size +300k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 | xargs -0 )"
+        cd "$1" && _files="$( find . -maxdepth 2 -type f -size +500k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 | xargs -0 )"
         msgSecond=$(( msgSecond + 1 ))
         [[ $_files ]] && cLogMore "Rotated files: $_files"
     fi
   }
 
 cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquittoOptions)
-    _nx
+    local - && set +x
     if (( $# == 1 )) ; then
         _topic="/bridge/state"
         _msg="$1"
@@ -218,54 +218,100 @@ cHassRemoveAnnounce() {
 }
 
 cAppendJsonKeyVal() {  # cAppendJsonKeyVal "key" "val" "jsondata" (use $data if $3 empty, no quotes around numbers)
-    _nx
+    local - && set +x
     _val="$2" ; _d="${3:-$data}"
     # [ -z "$_val" ] && echo "$_d" # don't append the pair if val is empty !
-    [[ ! $_val =~ ^[-+]?[0-9]*(\.[0-9]+) ]] && _val="\"$_val\"" # surround _val by double quotes only if not-a-number
+    [[ $_val =~ ^[-+]?[0-9]*([\.0-9]+) ]] || _val="\"$_val\"" # surround _val by double quotes only if not-a-number
     echo "${_d/%\}/,\"$1\":$_val\}}"
 }
 # set -x ; data='{"one":1}' ; cAppendJsonKeyVal "x" "2x" ; cAppendJsonKeyVal "n" "2.3" ; cAppendJsonKeyVal "m" "-" ; exit  # returns: '{one:1,"x":"2"}'
-# cAppendJsonKeyVal "donot" "" '{"one":1}' ;    exit  # returns: '{"one":1,"donot":""}'
+# set -x ; cAppendJsonKeyVal "donot"  ""  '{"one":1}'  ;    exit  # returns: '{"one":1,"donot":""}' 
+# set -x ; cAppendJsonKeyVal "number" "55" '{"one":1}' ;    exit  # returns: '{"one":1,"number":55}'
 
 cHasJsonKey() {
-    _nx
+    local - && set +x
     [[ ${2:-$data} =~ \"$1\"\ *: ]]
 }
 # set -x ; j='{"action":"null","battery" :100}' ; cHasJsonKey action "$j" && echo yes ; cHasJsonKey battery "$j" && echo yes ; cHasJsonKey jessy "$j" || echo no ; exit
 # j='{"dipswitch":"++---o--+","rbutton":"11R"}' ; cHasJsonKey dipswitch "$j" && echo yes ; cHasJsonKey jessy "$j" || echo no ; exit
 
+cRemoveQuotesFromNumbers() { # removes double quotes from JSON numbers in $1 or $data
+    # ENHANCE FIXME: [[ $x =~ (\"[^\"]*\")[[:space:]]*:[[:space:]]*\"(-{0,1}[0-9]*[\.0-9]*) ]] ; echo "$x    ${BASH_REMATCH[1]} // ${BASH_REMATCH[2]}"
+    local - && set +x
+    _s="${1:-$data}"
+    _s="$( sed -e 's/: *"\([0-9.-]*\)" *\([,}]\)/:\1\2/g' <<< "${1:-$data}" )" # remove double-quotes around numbers
+    [ "$1" ] && echo "$_s" || data="$_s"
+}
+# set -x ; x='"one":"1a","two":"2","three":"3.5"' ; data="{$x}" ; cRemoveQuotesFromNumbers ; echo $data ; cRemoveQuotesFromNumbers "{$x, \"theta\":-0.5}" ; exit 0
+
 cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data if jsondata empty)
-    _nx
+    local - # && set +x
     shopt -s extglob
     local _d="${2:-$data}"
-    _d="${_d//*( )\"$1\"*( ):*( )\"+(!(\"))\"*( ),/}" # match a string before ,
-    _d="${_d//,*( )\"$1\"*( ):*( )\"+(!(\"))\"*( )\}/\}}" # match a string as last one
-    _d="${_d//\{*( )\"$1\"*( ):*( )\"+(!(\"))\"*( )\}/\{\}}" # match a string as the only one
-    # _x="${_d//\"$1\"*( ):*( )?([-+])+([0-9])?(\.)*([0-9])/}" # match a number
+    if cHasJsonKey "$1" "$2" ; then # replacement for:  jq -r ".$1 // empty" <<< "$_d"
+        if [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"[[:space:]]*)([,}]) ]] ||  # string
+                 [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*[0-9.-]+[[:space:]]*)([,}]) ]] ; then # number 
+            if [[ ${BASH_REMATCH[3]} == "}" ]] ; then
+                _r="${BASH_REMATCH[1]/\{}${BASH_REMATCH[2]}"
+             else
+                _r="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+             fi
+            _d=${_d/$_r/}
+        fi        
+    fi
+    # _d="${_d//*( )\"$1\"*( ):*( )\"+(!(\"))\"*( ),/}" # match a string before ,
+    # _d="${_d//,*( )\"$1\"*( ):*( )\"+(!(\"))\"*( )\}/\}}" # match a string as last one
+    # _d="${_d//\{*( )\"$1\"*( ):*( )\"+(!(\"))\"*( )\}/\{\}}" # match a string as the only one
 
-    cHasJsonKey "$@" && echo "$_d"
-}   
-# set -x ; data='{"one":"a","beta":2}' ; cDeleteSimpleJsonKey one ; cDeleteSimpleJsonKey two '{"alpha":"a","two":"xx"}' ; cDeleteSimpleJsonKey three '{ "three":"xxx"}' ; exit 1
-# set -x ; data='{"one" : 1,"beta":2}' ; cDeleteSimpleJsonKey one "$data" ; cDeleteSimpleJsonKey two '{"two":-2,"beta":2}' ; cDeleteSimpleJsonKey three '{"three":3.3,"beta":2}' ; exit 1
+    # _d="${_d//,*( )\"$1\"*( ):*( )?(+|-)+([0-9.])*( ),/,}" # match a number before ,
+    # _d="${_d//,*( )\"$1\"*( ):*( )?(+|-)+([0-9.])*( )\}/\}}" # match a number as last one
+    # _d="${_d//\{*( )\"$1\"*( ):*( )?(+|-)+([0-9.])*( )\}/\{\}}" # match a number as the only one
 
-cDeleteJsonKey() { # cDeleteJsonKey "key1" "key2" ... "jsondata" (jsondata must be provided)
-    _nx   
-    local _d
+    # cHasJsonKey "$@" && echo "$_d"
+    echo "$_d"
+    [ "$2" ] || data="$_d"
+} 
+# set -x ; cDeleteSimpleJsonKey freq '{"protocol":73,"id":11,"channel": 1,"battery_ok": 1,"freq":433.903,"temperature": 8,"BAND":433,"NOTE2":"=2nd (#3,_bR=1,260s)"}' ; exit 1
+# set -x ; data='{"one":"a","beta":22.1}' ; cDeleteSimpleJsonKey one ; cDeleteSimpleJsonKey beta ; cDeleteSimpleJsonKey two '{"alpha":"a","two":"xx"}' ; exit 1
+# set -x ; cDeleteSimpleJsonKey three '{ "three":"xxx" }' ; exit 1
+# set -x ; data='{"one" : 1,"beta":22}' ; cDeleteSimpleJsonKey one "$data" ; cDeleteSimpleJsonKey two '{"two":-2,"beta":22}' ; cDeleteSimpleJsonKey three '{"three":3.3,"beta":2}' ; exit 1
+# set -x ; data='{"id":2,"channel":2,"battery_ok":0,"temperature_C":-12.5,"freq":433.902,"rssi":-11.295}' ; cDeleteSimpleJsonKey temperature_C ; cDeleteSimpleJsonKey freq ; exit
+
+cDeleteJsonKeys() { # cDeleteJsonKeys "key1" "key2" ... "jsondata" (jsondata must be provided)
+    local - && set +x   
+    local _d ; local _r="${@:$#}"
+    # dbg "cDeleteJsonKeys $*"
     for k in "${@:1:($#-1)}" ; do
-        k="${k//[^a-zA-Z0-9_ ]}" # only allow alnum chars for attr names for sec reasons
-        _d="$_d,  .${k// /, .}"  # options with a space are considered multiple options
+        # k="${k//[^a-zA-Z0-9_ ]}" # only allow alnum chars for attr names for sec reasons
+        # _d="$_d,  .${k// /, .}"  # options with a space are considered multiple options
+        for k2 in $k ; do
+            _r="$( cDeleteSimpleJsonKey "$k2" "$_r" )"
+        done
     done
-    jq -c "del (${_d#,  })" <<< "${@:$#}"   # expands to: "del(.xxx, .yyy, ...)"
+    # _r="$(jq -c "del (${_d#,  })" <<< "${@:$#}")"   # expands to: "del(.xxx, .yyy, ...)"
+    echo "$_r"
+    # dbg "cDeleteJsonKeys $_r"
 }
-# set -x ; cDeleteJsonKey 'time' 'mic' '{"time" : "2022-10-18 16:57:47", "protocol" : 19, "model" : "Nexus-TH", "id" : 240, "channel" : 1, "battery_ok" : 1, "temperature_C" : 21.600, "humidity" : 20}' ; exit 1
-# set -x ; cDeleteJsonKey "one" "two" ".four five six" "*_special*" '{"one":"1", "two":2  ,"three":3,"four":"4", "five":5, "_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
+# set -x ; cDeleteJsonKeys 'time mic' '{"time" : "2022-10-18 16:57:47", "protocol" : 19, "model" : "Nexus-TH", "id" : 240, "channel" : 1, "battery_ok" : 1, "temperature_C" : 21.600, "humidity" : 20}' ; exit 1
+# set -x ; cDeleteJsonKeys "one" "two" ".four five six" "*_special*" '{"one":"1", "two":2  ,"three":3,"four":"4", "five":5, "_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
 # results in: {"three":3,"_special2":"aa*?+bb"}
 
 cExtractJsonVal() {
-    _nx
+    local - && set +x
     cHasJsonKey "$1" && jq -r ".$1 // empty" <<< "${2:-$data}"
 }
 # set -x ; data='{"action":"good","battery":100}' ; cExtractJsonVal action && echo yes ; cExtractJsonVal notthere || echo no ; exit
+
+cSimpleExtractJsonVal() {
+    local - && set +x
+    if cHasJsonKey "$1" ; then # replacement for:  jq -r ".$1 // empty" <<< "${2:-$data}"
+        if [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*\"([^\"]*)\"[[:space:]]*[,}] ]] ||  # string
+                [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*([0-9.-]+)[[:space:]]*[,}] ]] ; then # number 
+            echo "${BASH_REMATCH[2]}"
+        fi        
+    fi
+}
+# set -x ; data='{ "action":"good" , "battery":99.5}' ; cSimpleExtractJsonVal action && echo yes ; cSimpleExtractJsonVal battery && echo yes ; cSimpleExtractJsonVal notthere || echo no ; exit
 
 cAssureJsonVal() {   # cAssureJsonVal "battery" ">9" '{"action":"null","battery":100}'
     cHasJsonKey "$1" &&  jq -er "if (.$1 ${2:+and .$1 $2} ) then 1 else empty end" <<< "${3:-$data}"
@@ -273,20 +319,21 @@ cAssureJsonVal() {   # cAssureJsonVal "battery" ">9" '{"action":"null","battery"
 # set -x ; data='{"action":"null","battery":100}' ; cAssureJsonVal battery ">999" ; cAssureJsonVal battery ">9" ;  exit
 
 cEqualJson() {   # cEqualJson "json1" "json2" "atributes to be ignored" '{"action":"null","battery":100}'
-    _nx
+    local - && set +x
     _s1="$1" ; _s2="$2"
     if [[ $3 != "" ]] ; then
-        _s1="$( cDeleteJsonKey "$3" "$_s1" )"
-        _s2="$( cDeleteJsonKey "$3" "$_s2" )"
+        _s1="$( cDeleteJsonKeys "$3" "$_s1" )"
+        _s2="$( cDeleteJsonKeys "$3" "$_s2" )"
     fi
     [[ $_s1 == "$_s2" ]] # return comparison value
 }
 # set -x ; data1='{"act":"one","batt":100}' ; data2='{"act":"two","batt":100}' ; cEqualJson "$data1" "$data1" && echo AAA; cComcEqualJsonpareJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data1" "act other" && echo CCC; exit
 
-[ -r "$rtl2mqtt_optfile" ] && _moreopts="$( grep -v '#' < "$rtl2mqtt_optfile" | tr -c -d '[:alnum:]_. -' )" && dbg "Read _moreopts from $rtl2mqtt_optfile"
-cLogMore "all options: $* $_moreopts"
+[ -r "$rtl2mqtt_optfile" ] && _moreopts="$( sed -e 's/#.*//'  < "$rtl2mqtt_optfile" | tr -c -d '[:alnum:]_. -' )" && dbg "Read _moreopts from $rtl2mqtt_optfile"
+[[ $* =~ -F\ [0-9]*  ]] && _moreopts="${_moreopts//-F [0-9][0-9][0-9]/}" && _moreopts="${_moreopts//-F [0-9][0-9]/}" # -F on command line overules any other -F options
+cLogMore "Gathered options: $_moreopts $*"
 
-while getopts "?qh:pt:S:drl:f:F:M:H:AR:Y:w:c:as:t:T:2vx" opt $_moreopts  "$@"
+while getopts "?qh:pt:S:drl:f:F:M:H:AR:Y:w:c:as:t:T:2vx" opt $_moreopts "$@"
 do
     case "$opt" in
     \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x" 1>&2
@@ -356,7 +403,7 @@ do
         ;;
     s)  sSuppressAttrs="$sSuppressAttrs ${OPTARG//[^a-zA-Z0-9_]}" # sensor attributes that will be always eliminated
         ;;
-    2)  bTryAlternate=1 # ease experiments (not used in production)
+    2)  bTryAlternate=1 # ease coding experiments (not to be used in production)
         ;;
     v)  (( bVerbose )) && bMoreVerbose=1 && rtl433_opts=( "-M noise:60" "${rtl433_opts[@]}" -v )
         bVerbose=1 # more output for debugging purposes
@@ -404,7 +451,7 @@ _protos="$( $rtl433_command -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { p=$1 ; prin
 declare -A aNames ; while read -r p name ; do aNames["$p"]="$name" ; done <<< "$_protos"
 
 cEchoIfNotDuplicate() {
-    _nx
+    local - && set +x
     if [[ "$1..$2" != "$gPrevData" ]] ; then
         (( bWasDuplicate )) && echo "" # echo a newline after some dots
         echo -e "$1${2:+\n$2}"
@@ -431,7 +478,7 @@ fi
 (( bRemoveAnnouncements )) && cHassRemoveAnnounce
 
 trap_exit() {   # stuff to do when exiting
-    _nx
+    local - && set +x
     log "$sName exit trapped at $(cDate): removing announcements, then logging state."
     (( bRemoveAnnouncements )) && cHassRemoveAnnounce
     _cppid="$rtlcoproc_PID" # avoid race condition after killing coproc
@@ -455,7 +502,7 @@ trap_int() {    # log all collected sensors to MQTT
 trap 'trap_int' INT 
 
 trap_usr1() {    # toggle verbosity 
-    (( bVerbose )) && bVerbose="" || bverbose=1 # switch bVerbose
+    (( bVerbose )) && bVerbose="" || bVerbose=1 # switch bVerbose
     _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs, current sBand=$sBand"
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*note*:*$_msg*}"
@@ -501,7 +548,7 @@ else
     # Start the RTL433 listener as a bash coprocess .... # https://unix.stackexchange.com/questions/459367/using-shell-variables-for-command-options
     coproc rtlcoproc ( $rtl433_command ${conf_file:+-c $conf_file} "${rtl433_opts[@]}" -F json  2>&1  )   # options are not double-quoted on purpose 
     # -F "mqtt://$mqtthost:1883,events,devices"
-    renice -n 17 "${rtlcoproc_PID}"
+    renice -n 17 "${rtlcoproc_PID}" > /dev/null
 
     if (( rtlcoproc_PID && bAnnounceHass )) ; then
         # _statistics="*sensorcount*:*${nReadings:-0}*,*announcedcount*:*$nAnnouncedCount*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,*readingscount*:*$nReadings*"
@@ -515,20 +562,20 @@ else
     fi
 fi 
 
-while read -r data <&"${rtlcoproc[0]}" ; _rc=$? && (( _rc==0  || _rc==27 ))      # ... and enter the loop
+while read -r data <&"${rtlcoproc[0]}" ; _rc=$? && (( _rc==0  || _rc==27 ))      # ... and go through the loop
 do
     _beginpid=$(cPid) # support counting/debugging/optimizing number of processes started in within the loop
     # dbg "diffpid=$(awk "BEGIN {print ( $(cPid) - $_beginpid - 3) }" )" 
 
     if [[ $data =~ ^rtlsdr_set_center_freq ]] ; then 
-        # convert msg "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) to be processed further down
+        # convert older msg type "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) to be processed further down
         data="$( awk '{ printf "{\"center_frequency\":%d,\"BAND\":%d}" , $2 , int(($2/1000000+1)/2)*2-1  }' <<< "$data" )"   #  printf "%.0f\n"
     elif [[ $data =~ ^[^{] ]] ; then # possibly eliminating any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
-        data=${data#\*\*\* } # Remove any leading "*** "
+        data=${data#\*\*\* } # Remove any leading stars "*** "
         if [[ $data =~ ^"Please increase your allowed usbfs buffer size" ]] ; then
-            cMqttStarred log "{*event*:*warning*,*note*:*${data//\*/+}*}" # convert to simple JSON msg
+            cMqttStarred log "{*event*:*warning*,*note*:*${data//\*/+}*}" # log a simple JSON msg
         elif [[ $data =~ ^"Allocating " ]] ; then # "Allocating 15 zero-copy buffers"
-            (( bVerbose )) && cMqttStarred log "{*event*:*debug*,*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
+            (( bMoreVerbose )) && cMqttStarred log "{*event*:*debug*,*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
         fi
         log "Non-JSON: $data"
         continue
@@ -537,58 +584,67 @@ do
         data="${data//\" : /\":}" # beautify a bit, removing extra space(s)
         sBand="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
         basetopic="$sRtlPrefix/$sBand"
-        (( bVerbose )) && cEchoIfNotDuplicate "CENTER: $data" && cMqttStarred log "*event*:*debug*,${data//\"/*}"
-        nLastCenterMessage="$(cDate)" # prepare for avoiding race condition after freq hop (not implemented yet)
+        (( bVerbose )) && cEchoIfNotDuplicate "CENTER: $data" && cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*}}"
+        nLastCenterMessage="$(cDate)" # prepare for avoiding race condition after freq hop (FIXME: not implemented yet)
         continue
     fi
-    dbg "RAW: $data"
+    (( bVerbose )) && echo "=========================="
+    dbg "RAW" "$data"
+    data="${data//\" : /\":}" # remove superflous space
     nReceivedCount=$(( nReceivedCount + 1 ))
     
     _time="$(cExtractJsonVal time)"  # ;  msgTime="2021-11-01 03:05:07"
-    declare +i _str # to avoid octal interpretation of leading zeroes
+    declare +i _str # avoid octal interpretation of any leading zeroes
     _str="${_time:(-8):2}" ; msgHour="${_str#0}" 
     _str="${_time:(-5):2}" ; msgMinute="${_str#0}" 
     _str="${_time:(-2):2}" ; msgSecond="${_str#0}"
-    data="$( cDeleteJsonKey "time $sSuppressAttrs" "$data" | sed -e 's/:"\([0-9.-]*\)"/:\1/g'  )" # delete attributes and remove double-quotes around numbers
     (( bMoreVerbose )) && cEchoIfNotDuplicate "READ: $data"
-    protocol="$(cExtractJsonVal protocol)"
-    channel="$( cExtractJsonVal channel)"
-    model="$(   cExtractJsonVal model)"    
-    id="$(      cExtractJsonVal id)"
-    rssi="$(    cExtractJsonVal rssi)"
+    _delkeys="time $sSuppressAttrs"
+    protocol="$(cSimpleExtractJsonVal protocol)"
+    channel="$( cSimpleExtractJsonVal channel)"
+    model="$(   cSimpleExtractJsonVal model)"    
+    id="$(      cSimpleExtractJsonVal id)"
+    rssi="$(    cSimpleExtractJsonVal rssi)"
+    cHasJsonKey freq && sBand="$(cSimpleExtractJsonVal freq)" && sBand=${sBand%.[0-9]*} && sBand=${sBand/434/433} && basetopic="$sRtlPrefix/$sBand"
+    log "$(cAppendJsonKeyVal BAND "${model:+$sBand}")" # only append band when model is given, i.e. not for non-sensor messages.
+    
     [[ $model && ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
-    cHasJsonKey freq && sBand="$(cExtractJsonVal freq)" && sBand=${sBand%.[0-9]*} && sBand=${sBand/434/433} && basetopic="$sRtlPrefix/$sBand"
     ident="${channel:-$id}" # prefer channel (if present) over id as the unique identifier.
     model_ident="${model}${ident:+_$ident}"
-
-    log "$(cAppendJsonKeyVal BAND "${model:+$sBand}")" # only append band when model is given, i.e. not for non-sensor messages.
+    
     [[ ! $bVerbose && ! $model_ident =~ $sSensorMatch ]] && continue # skip unwanted readings (regexp) early (if not verbose)
 
-    if [[ $model_ident && $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
+    if [[ $model_ident && ! $bRewrite ]] ; then                  # Clean the line from less interesting information....
+        data="$( cDeleteJsonKeys "$_delkeys" "$data" )"
+    elif [[ $model_ident && $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
         # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
+        _delkeys="$_delkeys model mod snr noise mic rssi" && [ -z "$bVerbose" ] && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
+        [[ ${aLastReadings[$model_ident]} && ${_temp/.*} -lt 50 ]] && _delkeys="$_delkeys protocol" # output protocol on first sight  or when unusual
+        data="$( cDeleteJsonKeys "$_delkeys" "$data" )" 
+        cRemoveQuotesFromNumbers
 
-        _temp="$(cHasJsonKey temperature_C && jq -e -r "if .temperature_C then .temperature_C / $sRoundTo + 0.5 | floor * $sRoundTo else empty end" <<< "$data" )" # round to 0.5° C
+       _temp="$(cHasJsonKey temperature_C && jq -e -r "if .temperature_C then .temperature_C / $sRoundTo + 0.5 | floor * $sRoundTo else empty end" <<< "$data" )" # round to 0.5° C
         if [[ $_temp ]] ; then
             _bHasTemperature=1
-            data="$( jq -cer ".temperature_C = $_temp" <<< "$data" )" # set to rounded temperature
+            data="$(cDeleteSimpleJsonKey temperature_C)"
+            data="$(cAppendJsonKeyVal temperature_C "$_temp")" 
             [[ ${aPrevTempVals[$model_ident]} ]] || aPrevTempVals[$model_ident]=0
         else 
             _bHasTemperature=""
         fi
-        _delkeys="model mod snr noise"
-        [[ -z $_temp || ${_temp/.*} -lt 50 ]] && _delkeys="$_delkeys protocol"
-        data="$( cDeleteJsonKey "$_delkeys" "$data" )" # other stuff: id rssi subtype channel mod snr noise
-        _temp="$( cHasJsonKey humidity && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 2 + 1 ) + 0.5 | floor * ( $sRoundTo * 2 + 1 ) | floor else empty end" <<< "$data" )" # round to 2,5%
 
+        _temp="$( cHasJsonKey humidity && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 2 + 1 ) + 0.5 | floor * ( $sRoundTo * 2 + 1 ) | floor else empty end" <<< "$data" )" # round to 2,5%
         if [[ $_temp ]] ; then
             _bHasHumidity=1
-            data="$( jq -cer ".humidity = $_temp" <<< "$data" )"
+            data="$(cDeleteSimpleJsonKey humidity)"
+            data="$(cAppendJsonKeyVal humidity "$_temp")" 
         else 
             _bHasHumidity=""
         fi
+        
         _bHasRain="$( cAssureJsonVal rain_mm ">0")"
-        _bHasBatteryOK="$( cAssureJsonVal battery_ok "<=2")"
-        _bHasPressureKPa="$(cAssureJsonVal pressure_kPa "<=9999" )"
+        _bHasBatteryOK="$( cAssureJsonVal battery_ok "<= 2")"
+        _bHasPressureKPa="$(cAssureJsonVal pressure_kPa "<= 9999" )"
         _bHasZone="$(cHasJsonKey zone && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
         _bHasUnit="$(cHasJsonKey unit && echo 1 )" #        {"id":25612,"unit":15,"learn":0,"code":"7c818f","freq":433.942}
         _bHasLearn="$(cHasJsonKey learn && echo 1 )" #        {"id":25612,"unit":15,"learn":0,"code":"7c818f","freq":433.942}
@@ -603,20 +659,21 @@ do
         _bHasRssi="$(cHasJsonKey rssi && echo 1 )"
 
         if (( bRewriteMore )) ; then
-            data="$( cDeleteJsonKey ".transmit test" "$data" )"
+            data="$( cDeleteJsonKeys "transmit test" "$data" )"
             # data="$( cHasJsonKey button &&  jq -c 'if .button     == 0 then del(.button) else . end' <<< "$data" || echo "$data" )"
+            # .battery_ok==1 means "OK".
             # data="$( cHasJsonKey battery_ok  &&   jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" || echo "$data" )"
             data="$( cHasJsonKey unknown1 &&   jq -c 'if .unknown1   == 0 then del(.unknown1)   else . end' <<< "$data" || echo "$data" )"
 
             bSkipLine="$( [[ $_bHasTemperature || $_bHasHumidity ]] && jq -e -r 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
         fi
-        [[ $sDoLog == "dir" && $model ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dLog/model/$model_ident"
-        data="$( sed -e 's/"temperature_C":/"temperature":/' -e 's/":([0-9.-]+)/":"\&"/g'  <<< "$data" )" # hack to cut off "_C" and to add double-quotes not using jq
-        cHasJsonKey freq  &&  data="$( jq -cer '.freq=(.freq + 0.5 | floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
-        _factor=1
-        cHasJsonKey freq1 &&  data="$( jq -cer ".freq1=(.freq1 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq1
-        cHasJsonKey freq2 &&  data="$( jq -cer ".freq2=(.freq2 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq2
         data="$(cAppendJsonKeyVal BAND "$sBand")"
+        [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dLog/model/$model_ident"
+        data="${data/\"temperature_C\":/\"temperature\":}" # hack to cut off "_C" at end of temperature_C
+        # cHasJsonKey freq  &&  data="$( jq -cer '.freq=(.freq + 0.5 | floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
+        _factor=1
+        # cHasJsonKey freq1 &&  data="$( jq -cer ".freq1=(.freq1 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq1
+        # cHasJsonKey freq2 &&  data="$( jq -cer ".freq2=(.freq2 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq2
     fi
 
     nTimeStamp="$(cDate %s)"
@@ -627,7 +684,7 @@ do
         continue
     elif [ -z "$model_ident" ] ; then # stats message
         dbg "DEBUG: model_ident is empty"
-        (( bVerbose )) && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
+        (( bVerbose )) && data="${data//\" : /\":}" && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
 
     elif [[ $bAlways || ${data/"freq":434/} != "${prev_data/"freq":434/}" || $nTimeStamp -gt $((prev_time+nMinSecondsOther)) ]] ; then
         # ignore frequency changes within the 433/434 range when comparing for a change....
@@ -647,9 +704,9 @@ do
             grep -E --color=auto '^[^/]*|/' <<< "$_prefix $model_ident /${aLastReadings[$model_ident]}/$prevval/"
         fi
         _nTimeDiff=$(( (_bHasTemperature || _bHasHumidity) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
-        _isequal=$( cEqualJson "$data" "$prevval" "freq rssi id" && echo 1 )
-        [[ $_isequal && ! $bMoreVerbose ]] && _nTimeDiff=$(( _nTimeDiff * 2 )) # delay outputting further if values are the same as last time
-        _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident]!=1 && aCounts[$model_ident] >= nMinOccurences ))
+        _issame=$( cEqualJson "$data" "$prevval" "freq freq1 freq2 rssi id protocol" && echo 1 )
+        [[ $_issame && ! $bMoreVerbose ]] && _nTimeDiff=$(( _nTimeDiff * 2 )) # delay outputting further if values are the same as last time
+        _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident] != 1 && aCounts[$model_ident] >= nMinOccurences ))
 
         if (( bVerbose )) ; then
             echo "_nTimeDiff=$_nTimeDiff, announceReady=$_bAnnounceReady, hasTemperature=$_bHasTemperature, hasHumidity=$_bHasHumidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
@@ -689,13 +746,13 @@ do
             fi
             aAnnounced[$model_ident]=1 # 1 = took place ()= dont reconsider for announcement)
         fi
-        if [[ ! $_isequal || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data should be different from previous reading(s) but not if coming from replayfile
+        if [[ ! $_issame || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data should be different from previous reading(s) but not if coming from replayfile
             aLastReadings[$model_ident]="$data"
             if (( bRewrite )) ; then
                 # [ "$rssi" ] && data="$(cAppendJsonKeyVal rssi "$rssi")" # put rssi back in
-                if [[ ! $_isequal ]] ; then
+                if [[ ! $_issame ]] ; then
                     data="$( cAppendJsonKeyVal NOTE "changed" )"
-                elif ! cEqualJson "$data" "$prevvals" "rssi id" ; then
+                elif ! cEqualJson "$data" "$prevvals" "freq freq1 freq2 rssi id" ; then
                     (( bVerbose )) && data="$( cAppendJsonKeyVal NOTE2 "=2nd (#${aCounts[$model_ident]},_bR=$_bAnnounceReady,${_nTimeDiff}s)" )"
                 fi
                 aSecondLastReadings[$model_ident]="$prevval"
