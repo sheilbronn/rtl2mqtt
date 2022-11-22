@@ -90,6 +90,12 @@ dbg() { # output its args to stderr if option -v was set
     return 0 
 	}
 
+cCheckExit() { # beautify $data and output it, then exit for debugging purposes
+    json_pp <<< "$data" # "${@:-$data}"
+    exit 0
+  }
+# set -x ; data='{"one":1}' ; cCheckExit # '{"two":1}' 
+
 cExpandStarredString() {
     _esc="quote_star_quote" ; _str="$1"
     _str="${_str//\"\*\"/$_esc}"  &&  _str="${_str//\"/\'}"  &&  _str="${_str//\*/\"}"  &&  _str="${_str//$esc/\"*\"}"  && echo "$_str"
@@ -249,23 +255,20 @@ cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data i
     shopt -s extglob
     local _d="${2:-$data}"
     if cHasJsonKey "$1" "$2" ; then # replacement for:  jq -r ".$1 // empty" <<< "$_d"
-        if [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"[[:space:]]*)([,}]) ]] ||  # string
-                 [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*[0-9.-]+[[:space:]]*)([,}]) ]] ; then # number 
+        if      [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*[0-9.-]+[[:space:]]*)([,}])     ]] || # number 
+                [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"[[:space:]]*)([,}])   ]] ||  # string
+                [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\[[^\]]*\][[:space:]]*)([,}])   ]] ||  # array
+                [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\{[^\}]*\}[[:space:]]*)([,}])   ]] ; then # curly braces, FIXME: max one level for now
             if [[ ${BASH_REMATCH[3]} == "}" ]] ; then
-                _r="${BASH_REMATCH[1]/\{}${BASH_REMATCH[2]}"
+                _f="${BASH_REMATCH[1]/\{}${BASH_REMATCH[2]}" ; true
              else
-                _r="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+                _f="${BASH_REMATCH[2]}${BASH_REMATCH[3]}" ; false
              fi
-            _d=${_d/$_r/}
+             _f=${_f/]/\\]} # escape a closing square bracket
+            _d="${_d/$_f/}"
+        else :
         fi        
     fi
-    # _d="${_d//*( )\"$1\"*( ):*( )\"+(!(\"))\"*( ),/}" # match a string before ,
-    # _d="${_d//,*( )\"$1\"*( ):*( )\"+(!(\"))\"*( )\}/\}}" # match a string as last one
-    # _d="${_d//\{*( )\"$1\"*( ):*( )\"+(!(\"))\"*( )\}/\{\}}" # match a string as the only one
-
-    # _d="${_d//,*( )\"$1\"*( ):*( )?(+|-)+([0-9.])*( ),/,}" # match a number before ,
-    # _d="${_d//,*( )\"$1\"*( ):*( )?(+|-)+([0-9.])*( )\}/\}}" # match a number as last one
-    # _d="${_d//\{*( )\"$1\"*( ):*( )?(+|-)+([0-9.])*( )\}/\{\}}" # match a number as the only one
 
     # cHasJsonKey "$@" && echo "$_d"
     echo "$_d"
@@ -276,6 +279,8 @@ cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data i
 # set -x ; cDeleteSimpleJsonKey three '{ "three":"xxx" }' ; exit 1
 # set -x ; data='{"one" : 1,"beta":22}' ; cDeleteSimpleJsonKey one "$data" ; cDeleteSimpleJsonKey two '{"two":-2,"beta":22}' ; cDeleteSimpleJsonKey three '{"three":3.3,"beta":2}' ; exit 1
 # set -x ; data='{"id":2,"channel":2,"battery_ok":0,"temperature_C":-12.5,"freq":433.902,"rssi":-11.295}' ; cDeleteSimpleJsonKey temperature_C ; cDeleteSimpleJsonKey freq ; exit
+# set -x ; data='{"event":"debug","message":{"center_frequency":433910000, "other":"zzzzz"}}' ; cDeleteSimpleJsonKey message ; cCheckExit
+# set -x ; data='{"event":"debug","message":{"center_frequency":433910000, "frequencies":[433910000, 868300000, 433910000, 868300000, 433910000, 915000000], "hop_times":[61]}}' ; cDeleteSimpleJsonKey hop_times ; cDeleteSimpleJsonKey frequencies ; cCheckExit
 
 cDeleteJsonKeys() { # cDeleteJsonKeys "key1" "key2" ... "jsondata" (jsondata must be provided)
     local - && set +x   
@@ -584,7 +589,7 @@ do
         data="${data//\" : /\":}" # beautify a bit, removing extra space(s)
         sBand="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
         basetopic="$sRtlPrefix/$sBand"
-        (( bVerbose )) && cEchoIfNotDuplicate "CENTER: $data" && cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*}}"
+        (( bVerbose )) && cEchoIfNotDuplicate "CENTER: $data" && cDeleteSimpleJsonKey "frequencies" && cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*}}"
         nLastCenterMessage="$(cDate)" # prepare for avoiding race condition after freq hop (FIXME: not implemented yet)
         continue
     fi
@@ -633,7 +638,7 @@ do
             _bHasTemperature=""
         fi
 
-        _temp="$( cHasJsonKey humidity && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 2 + 1 ) + 0.5 | floor * ( $sRoundTo * 2 + 1 ) | floor else empty end" <<< "$data" )" # round to 2,5%
+        _temp="$( cHasJsonKey humidity && jq -e -r "if .humidity and .humidity<=100 then .humidity / ( $sRoundTo * 4 + 1 ) + 0.5 | floor * ( $sRoundTo * 4 + 1 ) | floor else empty end" <<< "$data" )" # round to 2,5%
         if [[ $_temp ]] ; then
             _bHasHumidity=1
             data="$(cDeleteSimpleJsonKey humidity)"
