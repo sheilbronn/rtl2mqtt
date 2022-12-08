@@ -27,7 +27,7 @@ declare -a rtl433_opts=( -M protocol -M noise:300 -M level -C si )  # generic op
 declare -a rtl433_opts_more=( -R -31 -R -53 -R -86 ) # My specific personal excludes
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
 sSensorMatch=".*" # any sensor name will have to match this regex
-sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 1+2*x (see below)
+sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 4*x (see below)
 
 # xx=( one "*.log" ) && xx=( "${xx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;         exit 0
 
@@ -454,11 +454,10 @@ do
     esac
 done
 
-shift "$((OPTIND-1))"   # Discard options processed by getopts, any remaining options will be passed to mosquitto_sub further down on
+shift $((OPTIND-1))   # Discard options processed by getopts, any remaining options will be passed to mosquitto_sub further down on
 
 # fixed in rtl_433 8e343ed: the real hop secs seam to be 1 higher than the value passed to -H...
 rtl433_opts+=( ${nHopSecs:+-H $nHopSecs} ${nStatsSec:+-M stats:1:$nStatsSec} )
-# echo "${rtl433_opts[@]}" && exit 1
 sRoundTo="$( cMultiplyTen "$sRoundTo" )"
 
 if [ -f "${dLog}.log" ] ; then  # one logfile only
@@ -583,7 +582,7 @@ if [[ $fReplayfile ]] ; then
     coproc rtlcoproc ( shopt -s extglob ; while read -r l ; do echo "${l##*([!{])}"; sleep 1 ; done < "$fReplayfile" ; sleep 5 ) # remove anything from the replay file before an opening curly brace
 else
     if [[ $bVerbose || -t 1 ]] ; then
-        cLogMore "options for rtl_433 are: ${rtl433_opts[*]}"
+        cLogMore "rtl_433 ${rtl433_opts[*]}"
         (( nMinOccurences > 1 )) && cLogMore "Will do MQTT announcements only after at least $nMinOccurences occurences..."
     fi 
     # Start the RTL433 listener as a bash coprocess .... # https://unix.stackexchange.com/questions/459367/using-shell-variables-for-command-options
@@ -631,14 +630,14 @@ do
         basetopic="$sRtlPrefix/${sBand:-999}"
         (( bVerbose )) && cEchoIfNotDuplicate "CENTER: $data"
         _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && _freqs=${_freqs}
-        cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*}}"
+        (( bVerbose )) && cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*}}"
         nLastCenterMessage="$(cDate)" # prepare for avoiding race condition after freq hop (FIXME: not implemented yet)
         continue
     fi
     (( bVerbose )) && echo "================================="
     dbg RAW ":$data:"
-    data="${data//\" : /\":}" # remove superflous space
-    nReceivedCount+=1
+    data="${data//\" : /\":}" # remove superflous space around the colons
+    nReceivedCount=+1
 
     # cPidDelta 1ST
 
@@ -682,7 +681,7 @@ do
             # set -x
             temperature="$(( ( $(cMultiplyTen "$temperature") + sRoundTo/2 ) / sRoundTo * sRoundTo ))" && temperature="$(cDiv10 $temperature)"  # round to 0.x °C
             cDeleteSimpleJsonKey temperature_C
-            cAppendJsonKeyVal temperature_C "$temperature"
+            cAppendJsonKeyVal temperature "$temperature"
             [[ ${aPrevTempVals[$model_ident]} ]] || aPrevTempVals[$model_ident]=0
         else 
             bHasTemperature=""
@@ -708,6 +707,7 @@ do
         _bHasChannel="$(cHasJsonKey channel && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
         _bHasControl="$(cHasJsonKey control && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
         _bHasCmd="$(cHasJsonKey cmd && echo 1 )"
+        _bHasData="$(cHasJsonKey data && echo 1 )"
         _bHasCounter="$(cHasJsonKey counter && echo 1 )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
         _bHasCode="$(   cHasJsonKey code && echo 1 )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
         _bHasButtonR="$(cHasJsonKey rbutton && echo 1 )" #  rtl/433/Cardin-S466/00 {"dipswitch":"++---o--+","rbutton":"11R"}
@@ -720,26 +720,27 @@ do
             # data="$( cHasJsonKey button &&  jq -c 'if .button == 0 then del(.button) else . end' <<< "$data" || echo "$data" )"
             # .battery_ok==1 means "OK".
             # data="$( cHasJsonKey battery_ok  &&   jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" || echo "$data" )"
-            data="$( cHasJsonKey unknown1 &&   jq -c 'if .unknown1 == 0 then del(.unknown1)   else . end' <<< "$data" || echo "$data" )"
+            # data="$( cHasJsonKey unknown1 &&   jq -c 'if .unknown1 == 0 then del(.unknown1)   else . end' <<< "$data" || echo "$data" )"
+            cHasJsonKey unknown1 && (( $(cExtractJsonVal unknown1) == 0 )) && cDeleteSimpleJsonKey unknown1
 
-            bSkipLine="$( [[ $bHasTemperature || $bHasHumidity ]] && jq -er 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
+            # bSkipLine="$( [[ $bHasTemperature || $bHasHumidity ]] && jq -er 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
+            temperature=${temperature/.[0-9]*} ; humidity=${humidity/.[0-9]*} 
+            bSkipLine=$(( humidity > 100 || temperature < -50 )) # sanitize
         fi
         cAppendJsonKeyVal BAND "$sBand"
         [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dLog/model/$model_ident"
-        data="${data/\"temperature_C\":/\"temperature\":}" # hack to cut off "_C" at end of temperature_C
         # cHasJsonKey freq  &&  data="$( jq -cer '.freq=(.freq + 0.5 | floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
         # _factor=1
         # cHasJsonKey freq1 &&  data="$( jq -cer ".freq1=(.freq1 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq1
         # cHasJsonKey freq2 &&  data="$( jq -cer ".freq2=(.freq2 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq2
     fi
-
     # cPidDelta 3RD
 
     nTimeStamp=$(cDate %s)
     # Send message to MQTT or skip it ...
-    if [[ $bSkipLine ]] ; then
+    if (( bSkipLine )) ; then
         dbg SKIPPING "$data"
-        bSkipLine=""
+        bSkipLine=0
         continue
     elif [ -z "$model_ident" ] ; then # stats message
         dbg "model_ident is empty"
@@ -756,7 +757,7 @@ do
         prevval="${aLastReadings[$model_ident]}"
         prevvals="${aSecondLastReadings[$model_ident]}"
         aLastReadings[$model_ident]="$data"
-        aCounts[$model_ident]="$(( aCounts[$model_ident] + 1 ))"
+        aCounts[$model_ident]+=1
         # aProtocols[${protocol}]="$model"
         if (( bMoreVerbose && ! bQuiet )) ; then
             _prefix="SAME:  "  &&  [[ ${aLastReadings[$model_ident]} != "$prevval" ]] && _prefix="CHANGE(${#aLastReadings[@]}):"
@@ -775,7 +776,7 @@ do
         
         if (( _bAnnounceReady )) ; then
             # For now, only the following certain types of sensors are announced for auto-discovery:
-            if (( bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasCode || _bHasButtonR || _bHasDipSwitch || _bHasCounter || _bHasControl )) ; then
+            if (( bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch || _bHasCounter || _bHasControl )) ; then
                 _name="${aNames[$protocol]}" 
                 _name="${_name:-$model}" # fallback
                 # if the sensor has one of the above attributes, announce all the attributes it has ...:
@@ -784,6 +785,7 @@ do
                 (( _bHasPressureKPa )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
                 (( _bHasBatteryOK   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
                 (( _bHasCmd         )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd"       "value_json.cmd"   motion
+                (( _bHasData        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Data"       "value_json.data"   data
                 (( _bHasRssi )) || [ "$rssi" ] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal # FIXME: simplify
                 (( _bHasCounter     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Counter"   "value_json.counter"   counter
                 (( _bHasCode        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Code"       "value_json.code"     lock
