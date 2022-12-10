@@ -22,7 +22,7 @@ basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
 rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
-declare -a rtl433_opts=( -M protocol -M noise:300 -M level -C si )  # generic options for everybody, e.g. -M level 
+declare -a rtl433_opts=( -M protocol -M noise:300 -M level -C si )  # generic options in all settings, e.g. -M level 
 # rtl433_opts+=( $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 declare -a rtl433_opts_more=( -R -31 -R -53 -R -86 ) # My specific personal excludes
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
@@ -195,16 +195,18 @@ cHassAnnounce() {
     # other syntax for non-JSON is: local _value_template_str="${5:+,*value_template*:*{{ value|float|round(1) \}\}*}"
 
     case "$6" in
-        temperature*)   _icon_str="thermometer" ; _unit_str=",*unit_of_measurement*:*\u00b0C*" ; _state_class="measurement" ;;
+        temperature*) _icon_str="thermometer" ; _unit_str=",*unit_of_measurement*:*\u00b0C*" ; _state_class="measurement" ;;
         humidity)	_icon_str="water-percent"   ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
+        ppm)	    _icon_str="smoke"       ; _unit_str=",*unit_of_measurement*:*ppm*"	; _state_class="measurement" ;;
+        density*)	    _icon_str="smoke"       ; _unit_str=",*unit_of_measurement*:*ug_m3*"	; _state_class="measurement" ;;
         counter)	_icon_str="counter"         ; _unit_str=",*unit_of_measurement*:*#*"	; _state_class="total_increasing" ;;
 		clock)	    _icon_str="clock-outline" ;;
-		signal)	    _icon_str="signal"  ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
+		signal)	    _icon_str="signal"      ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
         switch)     _icon_str="toggle-switch*" ;;
         motion)     _icon_str="motion-sensor" ;;
         button)     _icon_str="gesture-tap-button" ;;
-        dipswitch)     _icon_str="dip-switch" ;;
-        newbattery)     _icon_str="battery-check" ;;
+        dipswitch)  _icon_str="dip-switch" ;;
+        newbattery) _icon_str="battery-check" ; _unit_str=",*unit_of_measurement*:*#*"  ;;
        # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
         zone)   _icon_str="vector-intersection" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
         unit)   _icon_str="group"               ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
@@ -335,7 +337,7 @@ cDeleteJsonKeys() { # cDeleteJsonKeys "key1" "key2" ... "jsondata" (jsondata mus
 # results in: {"three":3,"_special2":"aa*?+bb"}
 
 cComplexExtractJsonVal() {
-    local - && set -x
+    local - && : set -x
     cHasJsonKey "$1" && jq -r ".$1 // empty" <<< "${2:-$data}"
 }
 # set -x ; data='{"action":"good","battery":100}' ; cComplexExtractJsonVal action && echo yes ; cComplexExtractJsonVal notthere || echo no ; exit
@@ -404,6 +406,7 @@ do
     l)  dLog="$OPTARG" 
         ;;
     f)  fReplayfile="$OPTARG" # file to replay (e.g. for debugging), instead of rtl_433 output
+        nMinSecondsOther=0
         ;;
     w)  sRoundTo="${OPTARG}" # round temperature to this value and humidity to 5-times this value
         ;;
@@ -485,7 +488,7 @@ else
     conf_files="$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_startup" | xargs ls -1 2>/dev/null )" # try to find an existing config file
     sBand="$( cMapFreqToBand "$(cExtractJsonVal sdr_freq)" )"
 fi
-basetopic="$sRtlPrefix/$sBand" # derives intial setting for basetopic
+basetopic="$sRtlPrefix/$sBand" # derive intial setting for basetopic
 
 # Enumerate the supported protocols and their names, put them into an array
 _protos="$( $rtl433_command -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { p=$1 ; printf "%d" , gensub("[\\]\\[\\*]","","g",$1)  ; $1="" ; print $0}' )" # ; exit
@@ -494,7 +497,7 @@ declare -A aNames ; while read -r p name ; do aNames["$p"]="$name" ; done <<< "$
 cEchoIfNotDuplicate() {
     local - && set +x
     if [[ "$1..$2" != "$gPrevData" ]] ; then
-        (( bWasDuplicate )) && echo "" # echo a newline after some dots
+        # (( bWasDuplicate )) && echo -e "\n" # echo a newline after some dots
         echo -e "$1${2:+\n$2}"
         gPrevData="$1..$2" # save the previous data
         bWasDuplicate=""
@@ -664,13 +667,15 @@ do
     ident="${channel:-$id}" # prefer channel (if present) over id as the unique identifier.
     model_ident="${model}${ident:+_$ident}"
     
-    [[ ! $bVerbose && ! $model_ident =~ $sSensorMatch ]] && continue # skip unwanted readings (regexp) early (if not verbose)
+    [[ ! $bVerbose && ! $model_ident =~ $sSensorMatch ]] && : skip early && continue # skip unwanted readings (regexp) early (if not verbose)
 
     # cPidDelta 2ND
 
     if [[ $model_ident && ! $bRewrite ]] ; then                  # Clean the line from less interesting information....
+        : no rewriting
         data="$( cDeleteJsonKeys "$_delkeys" "$data" )"
-    elif [[ $model_ident && $bRewrite ]] ; then                  # Rewrite and clean the line from less interesting information....
+    elif [[ $model_ident && $bRewrite ]] ; then                  
+        : Rewrite and clean the line from less interesting information....
         # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
         _delkeys="$_delkeys model mod snr noise mic rssi" && [ -z "$bVerbose" ] && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
         [[ ${aLastReadings[$model_ident]} && ${temperature/.*} -lt 50 ]] && _delkeys="$_delkeys protocol" # output protocol on first sight  or when unusual
@@ -678,7 +683,6 @@ do
         cRemoveQuotesFromNumbers
         if [[ $temperature ]] ; then
             bHasTemperature=1
-            # set -x
             temperature="$(( ( $(cMultiplyTen "$temperature") + sRoundTo/2 ) / sRoundTo * sRoundTo ))" && temperature="$(cDiv10 $temperature)"  # round to 0.x °C
             cDeleteSimpleJsonKey temperature_C
             cAppendJsonKeyVal temperature "$temperature"
@@ -698,7 +702,9 @@ do
             bHasHumidity=""
         fi
         
-        _bHasRain="$(       [[ "$(cExtractJsonVal rain_mm   )" =~ ^[0-9.]+$ ]] && echo 1 )" # formerly: cAssureJsonVal rain_mm ">0"
+        _bHasParts25="$( [[ "$(cExtractJsonVal pm2_5_ug_m3     )" =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
+        _bHasParts10="$( [[ "$(cExtractJsonVal estimated_pm10_0_ug_m3   )" =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
+        _bHasRain="$(     [[ "$(cExtractJsonVal rain_mm   )" =~ ^[0-9.]+$ ]] && echo 1 )" # formerly: cAssureJsonVal rain_mm ">0"
         _bHasBatteryOK="$(  [[ "$(cExtractJsonVal battery_ok)" =~ ^[0-9.]+$ ]] && echo 1 )" # 0,1,2 or some float ; formerly: cAssureJsonVal battery_ok "<= 2"
         _bHasPressureKPa="$([[ "$(cExtractJsonVal pressure_kPa)" =~ ^[0-9]+$ ]] && echo 1)" # cAssureJsonVal pressure_kPa "<= 9999", at least match a number
         _bHasZone="$(cHasJsonKey zone && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
@@ -747,9 +753,9 @@ do
         (( bVerbose )) && data="${data//\" : /\":}" && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
 
     elif [[ $bAlways || ${data/"freq":434/} != "${prev_data/"freq":434/}" || $nTimeStamp -gt $((prev_time+nMinSecondsOther)) ]] ; then
-        # ignore frequency changes within the 433/434 range when comparing for a change....
+        : ignoring frequency changes within the 433/434 range when comparing for a change....
         if (( bVerbose )) ; then
-            (( bRewrite )) && cEchoIfNotDuplicate "" "CLEANED: $model_ident = $data" # resulting message for MQTT
+            (( bRewrite )) && cEchoIfNotDuplicate "CLEANED: $model_ident = $data" # resulting message for MQTT
             [[ ! $model_ident =~ $sSensorMatch ]] && continue # skip if no match
         fi
         prev_data="$data"
@@ -775,18 +781,22 @@ do
         fi
         
         if (( _bAnnounceReady )) ; then
-            # For now, only the following certain types of sensors are announced for auto-discovery:
-            if (( bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch || _bHasCounter || _bHasControl )) ; then
+            : Checking announcement types - For now, only the following certain types of sensors are announced:
+            if (( bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
                 _name="${aNames[$protocol]}" 
                 _name="${_name:-$model}" # fallback
                 # if the sensor has one of the above attributes, announce all the attributes it has ...:
                 (( bHasTemperature )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
                 (( bHasHumidity    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
                 (( _bHasPressureKPa )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
+                (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Fine Parts"  "value_json.pm2_5_ug_m3" density25
+                (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Estim Course Parts"  "value_json.estimated_pm10_0_ug_m3" density10
                 (( _bHasBatteryOK   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
                 (( _bHasCmd         )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd"       "value_json.cmd"   motion
                 (( _bHasData        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Data"       "value_json.data"   data
-                (( _bHasRssi )) || [ "$rssi" ] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal # FIXME: simplify
+                if (( _bHasRssi && bMoreVerbose )) ; then
+                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal # FIXME: simplify
+                fi
                 (( _bHasCounter     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Counter"   "value_json.counter"   counter
                 (( _bHasCode        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Code"       "value_json.code"     lock
                 (( _bHasButtonR     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }ButtonR"    "value_json.buttonr"  button
@@ -810,6 +820,7 @@ do
         # cPidDelta 4TH
 
         if [[ ! $_issame || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data should be different from previous reading(s) but not if coming from replayfile
+            : rewrite and publish values
             aLastReadings[$model_ident]="$data"
             if (( bRewrite )) ; then
                 # [ "$rssi" ] && cAppendJsonKeyVal rssi "$rssi" # put rssi back in
