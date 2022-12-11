@@ -53,6 +53,7 @@ declare -i nReadings=0
 declare -i bHasHumidity=""
 declare -i bHasTemperature=""
 declare -l bAnnounceHass=1 # default is yes for now
+declare -i bRetained="" # make the value publishing retained or not (-r flag passed to mosquitto_pub)
 declare -A aLastReadings
 declare -A aSecondLastReadings
 declare -Ai aCounts
@@ -69,10 +70,10 @@ cDate() { printf "%($*)T" ; } # avoid invocating a separate process to get the d
 # cPid()  { set -x ; printf $BASHPID ; } # get a current PID, support debugging/counting/optimizing number of processes started in within the loop
 cPidDelta() { local - && set +x ; _n=$(printf %s $BASHPID) ; _n=$(( _n - ${_beginPid:=$_n} )) ; dbg PIDDELTA "$1: $_n ($_beginPid) "  ":$data:" ; _beginPid=$(( _beginPid + 1 )) ; nPidDelta=$_n ; }
 cPidDelta() { : ; }
-cMultiplyTen() { local - && set +x ; [[ $1 =~ ^([\-0-9]*)\.([0-9])([0-9]*) ]] && { echo "${BASH_REMATCH[1]#0}${BASH_REMATCH[2]}" ; } || echo $(( ${1/#./0.} * 10 )) ; }
-# set -x ; cMultiplyTen 1.234 ; cMultiplyTen -3.234 ; cMultiplyTen 66 ; cMultiplyTen .900 ;  exit
-cDiv10() { local - && set +x ; [[ $1.0 =~ ^(-{0,1}[0-9]*)([0-9])(\.{0,1}[0-9]*) ]] && { v="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" ; echo "${v%.0}" ; } || echo 0 ; }
-# set -x ; cDiv10 12.34 ; cDiv10 -32.34 ; cDiv10 -66 ; cDiv10 66 ; cDiv10 .900 ;  exit
+cMultiplyTen() { local - && set +x ; [[ $1 =~ ^([\-]{0,1})([0-9]*)\.([0-9])([0-9]*) ]] && { echo "${BASH_REMATCH[1]}${BASH_REMATCH[2]#0}${BASH_REMATCH[3]}" ; } || echo $(( ${1/#./0.} * 10 )) ; }
+# set -x ; cMultiplyTen -1.16 ; exit ; cMultiplyTen -0.800 ; cMultiplyTen 1.234 ; cMultiplyTen -3.234 ; cMultiplyTen 66 ; cMultiplyTen .900 ;  exit
+cDiv10() { local - && set +x ; [[ $1.0 =~ ^(-{0,1})([0-9]*)([0-9])(\.{0,1}[0-9]*) ]] && { v="${BASH_REMATCH[1]}${BASH_REMATCH[2]:-0}.${BASH_REMATCH[3]}" ; echo "${v%.0}" ; } || echo 0 ; }
+# set -x ; cDiv10 -1.234 ; cDiv10 12.34 ; exit ; cDiv10 -32.34 ; cDiv10 -66 ; cDiv10 66 ; cDiv10 .900 ;  exit
 
 log() {
     local - && set +x
@@ -124,7 +125,7 @@ cExpandStarredString() {
 
 cRotateLogdirSometimes() {           # check for logfile rotation only with probability of 1/60
     if (( nMinute + nSecond == 67 )) ; then 
-        cd "$1" && _files="$( find . -maxdepth 2 -type f -size +500k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 | xargs -0 )"
+        cd "$1" && _files="$( find . -xdev -maxdepth 2 -type f -size +500k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 | xargs -0 )"
         nSecond+=1
         [[ $_files ]] && cLogMore "Rotated files: $_files"
     fi
@@ -370,11 +371,11 @@ cEqualJson() {   # cEqualJson "json1" "json2" "atributes to be ignored" '{"actio
 }
 # set -x ; data1='{"act":"one","batt":100}' ; data2='{"act":"two","batt":100}' ; cEqualJson "$data1" "$data1" && echo AAA; cComcEqualJsonpareJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data1" "act other" && echo CCC; exit
 
-[ -r "$rtl2mqtt_optfile" ] && _moreopts="$( sed -e 's/#.*//'  < "$rtl2mqtt_optfile" | tr -c -d '[:alnum:]_. -' )" && dbg "Read _moreopts from $rtl2mqtt_optfile"
+[ -r "$rtl2mqtt_optfile" ] && _moreopts="$( sed -e 's/#.*//'  < "$rtl2mqtt_optfile" | tr -c -d '[:space:][:alnum:]_. -' )" && dbg "Read _moreopts from $rtl2mqtt_optfile"
 [[ $* =~ -F\ [0-9]*  ]] && _moreopts="${_moreopts//-F [0-9][0-9][0-9]}" && _moreopts="${_moreopts//-F [0-9][0-9]}" # -F on command line overules any other -F options
 cLogMore "Gathered options: $_moreopts $*"
 
-while getopts "?qh:pt:S:drl:f:F:M:H:AR:Y:w:c:as:t:T:2vx" opt $_moreopts "$@"
+while getopts "?qh:pPt:S:drl:f:F:M:H:AR:Y:w:c:as:t:T:2vx" opt $_moreopts "$@"
 do
     case "$opt" in
     \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x" 1>&2
@@ -389,8 +390,11 @@ do
         hivemq)  mqtthost="broker.hivemq.com"   ;;
 		*)       mqtthost="$( echo "$OPTARG" | tr -c -d '0-9a-z_.' )" ;; # clean up for sec purposes
 		esac
+   		hMqtt="${hMqtt:+$hMqtt }$mqtthost" # gather them
         ;;
     p)  bAnnounceHass=1
+        ;;
+    P)  bRetained=1
         ;;
     t)  basetopic="$OPTARG" # other base topic for MQTT
         ;;
@@ -611,17 +615,21 @@ do
 
     if [ -z "$data" ] ; then
         continue # skip empty lines immediately
-    elif [[ $data =~ ^rtlsdr_set_center_freq ]] ; then 
+    elif [[ $data =~ ^SDR:.Tuned.to.([0-9]*\.[0-9]*)MHz ]] ; then # SDR: Tuned to 868.300MHz.
+        # convert  msg type "SDR: Tuned to 868.300MHz." to "{"center_frequency":868300000}" (JSON) to be processed further down
+        data="{\"center_frequency\":${BASH_REMATCH[1]}${BASH_REMATCH[2]}000,\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
+    elif [[ $data =~ ^rtlsdr_set_center_freq.([0-9\.]*) ]] ; then 
         # convert older msg type "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) to be processed further down
-        IFS=" " read -r -a _a <<< "$data"
-        data="{\"center_frequency\":${_a[1]},\"BAND\":$(cMapFreqToBand "${_a[1]}")}"
+        : IFS=" " read -r -a _a <<< "$data"
+        : data="{\"center_frequency\":${_a[1]},\"BAND\":$(cMapFreqToBand "${_a[1]}")}"
+        data="{\"center_frequency\":${BASH_REMATCH[1]},\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
     elif [[ $data =~ ^[^{] ]] ; then # transform any any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
         data=${data#\*\*\* } # Remove any leading stars "*** "
-        if [[ $data =~ ^"Please increase your allowed usbfs buffer size" || $data =~ ^"usb" ]] ; then
+        if [[ $bMoreVerbose && $data =~ ^"Allocating " ]] ; then # "Allocating 15 zero-copy buffers"
+            cMqttStarred log "{*event*:*debug*,*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
+        elif [[ $data =~ ^"Please increase your allowed usbfs buffer size"|^"usb" ]] ; then
             dbg WARNING "$data"
             cMqttStarred log "{*event*:*error*,*note*:*${data//\*/+}*}" # log a simple JSON msg
-        elif [[ $data =~ ^"Allocating " ]] ; then # "Allocating 15 zero-copy buffers"
-            (( bMoreVerbose )) && cMqttStarred log "{*event*:*debug*,*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
         fi
         log "Non-JSON: $data"
         continue
@@ -632,9 +640,9 @@ do
         sBand="$(cMapFreqToBand "$_freq")" # formerly: sBand="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
         basetopic="$sRtlPrefix/${sBand:-999}"
         (( bVerbose )) && cEchoIfNotDuplicate "CENTER: $data"
-        _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && _freqs=${_freqs}
+        _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && : "${_freqs}"
         (( bVerbose )) && cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*}}"
-        nLastCenterMessage="$(cDate)" # prepare for avoiding race condition after freq hop (FIXME: not implemented yet)
+        nLastCenterMessage="$(cDate %s)" # prepare for avoiding race condition after freq hop (FIXME: not implemented yet)
         continue
     fi
     (( bVerbose )) && echo "================================="
@@ -647,9 +655,9 @@ do
     _time="$(cExtractJsonVal time)"  # ;  msgTime="2021-11-01 03:05:07"
     declare +i _str # avoid octal interpretation of any leading zeroes
     # cPidDelta AAA
-    _str="${_time:(-8):2}" ; nHour=${_str#0} 
-    _str="${_time:(-5):2}" ; nMinute=${_str#0} 
-    _str="${_time:(-2):2}" ; nSecond=${_str#0}
+    _str="${_time:(-8):2}" && nHour=${_str#0} 
+    _str="${_time:(-5):2}" && nMinute=${_str#0} 
+    _str="${_time:(-2):2}" && nSecond=${_str#0}
     _delkeys="time $sSuppressAttrs"
     (( bMoreVerbose )) && cEchoIfNotDuplicate "PREPROCESSED: $data"
     # cPidDelta BBB
@@ -678,12 +686,14 @@ do
         : Rewrite and clean the line from less interesting information....
         # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
         _delkeys="$_delkeys model mod snr noise mic rssi" && [ -z "$bVerbose" ] && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
-        [[ ${aLastReadings[$model_ident]} && ${temperature/.*} -lt 50 ]] && _delkeys="$_delkeys protocol" # output protocol on first sight  or when unusual
+        [[ ${aLastReadings[$model_ident]} && ${temperature/.*} -lt 50 ]] && _delkeys="$_delkeys protocol" # remove protocol after first sight  and when not unusual
         data="$( cDeleteJsonKeys "$_delkeys" "$data" )" 
         cRemoveQuotesFromNumbers
         if [[ $temperature ]] ; then
             bHasTemperature=1
+            # set -x
             temperature="$(( ( $(cMultiplyTen "$temperature") + sRoundTo/2 ) / sRoundTo * sRoundTo ))" && temperature="$(cDiv10 $temperature)"  # round to 0.x °C
+            # set +x
             cDeleteSimpleJsonKey temperature_C
             cAppendJsonKeyVal temperature "$temperature"
             [[ ${aPrevTempVals[$model_ident]} ]] || aPrevTempVals[$model_ident]=0
@@ -734,6 +744,7 @@ do
             bSkipLine=$(( humidity > 100 || temperature < -50 )) # sanitize
         fi
         cAppendJsonKeyVal BAND "$sBand"
+        (( bRetained )) && cAppendJsonKeyVal HOUR "$nHour" # Append HOUR explicitly if readings are sent retained
         [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dLog/model/$model_ident"
         # cHasJsonKey freq  &&  data="$( jq -cer '.freq=(.freq + 0.5 | floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
         # _factor=1
@@ -748,7 +759,7 @@ do
         dbg SKIPPING "$data"
         bSkipLine=0
         continue
-    elif [ -z "$model_ident" ] ; then # stats message
+    elif [ -z "$model_ident" ] ; then # probably a stats message
         dbg "model_ident is empty"
         (( bVerbose )) && data="${data//\" : /\":}" && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
 
@@ -820,18 +831,18 @@ do
         # cPidDelta 4TH
 
         if [[ ! $_issame || $nTimeStamp -gt $(( aLastSents[$model_ident] + _nTimeDiff )) || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data should be different from previous reading(s) but not if coming from replayfile
-            : rewrite and publish values
+            : now final rewrite and publish readings
             aLastReadings[$model_ident]="$data"
             if (( bRewrite )) ; then
                 # [ "$rssi" ] && cAppendJsonKeyVal rssi "$rssi" # put rssi back in
                 if [[ ! $_issame ]] ; then
-                    cAppendJsonKeyVal NOTE "changed"
+                    cAppendJsonKeyVal NOTE "CHANGE"
                 elif ! cEqualJson "$data" "$prevvals" "freq freq1 freq2 rssi id" ; then
-                    (( bVerbose )) && cAppendJsonKeyVal NOTE2 "=2nd (#${aCounts[$model_ident]},_bR=$_bAnnounceReady,${_nTimeDiff}s)"
+                    (( bVerbose )) && cAppendJsonKeyVal NOTE2 "=2ND (#${aCounts[$model_ident]},_bR=$_bAnnounceReady,${_nTimeDiff}s)"
                 fi
                 aSecondLastReadings[$model_ident]="$prevval"
             fi
-            cMqttStarred "$basetopic/${model:+$model/}${ident:-00}" "${data//\"/*}" # ... publish the values!
+            cMqttStarred "$basetopic/${model:+$model/}${ident:-00}" "${data//\"/*}" ${bRetained:+ -r} # ... publish the values!
             nMqttLines+=1
             aLastSents[$model_ident]="$nTimeStamp"
         else
