@@ -196,17 +196,19 @@ cHassAnnounce() {
     # other syntax for non-JSON is: local _value_template_str="${5:+,*value_template*:*{{ value|float|round(1) \}\}*}"
 
     case "$6" in
-        temperature*) _icon_str="thermometer" ; _unit_str=",*unit_of_measurement*:*\u00b0C*" ; _state_class="measurement" ;;
+        temperature*) _icon_str="thermometer"   ; _unit_str=",*unit_of_measurement*:*\u00b0C*" ; _state_class="measurement" ;;
+        setpoint_C)	_icon_str="thermometer"     ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
         humidity)	_icon_str="water-percent"   ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
-        ppm)	    _icon_str="smoke"       ; _unit_str=",*unit_of_measurement*:*ppm*"	; _state_class="measurement" ;;
+        ppm)	    _icon_str="smoke"           ; _unit_str=",*unit_of_measurement*:*ppm*"	; _state_class="measurement" ;;
         density*)	    _icon_str="smoke"       ; _unit_str=",*unit_of_measurement*:*ug_m3*"	; _state_class="measurement" ;;
         counter)	_icon_str="counter"         ; _unit_str=",*unit_of_measurement*:*#*"	; _state_class="total_increasing" ;;
-		clock)	    _icon_str="clock-outline" ;;
-		signal)	    _icon_str="signal"      ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
-        switch)     _icon_str="toggle-switch*" ;;
-        motion)     _icon_str="motion-sensor" ;;
+		clock)	    _icon_str="clock-outline"   ;;
+		signal)	    _icon_str="signal"          ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
+        switch)     _icon_str="toggle-switch*"  ;;
+        motion)     _icon_str="motion-sensor"   ;;
         button)     _icon_str="gesture-tap-button" ;;
         dipswitch)  _icon_str="dip-switch" ;;
+        code)  _icon_str="lock" ;;
         newbattery) _icon_str="battery-check" ; _unit_str=",*unit_of_measurement*:*#*"  ;;
        # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
         zone)   _icon_str="vector-intersection" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
@@ -258,12 +260,15 @@ cAppendJsonKeyVal() {  # cAppendJsonKeyVal "key" "val" "jsondata" (use $data if 
 # set -x ; cAppendJsonKeyVal "donot"  ""  '{"one":1}'  ;    exit  # returns: '{"one":1,"donot":""}' 
 # set -x ; cAppendJsonKeyVal "number" "55" '{"one":1}' ;    exit  # returns: '{"one":1,"number":55}'
 
-cHasJsonKey() { # simplifier check to check whether a JSON string has a certain key
-    local - && set +x
-    [[ ${2:-$data} =~ [{,\ ]\"$1\"\ *: ]]
+cHasJsonKey() { # simplified check to check whether a JSON string has a certain key (e.g. "temperat.*e")  (. is for [a-zA-Z0-9])
+    local - # && set +x
+    local _k=""
+    [[ ${2:-$data} =~ [{,][[:space:]]*\"(${1//\./[a-zA-Z0-9]})\"[[:space:]]*: ]] && _k="${BASH_REMATCH[1]}"
+    [[ -n "$_k" && "$1" =~ \*|\[   ]] && echo "$_k" # output found key only if multiple fits possible
+    [[ -n "$_k" ]] # non-empty if found
 }
-# set -x ; j='{"action":"null","battery" :100}' ; cHasJsonKey action "$j" && echo yes ; cHasJsonKey battery "$j" && echo yes ; cHasJsonKey jessy "$j" || echo no ; exit
-# set -x ; j='{"dipswitch":"++---o--+","rbutton":"11R"}' ; cHasJsonKey dipswitch "$j" && echo yes ; cHasJsonKey jessy "$j" || echo no ; exit
+# set -x ; j='{"action":"null","battery" :100}' ; cHasJsonKey act.*n "$j" && echo yes ; cHasJsonKey batter[y] "$j" && echo yes ; cHasJsonKey batt*i "$j" || echo no ; exit
+# set -x ; j='{"dipswitch" :"++---o--+","rbutton":"11R"}' ; cHasJsonKey dipswitch "$j" && echo yes ; cHasJsonKey jessy "$j" || echo no ; exit
 
 cRemoveQuotesFromNumbers() { # removes double quotes from JSON numbers in $1 or $data
     local - && set +x
@@ -290,20 +295,23 @@ perfCheck() {
 # perfCheck ; exit 
 
 cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data if jsondata empty)
-    local - # && set +x
-    shopt -s extglob
+    local - && set +x
+    # shopt -s extglob
     local _d="${2:-$data}"
-    if cHasJsonKey "$1" "$2" ; then # replacing:  jq -r ".$1 // empty" <<< "$_d" :
-        if      [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*[0-9.-]+[[:space:]]*)([,}])     ]] || # number 
-                [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"[[:space:]]*)([,}])   ]] ||  # string
-                [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\[[^\]]*\][[:space:]]*)([,}])   ]] ||  # array
-                [[ $_d =~ ([,{])([[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\{[^\}]*\}[[:space:]]*)([,}])   ]] ; then # curly braces, FIXME: max one level for now
+    local k
+    k="$( cHasJsonKey "$1" "$2" )" && [ -z "$k" ] && k="$1" 
+    : debug3 "$k"
+    if [[ $k ]] ; then  #       replacing:  jq -r ".$1 // empty" <<< "$_d" :
+        if      [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*[0-9.-]+[[:space:]]*)([,}])     ]] || # number 
+                [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\"[^\"]*\"[[:space:]]*)([,}])   ]] ||  # string
+                [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\[[^\]]*\][[:space:]]*)([,}])   ]] ||  # array
+                [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\{[^\}]*\}[[:space:]]*)([,}])   ]] ; then # curly braces, FIXME: max one level for now
             if [[ ${BASH_REMATCH[3]} == "}" ]] ; then
                 _f="${BASH_REMATCH[1]/\{}${BASH_REMATCH[2]}" ; true
-             else
+            else
                 _f="${BASH_REMATCH[2]}${BASH_REMATCH[3]}" ; false
-             fi
-             _f=${_f/]/\\]} # escaping a closing square bracket in the found match
+            fi
+            _f=${_f/]/\\]} # escaping a closing square bracket in the found match
             _d="${_d/$_f/}"
         else :
         fi        
@@ -311,8 +319,8 @@ cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data i
     # cHasJsonKey "$@" && echo "$_d"
     [ "$2" ] && echo "$_d" || data="$_d"
 } 
-# set -x ; cDeleteSimpleJsonKey freq '{"protocol":73,"id":11,"channel": 1,"battery_ok": 1,"freq":433.903,"temperature": 8,"BAND":433,"NOTE2":"=2nd (#3,_bR=1,260s)"}' ; exit 1
-# set -x ; data='{"one":"a","beta":22.1}' ; cDeleteSimpleJsonKey one ; cDeleteSimpleJsonKey beta ; cDeleteSimpleJsonKey two '{"alpha":"a","two":"xx"}' ; exit 1
+# set -x ; cDeleteSimpleJsonKey "freq" '{"protocol":73,"id":11,"channel": 1,"battery_ok": 1,"freq":433.903,"temperature": 8,"BAND":433,"NOTE2":"=2nd (#3,_bR=1,260s)"}' ; exit 1
+# set -x ; data='{"one":"a","beta":22.1}' ; cDeleteSimpleJsonKey "one" ; cDeleteSimpleJsonKey beta ; cDeleteSimpleJsonKey two '{"alpha":"a","two":"xx"}' ; exit 1
 # set -x ; cDeleteSimpleJsonKey three '{ "three":"xxx" }' ; exit 1
 # set -x ; data='{"one" : 1,"beta":22}' ; cDeleteSimpleJsonKey one "$data" ; cDeleteSimpleJsonKey two '{"two":-2,"beta":22}' ; cDeleteSimpleJsonKey three '{"three":3.3,"beta":2}' ; exit 1
 # set -x ; data='{"id":2,"channel":2,"battery_ok":0,"temperature_C":-12.5,"freq":433.902,"rssi":-11.295}' ; cDeleteSimpleJsonKey temperature_C ; cDeleteSimpleJsonKey freq ; exit
@@ -353,7 +361,7 @@ cExtractJsonVal() {
         fi        
     else false ; fi # return false if not found
 }
-# set -x ; data='{ "action":"good" , "battery":99.5}' ; cPidDelta 000 && cPidDelta 111 ; cEcAssureJsonValxtractJsonVal action ; cPidDelta 222 ; cExtractJsonVal battery && echo yes ; cExtractJsonVal notthere || echo no ; exit
+# set -x ; data='{ "action":"good" , "battery":99.5}' ; cPidDelta 000 && cPidDelta 111 ; cExtractJsonVal action ; cPidDelta 222 ; cExtractJsonVal battery && echo yes ; cExtractJsonVal notthere || echo no ; exit
 
 cAssureJsonVal() {
     cHasJsonKey "$1" &&  jq -er "if (.$1 ${2:+and .$1 $2} ) then 1 else empty end" <<< "${3:-$data}"
@@ -554,7 +562,7 @@ trap_usr1() {    # toggle verbosity
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*note*:*$_msg*}"
   }
-trap 'trap_usr1' USR1 
+trap 'trap_usr1' USR1
 
 trap_usr2() {    # remove all home assistant announcements 
     cHassRemoveAnnounce
@@ -586,6 +594,7 @@ trap_other() {
 trap 'trap_other' URG XCPU XFSZ PROF WINCH PWR SYS # VTALRM
 
 if [[ $fReplayfile ]] ; then
+    nMinSecondsOther=0
     coproc rtlcoproc ( shopt -s extglob ; while read -r l ; do echo "${l##*([!{])}"; sleep 1 ; done < "$fReplayfile" ; sleep 5 ) # remove anything from the replay file before an opening curly brace
 else
     if [[ $bVerbose || -t 1 ]] ; then
@@ -613,15 +622,11 @@ while read -r data <&"${rtlcoproc[0]}" ; _rc=$? ; (( _rc==0  || _rc==27 ))      
 do
     _beginPid="" # support debugging/counting/optimizing number of processes started in within the loop
 
-    if [ -z "$data" ] ; then
-        continue # skip empty lines immediately
-    elif [[ $data =~ ^SDR:.Tuned.to.([0-9]*\.[0-9]*)MHz ]] ; then # SDR: Tuned to 868.300MHz.
+    if [[ $data =~ ^SDR:.Tuned.to.([0-9]*\.[0-9]*)MHz ]] ; then # SDR: Tuned to 868.300MHz.
         # convert  msg type "SDR: Tuned to 868.300MHz." to "{"center_frequency":868300000}" (JSON) to be processed further down
         data="{\"center_frequency\":${BASH_REMATCH[1]}${BASH_REMATCH[2]}000,\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
     elif [[ $data =~ ^rtlsdr_set_center_freq.([0-9\.]*) ]] ; then 
         # convert older msg type "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) to be processed further down
-        : IFS=" " read -r -a _a <<< "$data"
-        : data="{\"center_frequency\":${_a[1]},\"BAND\":$(cMapFreqToBand "${_a[1]}")}"
         data="{\"center_frequency\":${BASH_REMATCH[1]},\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
     elif [[ $data =~ ^[^{] ]] ; then # transform any any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
         data=${data#\*\*\* } # Remove any leading stars "*** "
@@ -633,6 +638,8 @@ do
         fi
         log "Non-JSON: $data"
         continue
+    elif [ -z "$data" ] ; then
+        continue # skip empty lines immediately
     fi
     # cPidDelta 0ED
     if [[ $data =~ "center_frequency" ]] && _freq="$(cExtractJsonVal center_frequency)" ; then
@@ -652,7 +659,7 @@ do
 
     # cPidDelta 1ST
 
-    _time="$(cExtractJsonVal time)"  # ;  msgTime="2021-11-01 03:05:07"
+    _time="$(cExtractJsonVal time)"  # ;  _time="2021-11-01 03:05:07"
     declare +i _str # avoid octal interpretation of any leading zeroes
     # cPidDelta AAA
     _str="${_time:(-8):2}" && nHour=${_str#0} 
@@ -667,6 +674,7 @@ do
     id="$(      cExtractJsonVal id)"
     rssi="$(    cExtractJsonVal rssi)"
     temperature="$( cExtractJsonVal temperature_C)"
+    setpoint="$( cExtractJsonVal setpoint_C) || $( cExtractJsonVal setpoint_F)"
     cHasJsonKey freq && sBand="$( cMapFreqToBand "$(cExtractJsonVal freq)" )" && basetopic="$sRtlPrefix/$sBand"
     log "$(cAppendJsonKeyVal BAND "${model:+$sBand}" "$data" )" # only append band when model is given, i.e. not for non-sensor messages.
     
@@ -691,9 +699,7 @@ do
         cRemoveQuotesFromNumbers
         if [[ $temperature ]] ; then
             bHasTemperature=1
-            # set -x
             temperature="$(( ( $(cMultiplyTen "$temperature") + sRoundTo/2 ) / sRoundTo * sRoundTo ))" && temperature="$(cDiv10 $temperature)"  # round to 0.x °C
-            # set +x
             cDeleteSimpleJsonKey temperature_C
             cAppendJsonKeyVal temperature "$temperature"
             [[ ${aPrevTempVals[$model_ident]} ]] || aPrevTempVals[$model_ident]=0
@@ -737,7 +743,7 @@ do
             # .battery_ok==1 means "OK".
             # data="$( cHasJsonKey battery_ok  &&   jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" || echo "$data" )"
             # data="$( cHasJsonKey unknown1 &&   jq -c 'if .unknown1 == 0 then del(.unknown1)   else . end' <<< "$data" || echo "$data" )"
-            cHasJsonKey unknown1 && (( $(cExtractJsonVal unknown1) == 0 )) && cDeleteSimpleJsonKey unknown1
+            _k="$( cHasJsonKey "unknown.*" )" && (( $(cExtractJsonVal "$_k" ) == 0 )) && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
 
             # bSkipLine="$( [[ $bHasTemperature || $bHasHumidity ]] && jq -er 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
             temperature=${temperature/.[0-9]*} ; humidity=${humidity/.[0-9]*} 
@@ -797,27 +803,29 @@ do
                 _name="${aNames[$protocol]}" 
                 _name="${_name:-$model}" # fallback
                 # if the sensor has one of the above attributes, announce all the attributes it has ...:
-                (( bHasTemperature )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
-                (( bHasHumidity    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
+                # see https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
+                (( bHasTemperature ))   && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
+                cHasJsonKey setpoint_C  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }TempTarget"      "value_json.setpoint_C"   setpoint
+                (( bHasHumidity    ))   && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
                 (( _bHasPressureKPa )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
                 (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Fine Parts"  "value_json.pm2_5_ug_m3" density25
                 (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Estim Course Parts"  "value_json.estimated_pm10_0_ug_m3" density10
-                (( _bHasBatteryOK   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
-                (( _bHasCmd         )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd"       "value_json.cmd"   motion
-                (( _bHasData        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Data"       "value_json.data"   data
+                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
+                (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd"       "value_json.cmd"   motion
+                (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Data"       "value_json.data"   data
                 if (( _bHasRssi && bMoreVerbose )) ; then
                     cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal # FIXME: simplify
                 fi
-                (( _bHasCounter     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Counter"   "value_json.counter"   counter
-                (( _bHasCode        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Code"       "value_json.code"     lock
-                (( _bHasButtonR     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }ButtonR"    "value_json.buttonr"  button
-                (( _bHasDipSwitch   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch" dipswitch
-                (( _bHasNewBattery  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }NewBatttery"  "value_json.newbattery" newbattery
-                (( _bHasZone        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Zone"       "value_json.zone"     zone
-                (( _bHasUnit        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Unit"       "value_json.unit"     unit
-                (( _bHasLearn       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Learn"       "value_json.learn"     learn
-                (( _bHasChannel     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Channel"    "value_json.channel"  channel
-                (( _bHasControl     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Control"    "value_json.control"  control
+                (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Counter"   "value_json.counter"   counter
+                (( _bHasCode       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Code"       "value_json.code"     code
+                (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }ButtonR"    "value_json.buttonr"  button
+                (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch" dipswitch
+                (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }NewBatttery"  "value_json.newbattery" newbattery
+                (( _bHasZone       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Zone"       "value_json.zone"     zone
+                (( _bHasUnit       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Unit"       "value_json.unit"     unit
+                (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Learn"       "value_json.learn"     learn
+                (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Channel"    "value_json.channel"  channel
+                (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Control"    "value_json.control"  control
                 #   [ "$sBand"      ]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
                 cMqttStarred log "{*event*:*debug*,*note*:*announced MQTT discovery: $model_ident ($_name)*}"
                 nAnnouncedCount+=1
@@ -826,7 +834,7 @@ do
             else
                 cMqttStarred log "{*event*:*debug*,*note*:*not announced for MQTT discovery: $model_ident*}"
             fi
-            aAnnounced[$model_ident]=1 # 1 = took place ()= dont reconsider for announcement)
+            aAnnounced[$model_ident]=1 # 1 = took place (= dont reconsider for announcement)
         fi
         # cPidDelta 4TH
 
@@ -880,7 +888,7 @@ do
 done
 
 s=1 && [ ! -t 1 ] && s=30 # sleep a little longer if not running on a terminal
-_msg="$sName: read failed (rc=$_rc), while-loop ended $(cDate), rtlprocid now :${rtlcoproc_PID}:, last data=$data, sleep=${s}s"
+_msg="$sName: read from $( basename "${fReplayfile:-$rtl433_command}" ) ended with rc=$_rc; while-loop ended $(cDate): rtlprocid now :${rtlcoproc_PID}:; last data=$data; sleep=${s}s"
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*note*:*$_msg*}"
 sleep $s
