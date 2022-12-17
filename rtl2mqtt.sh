@@ -50,8 +50,6 @@ declare -i nAnnouncedCount=0
 declare -i nMinOccurences=3
 declare -i nPrevMax=1       # start with 1 for non-triviality
 declare -i nReadings=0
-declare -i bHasHumidity=""
-declare -i bHasTemperature=""
 declare -l bAnnounceHass=1 # default is yes for now
 declare -i bRetained="" # make the value publishing retained or not (-r flag passed to mosquitto_pub)
 declare -A aLastReadings
@@ -77,19 +75,19 @@ cDiv10() { local - && set +x ; [[ $1.0 =~ ^(-{0,1})([0-9]*)([0-9])(\.{0,1}[0-9]*
 
 log() {
     local - && set +x
-    if [ "$sDoLog" = "dir" ] ; then
+    if [[ $sDoLog == "dir" ]] ; then
         cRotateLogdirSometimes "$dLog"
         logfile="$dLog/$(cDate %H)"
         echo "$(cDate %d %T)" "$*" >> "$logfile"
         [[ $bVerbose && $* =~ ^\{ ]] && { printf "%s" "$*" ; echo "" ; } >> "$logfile.JSON"
-    elif [ "$sDoLog" ] ; then
+    elif [[ $sDoLog ]] ; then
         echo "$(cDate)" "$@" >> "$dLog.log"
     fi    
   }
 
 cLogMore() { # log to syslog logging facility, too.
     local - && set +x
-    [ "$sDoLog" ] || return
+    [[ $sDoLog ]] || return
     echo "$sName:" "$@" 1>&2
     logger -p daemon.info -t "$sID" -- "$*"
     log "$@"
@@ -182,7 +180,7 @@ cHassAnnounce() {
     local _devname="$2 ${_devid^}"
     local _icon_str  # mdi icons: https://pictogrammers.github.io/@mdi/font/6.5.95/
 
-    if [ "$_dev_class" ] ; then
+    if [[ $_dev_class ]] ; then
         local _channelname="$_devname ${_dev_class^}"
     else
         local _channelname="$_devname $4" # take something meaningfull
@@ -254,18 +252,19 @@ cAppendJsonKeyVal() {  # cAppendJsonKeyVal "key" "val" "jsondata" (use $data if 
     # [ -z "$_val" ] && echo "$_d" # don't append the pair if val is empty !
     [[ $_val =~ ^[-+]?[0-9]*([\.0-9]+) ]] || _val="\"$_val\"" # surround _val by double quotes only if not-a-number
     _val="${_d/%\}/,\"$1\":$_val\}}"
-    [ "$3" ] && echo "$_val" || data="$_val"
+    [[ $3 ]] && echo "$_val" || data="$_val"
 }
 # set -x ; data='{"one":1}' ; cAppendJsonKeyVal "x" "2x" ; echo $data ; cAppendJsonKeyVal "n" "2.3" "$data" ; cAppendJsonKeyVal "m" "-" "$data" ; exit  # returns: '{one:1,"x":"2"}'
 # set -x ; cAppendJsonKeyVal "donot"  ""  '{"one":1}'  ;    exit  # returns: '{"one":1,"donot":""}' 
 # set -x ; cAppendJsonKeyVal "number" "55" '{"one":1}' ;    exit  # returns: '{"one":1,"number":55}'
 
-cHasJsonKey() { # simplified check to check whether a JSON string has a certain key (e.g. "temperat.*e")  (. is for [a-zA-Z0-9])
-    local - # && set +x
+cHasJsonKey() { # simplified check to check whether the JSON ${2:-$data} has key $1 (e.g. "temperat.*e")  (. is for [a-zA-Z0-9])
+    local - && set +x
     local _k=""
-    [[ ${2:-$data} =~ [{,][[:space:]]*\"(${1//\./[a-zA-Z0-9]})\"[[:space:]]*: ]] && _k="${BASH_REMATCH[1]}"
-    [[ -n "$_k" && "$1" =~ \*|\[   ]] && echo "$_k" # output found key only if multiple fits possible
-    [[ -n "$_k" ]] # non-empty if found
+    [[ ${2:-$data} =~ [{,][[:space:]]*\"(${1//\./[a-zA-Z0-9]})\"[[:space:]]*: ]] 
+    _k="${BASH_REMATCH[1]}"
+    [[ $_k && "$1" =~ \*|\[   ]] && echo "$_k" # output the first found key only if multiple fits potentially possible
+    [[ $_k ]] # non-empty if found
 }
 # set -x ; j='{"action":"null","battery" :100}' ; cHasJsonKey act.*n "$j" && echo yes ; cHasJsonKey batter[y] "$j" && echo yes ; cHasJsonKey batt*i "$j" || echo no ; exit
 # set -x ; j='{"dipswitch" :"++---o--+","rbutton":"11R"}' ; cHasJsonKey dipswitch "$j" && echo yes ; cHasJsonKey jessy "$j" || echo no ; exit
@@ -278,7 +277,7 @@ cRemoveQuotesFromNumbers() { # removes double quotes from JSON numbers in $1 or 
         _d="${_d/"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]}\"${BASH_REMATCH[2]}\":${BASH_REMATCH[3]}"}"
     done
     # _d="$( sed -e 's/: *"\([0-9.-]*\)" *\([,}]\)/:\1\2/g' <<< "${1:-$data}" )" # remove double-quotes around numbers
-    [ "$1" ] && echo "$_d" || data="$_d"
+    [[ $1 ]] && echo "$_d" || data="$_d"
 }
 # set -x ; x='"one":"1a","two":"-2","three":"3.5"' ; data="{$x}" ; cRemoveQuotesFromNumbers ; : exit ; echo $data ; cRemoveQuotesFromNumbers "{$x, \"theta\":\"-0.5\"}" ; exit 0
 
@@ -317,7 +316,7 @@ cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data i
         fi        
     fi
     # cHasJsonKey "$@" && echo "$_d"
-    [ "$2" ] && echo "$_d" || data="$_d"
+    [[ $2 ]] && echo "$_d" || data="$_d"
 } 
 # set -x ; cDeleteSimpleJsonKey "freq" '{"protocol":73,"id":11,"channel": 1,"battery_ok": 1,"freq":433.903,"temperature": 8,"BAND":433,"NOTE2":"=2nd (#3,_bR=1,260s)"}' ; exit 1
 # set -x ; data='{"one":"a","beta":22.1}' ; cDeleteSimpleJsonKey "one" ; cDeleteSimpleJsonKey beta ; cDeleteSimpleJsonKey two '{"alpha":"a","two":"xx"}' ; exit 1
@@ -353,8 +352,8 @@ cComplexExtractJsonVal() {
 
 cExtractJsonVal() {
     local - && set +x # replacement for:  jq -r ".$1 // empty" <<< "${2:-$data}" , avoid spawning jq for performance reasons
-    [ "${2:-$data}" ] || return 1
-    if [ "${2:-$data}" ] && cHasJsonKey "$1" ; then 
+    [[ ${2:-$data} ]] || return 1
+    if [[ ${2:-$data} ]] && cHasJsonKey "$1" ; then 
         if [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*\"([^\"]*)\"[[:space:]]*[,}] ]] ||  # string
                 [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*([0-9.-]+)[[:space:]]*[,}] ]] ; then # number 
             echo "${BASH_REMATCH[2]}"
@@ -422,15 +421,15 @@ do
         ;;
     w)  sRoundTo="${OPTARG}" # round temperature to this value and humidity to 5-times this value
         ;;
-    F)  if [ "$OPTARG" = "868" ] ; then
+    F)  if  [[ $OPTARG == "868" ]] ; then
             rtl433_opts+=( -f 868.3M -s "$sSuggSampleRate" -Y minmax ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
-        elif [ "$OPTARG" = "915" ] ; then
+        elif [[ $OPTARG == "915" ]] ; then
             rtl433_opts+=( -f 915M -s "$sSuggSampleRate" -Y minmax ) # minmax
-        elif [ "$OPTARG" = "27" ] ; then
+        elif [[ $OPTARG == "27" ]] ; then
             rtl433_opts+=( -f 27.161M -s "$sSuggSampleRate" -Y minmax )  # minmax
-        elif [ "$OPTARG" = "150" ] ; then
+        elif [[ $OPTARG == "150" ]] ; then
             rtl433_opts+=( -f 150.0M ) 
-        elif [ "$OPTARG" = "433" ] ; then
+        elif [[ $OPTARG == "433" ]] ; then
             rtl433_opts+=( -f 433.91M ) #  -s 256k -f 433.92M for frequency 433... MhZ
         else
             rtl433_opts+=( -f "$OPTARG" )
@@ -488,7 +487,7 @@ else
     cd "$dLog" || { log "Can't cd to $dLog" ; exit 1 ; }
 fi
 
-[ "$( command -v jq )" ] || { _msg="$sName: jq might be necessary!" ; log "$_msg" ; echo "$_msg" 1>&2 ; }
+command -v jq  || { _msg="$sName: jq might be necessary!" ; log "$_msg" ; echo "$_msg" 1>&2 ; }
 
 if [[ $fReplayfile ]]; then
     sBand=999
@@ -520,7 +519,7 @@ cEchoIfNotDuplicate() {
  }
 
 _info="*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
-if [ -t 1 ] ; then # probably on a terminal
+if [ -t 1 ] ; then # probably running on a terminal
     log "$sName starting at $(cDate)"
     cMqttStarred log "{*event*:*starting*,$_info}"
 else               # probably non-terminal
@@ -698,44 +697,41 @@ do
         data="$( cDeleteJsonKeys "$_delkeys" "$data" )" 
         cRemoveQuotesFromNumbers
         if [[ $temperature ]] ; then
-            bHasTemperature=1
             temperature="$(( ( $(cMultiplyTen "$temperature") + sRoundTo/2 ) / sRoundTo * sRoundTo ))" && temperature="$(cDiv10 $temperature)"  # round to 0.x °C
             cDeleteSimpleJsonKey temperature_C
             cAppendJsonKeyVal temperature "$temperature"
             [[ ${aPrevTempVals[$model_ident]} ]] || aPrevTempVals[$model_ident]=0
         else 
-            bHasTemperature=""
+            : temperature==""
         fi
 
         humidity="$( cExtractJsonVal humidity )"
         if [[ $humidity ]] ; then
-            bHasHumidity=1 ; _hmult=4
+            _hmult=4
             # humidity="$( awk "BEGIN { printf \"%d\n\" , int( $humidity * $sRoundTo / 4) + 0.5) * 4 / $sRoundTo }" < /dev/null )" # round to 0.x*4 %
             humidity="$(( ( $(cMultiplyTen "$humidity") + sRoundTo*_hmult/2 ) / (sRoundTo*_hmult) * (sRoundTo*_hmult) ))" && humidity="$(cDiv10 $humidity)"  # round to hmult * 0.x
             cDeleteSimpleJsonKey humidity
             cAppendJsonKeyVal humidity "$humidity"
-        else 
-            bHasHumidity=""
         fi
         
-        _bHasParts25="$( [[ "$(cExtractJsonVal pm2_5_ug_m3     )" =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
-        _bHasParts10="$( [[ "$(cExtractJsonVal estimated_pm10_0_ug_m3   )" =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
-        _bHasRain="$(     [[ "$(cExtractJsonVal rain_mm   )" =~ ^[0-9.]+$ ]] && echo 1 )" # formerly: cAssureJsonVal rain_mm ">0"
-        _bHasBatteryOK="$(  [[ "$(cExtractJsonVal battery_ok)" =~ ^[0-9.]+$ ]] && echo 1 )" # 0,1,2 or some float ; formerly: cAssureJsonVal battery_ok "<= 2"
-        _bHasPressureKPa="$([[ "$(cExtractJsonVal pressure_kPa)" =~ ^[0-9]+$ ]] && echo 1)" # cAssureJsonVal pressure_kPa "<= 9999", at least match a number
-        _bHasZone="$(cHasJsonKey zone && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
-        _bHasUnit="$(cHasJsonKey unit && echo 1 )" #        {"id":25612,"unit":15,"learn":0,"code":"7c818f","freq":433.942}
-        _bHasLearn="$(cHasJsonKey learn && echo 1 )" #        {"id":25612,"unit":15,"learn":0,"code":"7c818f","freq":433.942}
-        _bHasChannel="$(cHasJsonKey channel && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
-        _bHasControl="$(cHasJsonKey control && echo 1 )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
-        _bHasCmd="$(cHasJsonKey cmd && echo 1 )"
-        _bHasData="$(cHasJsonKey data && echo 1 )"
-        _bHasCounter="$(cHasJsonKey counter && echo 1 )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
-        _bHasCode="$(   cHasJsonKey code && echo 1 )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
-        _bHasButtonR="$(cHasJsonKey rbutton && echo 1 )" #  rtl/433/Cardin-S466/00 {"dipswitch":"++---o--+","rbutton":"11R"}
-        _bHasDipSwitch="$(cHasJsonKey dipswitch && echo 1 )" #  rtl/433/Cardin-S466/00 {"dipswitch":"++---o--+","rbutton":"11R"}
-        _bHasNewBattery="$( cHasJsonKey newbattery && echo 1 )" #  {"id":13,"battery_ok":1,"newbattery":0,"temperature_C":24,"humidity":42}
-        _bHasRssi="$(cHasJsonKey rssi && echo 1 )"
+        _bHasParts25="$( [[ $(cExtractJsonVal pm2_5_ug_m3     ) =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
+        _bHasParts10="$( [[ $(cExtractJsonVal estimated_pm10_0_ug_m3 ) =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
+        _bHasRain="$(     [[ $(cExtractJsonVal rain_mm   ) =~ ^[0-9.]+$ ]] && echo 1 )" # formerly: cAssureJsonVal rain_mm ">0"
+        _bHasBatteryOK="$(  [[ $(cExtractJsonVal battery_ok) =~ ^[0-9.]+$ ]] && echo 1 )" # 0,1,2 or some float ; formerly: cAssureJsonVal battery_ok "<= 2"
+        _bHasPressureKPa="$([[ $(cExtractJsonVal pressure_kPa) =~ ^[0-9.]+$ ]] && echo 1)" # cAssureJsonVal pressure_kPa "<= 9999", at least match a number
+        _bHasZone="$(cHasJsonKey zon[e] )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
+        _bHasUnit="$(cHasJsonKey uni[t] )" #        {"id":25612,"unit":15,"learn":0,"code":"7c818f","freq":433.942}
+        _bHasLearn="$(cHasJsonKey lear[n] )" #        {"id":25612,"unit":15,"learn":0,"code":"7c818f","freq":433.942}
+        _bHasChannel="$(cHasJsonKey channe[l] )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
+        _bHasControl="$(cHasJsonKey contro[l] )" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
+        _bHasCmd="$(cHasJsonKey cm[d] )"
+        _bHasData="$(cHasJsonKey dat[a] )"
+        _bHasCounter="$(cHasJsonKey counte[r] )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
+        _bHasCode="$(   cHasJsonKey cod[e] )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
+        _bHasButtonR="$(cHasJsonKey rbutto[n] )" #  rtl/433/Cardin-S466/00 {"dipswitch":"++---o--+","rbutton":"11R"}
+        _bHasDipSwitch="$(cHasJsonKey dipswitc[h] )" #  rtl/433/Cardin-S466/00 {"dipswitch":"++---o--+","rbutton":"11R"}
+        _bHasNewBattery="$( cHasJsonKey newbatter[y] )" #  {"id":13,"battery_ok":1,"newbattery":0,"temperature_C":24,"humidity":42}
+        _bHasRssi="$(cHasJsonKey rss[i] )"
 
         if (( bRewriteMore )) ; then
             data="$( cDeleteJsonKeys "transmit test" "$data" )"
@@ -745,7 +741,7 @@ do
             # data="$( cHasJsonKey unknown1 &&   jq -c 'if .unknown1 == 0 then del(.unknown1)   else . end' <<< "$data" || echo "$data" )"
             _k="$( cHasJsonKey "unknown.*" )" && (( $(cExtractJsonVal "$_k" ) == 0 )) && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
 
-            # bSkipLine="$( [[ $bHasTemperature || $bHasHumidity ]] && jq -er 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
+            # bSkipLine="$( [[ $temperature || $humidity ]] && jq -er 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
             temperature=${temperature/.[0-9]*} ; humidity=${humidity/.[0-9]*} 
             bSkipLine=$(( humidity > 100 || temperature < -50 )) # sanitize
         fi
@@ -753,9 +749,6 @@ do
         (( bRetained )) && cAppendJsonKeyVal HOUR "$nHour" # Append HOUR explicitly if readings are sent retained
         [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dLog/model/$model_ident"
         # cHasJsonKey freq  &&  data="$( jq -cer '.freq=(.freq + 0.5 | floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
-        # _factor=1
-        # cHasJsonKey freq1 &&  data="$( jq -cer ".freq1=(.freq1 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq1
-        # cHasJsonKey freq2 &&  data="$( jq -cer ".freq2=(.freq2 * $_factor + 0.5 | floor / $_factor)" <<< "$data" )" # round the frequency freq2
     fi
     # cPidDelta 3RD
 
@@ -786,30 +779,28 @@ do
             _prefix="SAME:  "  &&  [[ ${aLastReadings[$model_ident]} != "$prevval" ]] && _prefix="CHANGE(${#aLastReadings[@]}):"
             grep -E --color=auto '^[^/]*|/' <<< "$_prefix $model_ident /${aLastReadings[$model_ident]}/$prevval/"
         fi
-        _nTimeDiff=$(( (bHasTemperature || bHasHumidity) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
+        _nTimeDiff=$(( ( ${#temperature} || ${#humidity} ) && (nMinSecondsTempSensor>nMinSecondsOther) ? nMinSecondsTempSensor : nMinSecondsOther  ))
         _issame=$( cEqualJson "$data" "$prevval" "freq freq1 freq2 rssi id protocol" && echo 1 )
         [[ $_issame && ! $bMoreVerbose ]] && _nTimeDiff=$(( _nTimeDiff * 2 )) # delay outputting further if values are the same as last time
         _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident] != 1 && aCounts[$model_ident] >= nMinOccurences ))
 
         if (( bVerbose )) ; then
-            echo "_nTimeDiff=$_nTimeDiff, announceReady=$_bAnnounceReady, hasTemperature=$bHasTemperature, hasHumidity=$bHasHumidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
+            echo "_nTimeDiff=$_nTimeDiff, announceReady=$_bAnnounceReady, temperature=$temperature, humidity=$humidity, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
             # (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 ))
             echo "model_ident=$model_ident, Readings=${aLastReadings[$model_ident]}, Counts=${aCounts[$model_ident]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] ))"
         fi
         
         if (( _bAnnounceReady )) ; then
             : Checking announcement types - For now, only the following certain types of sensors are announced:
-            if (( bHasTemperature || _bHasPressureKPa || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
-                _name="${aNames[$protocol]}" 
-                _name="${_name:-$model}" # fallback
+            if (( ${#temperature} || _bHasPressureKPa || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
+                    || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
+                [[ $protocol    ]] && _name="${aNames["$protocol"]:-$model}" || _name="$model" # fallback
                 # if the sensor has one of the above attributes, announce all the attributes it has ...:
                 # see https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
-                (( bHasTemperature ))   && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
+                [[ $temperature ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
+                [[ $humidity    ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
                 cHasJsonKey setpoint_C  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }TempTarget"      "value_json.setpoint_C"   setpoint
-                (( bHasHumidity    ))   && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
                 (( _bHasPressureKPa )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
-                (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Fine Parts"  "value_json.pm2_5_ug_m3" density25
-                (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Estim Course Parts"  "value_json.estimated_pm10_0_ug_m3" density10
                 (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
                 (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd"       "value_json.cmd"   motion
                 (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Data"       "value_json.data"   data
@@ -817,6 +808,8 @@ do
                     cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal # FIXME: simplify
                 fi
                 (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Counter"   "value_json.counter"   counter
+                (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Fine Parts"  "value_json.pm2_5_ug_m3" density25
+                (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Estim Course Parts"  "value_json.estimated_pm10_0_ug_m3" density10
                 (( _bHasCode       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Code"       "value_json.code"     code
                 (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }ButtonR"    "value_json.buttonr"  button
                 (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch" dipswitch
@@ -826,13 +819,13 @@ do
                 (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Learn"       "value_json.learn"     learn
                 (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Channel"    "value_json.channel"  channel
                 (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Control"    "value_json.control"  control
-                #   [ "$sBand"      ]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
+                #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
                 cMqttStarred log "{*event*:*debug*,*note*:*announced MQTT discovery: $model_ident ($_name)*}"
                 nAnnouncedCount+=1
                 cMqttState
-                sleep 1 # give readers a second to digest the announcement first
+                sleep 1 # give the MQTT readers a second to digest the announcement
             else
-                cMqttStarred log "{*event*:*debug*,*note*:*not announced for MQTT discovery: $model_ident*}"
+                cMqttStarred log "{*event*:*debug*,*note*:*not announced for MQTT discovery (no sensible sensor yet): $model_ident*}"
             fi
             aAnnounced[$model_ident]=1 # 1 = took place (= dont reconsider for announcement)
         fi
@@ -842,7 +835,7 @@ do
             : now final rewrite and publish readings
             aLastReadings[$model_ident]="$data"
             if (( bRewrite )) ; then
-                # [ "$rssi" ] && cAppendJsonKeyVal rssi "$rssi" # put rssi back in
+                # [[ $rssi ]] && cAppendJsonKeyVal rssi "$rssi" # put rssi back in
                 if [[ ! $_issame ]] ; then
                     cAppendJsonKeyVal NOTE "CHANGE"
                 elif ! cEqualJson "$data" "$prevvals" "freq freq1 freq2 rssi id" ; then
@@ -861,7 +854,7 @@ do
 
     if (( nReadings > nPrevMax )) ; then   # a new max implies we have a new sensor
         nPrevMax=nReadings
-        _sensors="${bHasTemperature:+*temperature*,}${bHasHumidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}${_bHasRain:+*rain*,}"
+        _sensors="${temperature:+*temperature*,}${humidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}${_bHasRain:+*rain*,}"
         cMqttStarred log "{*event*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$channel*,*desc*:*${aNames[$protocol]}*,*protocol*:*$protocol*, *sensors*:[${_sensors%,}]}"
         cMqttState
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   
@@ -888,9 +881,9 @@ do
 done
 
 s=1 && [ ! -t 1 ] && s=30 # sleep a little longer if not running on a terminal
-_msg="$sName: read from $( basename "${fReplayfile:-$rtl433_command}" ) ended with rc=$_rc; while-loop ended $(cDate): rtlprocid now :${rtlcoproc_PID}:; last data=$data; sleep=${s}s"
+_msg="$sName: read returned rc=$_rc from $( basename "${fReplayfile:-$rtl433_command}" ) ; loop ended $(cDate): rtlprocid=:${rtlcoproc_PID:; last data=$data;} sleep=${s}s"
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*note*:*$_msg*}"
-sleep $s
-exit 1
+dbg END "$_msg"
+[[ $fReplayfile ]] || { sleep $s ; exit 1 ; } # return 1 only for premature end of rtl_433 command
 # now the exit trap function will be processed...
