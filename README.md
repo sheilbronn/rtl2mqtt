@@ -21,22 +21,23 @@ The following sample MQTT output is from a typical suburb neighbourhood with dif
 ...
 ```
 
-The features are reimplemented and heavily extended compared to most other *Rtl2MQTT* scripts, e.g. from https://github.com/roflmao/rtl2mqtt and https://github.com/IT-Berater/rtl2mqtt (which inspired a lot! Thanks!) as well as the 
+The features are reimplemented and heavily extended compared to most other *Rtl2MQTT* scripts, e.g. from https://github.com/roflmao/rtl2mqtt and https://github.com/IT-Berater/rtl2mqtt (which inspired at the beginning! Thanks!) as well as the 
 Python script [rtl_433_mqtt_hass.py](https://github.com/merbanan/rtl_433/blob/master/examples/rtl_433_mqtt_hass.py) from the rtl_433 examples.
 
 So the main areas of extended features are:
 
-* Suppression of repeated (duplicate) messages. This is a configurable, very helpful feature! -- Options: -r -r
-* Support for Home Assistant MQTT auto-discovery announcements for new sensors (it works well together with the sometimes picky [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant), too!) -- Options: -h -p -t
-* Temperature output is transformed to SI units (=Celsius) and rounded to 0.5°C (configurable) for less flicker.
+* Suppression of repeated (duplicate) messages. This is a configurable, very helpful feature! -- Options: `-r` `-r` (multiple)
+* Support for Home Assistant MQTT auto-discovery announcements for new sensors (it works well together with the sometimes picky [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant), too!) -- Options: `-h` `-p` `-t`
+* Temperature output is transformed to SI units (=Celsius) and rounded to 0.5°C (configurable) for less flicker. -- Option: `-w`
 * Streamlined/removed mostly unnecessary content in the original JSON messages, e.g. no time stamp or checksum code.
-* Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time (few messages) frame are suppressed. -- Options: -c -T
-* Enhanced logging into a device-specific subdirectory structure, easing later source device analysis. -- Options: -v -x
+* Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time (few messages) frame are suppressed. -- Options: `-c` `-T`
+* MQTT topic contains and - configurably - the id. -- Option: `-i`
+* Enhanced logging into a device-specific subdirectory structure, easing later source device analysis. -- Options: `-v` `-x`
 * A MQTT state and a log channel for the bridge is provided giving regular statistics and on certain events of the bridge itself.
 * Many command line options allowing for flexibility in the configuration (See source code for usage)
-* Sending an INT signal to the daemon will emit a status message to MQTT.
-* Sending an USR1 signal to the daemon will toggle the verbosity for debugging to syslog and MQTT.
-* Sending an USR2 signal to the daemon will log the gathered sensor data to syslog and MQTT.
+* Signalling INT to rtl2mqtt will emit a status message to MQTT.
+* Signalling USR1 to rtl2mqtt will toggle the verbosity for debugging to syslog and MQTT.
+* Signalling USR2 to rtl2mqtt will log the gathered sensor data to syslog and MQTT.
 
 NB: The Dockerfile is provided untouched and not checked since I don't run Docker. It might work or not.
 
