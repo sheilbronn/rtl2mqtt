@@ -141,7 +141,13 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
         _msg="$2"
     fi
     _topic="${_topic/#\//$basetopic/}"
-    mosquitto_pub ${mqtthost:+-h $mqtthost} ${sMID:+-i $sMID} -t "$_topic" -m "$( cExpandStarredString "$_msg" )" "${@:3:$#}" # ... append further arguments
+    _arguments=( ${sMID:+-i $sMID} -t "$_topic" -m "$( cExpandStarredString "$_msg" )" "${@:3:$#}" ) # ... append further arguments
+    [ -z "$hMqtt" ] && mosquitto_pub "${_arguments[@]}"
+    for host in $hMqtt ; do
+        set -x
+        mosquitto_pub ${host:+-h $host} "${_arguments[@]}"
+        set +x
+    done
     return $?
   }
 
@@ -244,7 +250,11 @@ cHassAnnounce() {
 cHassRemoveAnnounce() { # removes ALL previous Home Assistant announcements  
     _topic="$( dirname $sHassPrefix )/#" # deletes eveything below "homeassistant/..." !
     cLogMore "removing all announcements below $_topic..."
-    mosquitto_sub ${mqtthost:+-h $mqtthost} ${sMID:+-i $sMID} -W 1 -t "$_topic" --remove-retained --retained-only
+    _arguments=( "${sMID:+-i $sMID} -W 1 -t "$_topic" --remove-retained --retained-only" )
+    [ -z "$hMqtt" ] && mosquitto_sub "${_arguments[@]}"
+    for host in $hMqtt ; do
+        mosquitto_sub ${host:+-h $host} "${_arguments[@]}"
+    done
     _rc=$?
     sleep 1
     cMqttStarred log "{*event*:*debug*,*note*:*removed all announcements starting with $_topic returned $_rc.* }"
@@ -447,7 +457,7 @@ do
         ;;
     M)  rtl433_opts+=( -M "$OPTARG" )
         ;;
-    H)  nHopSecs=$OPTARG 
+    H)  nHopSecs="$OPTARG"
         ;;
     A)  rtl433_opts+=( -A )
         ;;
