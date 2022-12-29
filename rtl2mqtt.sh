@@ -643,7 +643,7 @@ else
         (( nMinOccurences > 1 )) && cLogMore "Will do MQTT announcements only after at least $nMinOccurences occurences..."
     fi 
     # Start the RTL433 listener as a bash coprocess .... # https://unix.stackexchange.com/questions/459367/using-shell-variables-for-command-options
-    coproc rtlcoproc ( $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json  2>&1 ; sleep 3 )
+    coproc rtlcoproc ( sleep 3 ; $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json  2>&1 ; sleep 3 )
     # -F "mqtt://$mqtthost:1883,events,devices"
 
     if (( bAnnounceHass )) && sleep 1 && (( rtlcoproc_PID  )) ; then
@@ -677,7 +677,7 @@ do
         data=${data#\*\*\* } # Remove any leading stars "*** "
         if [[ $bMoreVerbose && $data =~ ^"Allocating " ]] ; then # "Allocating 15 zero-copy buffers"
             cMqttStarred log "{*event*:*debug*,*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
-        elif [[ $data =~ ^"Please increase your allowed usbfs buffer size"|^"usb" ]] ; then
+        elif [[ $data =~ ^"Please increase your allowed usbfs buffer "|^"usb"|^"No supported devices " ]] ; then
             dbg WARNING "$data"
             cMqttStarred log "{*event*:*error*,*note*:*${data//\*/+}*}" # log a simple JSON msg
         fi
@@ -739,7 +739,7 @@ do
     elif [[ $model_ident && $bRewrite ]] ; then                  
         : Rewrite and clean the line from less interesting information....
         # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
-        _delkeys="$_delkeys model mod snr noise mic rssi" && [ -z "$bVerbose" ] && _delkeys="$_delkeys freq freq1 freq2_hmult" # other stuff: subtype channel
+        _delkeys="$_delkeys model mod snr noise mic rssi" && [ -z "$bVerbose" ] && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
         [[ ${aLastReadings[$model_ident]} && ${temperature/.*} -lt 50 ]] && _delkeys="$_delkeys protocol" # remove protocol after first sight  and when not unusual
         data="$( cDeleteJsonKeys "$_delkeys" "$data" )" 
         cRemoveQuotesFromNumbers
@@ -936,7 +936,7 @@ do
 done
 
 s=1 && [ ! -t 1 ] && s=30 # sleep longer if not running on a terminal to reduce launch storms
-_msg="$sName: read returned rc=$_rc from $( basename "${fReplayfile:-$rtl433_command}" ) ; $nLoops loop(s) at $(cDate) ; rtlprocid=:${rtlcoproc_PID:; last data=$data;}: ; sleep=${s}s"
+_msg="Read rc=$_rc ($(basename "${fReplayfile:-$rtl433_command}")) ; $nLoops loop(s) at $(cDate) ; rtlprocid=:${rtlcoproc_PID:; last data=$data;}: ; sleep=${s}s"
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*note*:*$_msg*}"
 dbg END "$_msg"
