@@ -51,6 +51,7 @@ declare -i nMinOccurences=3
 declare -i nPrevMax=1       # start with 1 for non-triviality
 declare -i nReadings=0
 declare -i nRC
+declare -i nLoops=0
 declare -l bAnnounceHass=1 # default is yes for now
 declare -i bRetained="" # make the value publishing retained or not (-r flag passed to mosquitto_pub)
 declare -A aLastReadings
@@ -144,15 +145,14 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
     _arguments=( ${sMID:+-i $sMID} -t "$_topic" -m "$( cExpandStarredString "$_msg" )" "${@:3:$#}" ) # ... append further arguments
     [ -z "$hMqtt" ] && mosquitto_pub "${_arguments[@]}"
     for host in $hMqtt ; do
-        set -x
         mosquitto_pub ${host:+-h $host} "${_arguments[@]}"
-        set +x
     done
     return $?
   }
 
 cMqttState() {	# log the state of the rtl bridge
     _statistics="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*lastfreq*:$sBand,*startdate*:*$sStartDate*,*currtime*:*$(cDate)*"
+    log "$_statistics"
     cMqttStarred state "{$_statistics${1:+,$1}}"
 }
 
@@ -436,7 +436,7 @@ do
         nMinSecondsOther=0
         nMinOccurences=1
         ;;
-    w)  sRoundTo="$OPTARG" # round temperature to this value and humidity to 5-times this value
+    w)  sRoundTo="$OPTARG" # round temperature to this value and humidity to 4-times this value (_hMult)
         ;;
     F)  if   [[ $OPTARG == "868" ]] ; then
             rtl433_opts+=( -f 868.3M -s "$sSuggSampleRate" -Y minmax ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
@@ -553,12 +553,13 @@ fi
 
 trap_exit() {   # stuff to do when exiting
     local - && set +x
-    log "$sName exit trapped at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will then log state."
+    cLogMore "$sName exit trapped at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will also log state..."
     (( bRemoveAnnouncements )) && cHassRemoveAnnounce
     (( rtlcoproc_PID )) && _cppid="$rtlcoproc_PID" && kill "$rtlcoproc_PID" && dbg "Killed coproc PID $_cppid"    # avoid race condition after killing coproc
     nReadings=${#aLastReadings[@]}
-    cMqttState "*collected_sensors*:*${!aLastReadings[*]}*"
-    cMqttStarred log "{*event*:*warning*,*note*:*Exiting.*}"
+    cMqttState "*note*:*trap exit*,*collected_sensors*:*${!aLastReadings[*]}*"
+    cMqttStarred log "{*event*:*warning*,*note*:*Exiting...*}"
+    # logger -p daemon.err -t "$sID" -- "Exiting trap_exit."
     # rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
@@ -566,9 +567,8 @@ trap 'trap_exit' EXIT # previously also: INT QUIT TERM
 trap_int() {    # log all collected sensors to MQTT
     trap '' INT 
     log "$sName received signal INT: logging state to MQTT"
-    cMqttStarred log "{*event*:*debug*,*note*:*received signal INT*,$_info}"
     cMqttStarred log "{*event*:*debug*,*note*:*received signal INT, will publish collected sensors* }"
-    cMqttState "*collected_sensors*:*${!aLastReadings[*]}* }"
+    cMqttState "*note*:*trap INT*,*collected_sensors*:*${!aLastReadings[*]}* }"
     nLastStatusSeconds=$(cDate %s)
     trap 'trap_int' INT 
  }
@@ -666,6 +666,7 @@ while read -r data <&"${rtlcoproc[0]}" ; _rc=$? ; (( _rc==0  || _rc==27 ))      
 do
     _beginPid="" # support debugging/counting/optimizing number of processes started in within the loop
 
+    nLoops=+1
     if [[ $data =~ ^SDR:.Tuned.to.([0-9]*\.[0-9]*)MHz ]] ; then # SDR: Tuned to 868.300MHz.
         # convert  msg type "SDR: Tuned to 868.300MHz." to "{"center_frequency":868300000}" (JSON) to be processed further down
         data="{\"center_frequency\":${BASH_REMATCH[1]}${BASH_REMATCH[2]}000,\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
@@ -683,7 +684,7 @@ do
         log "Non-JSON: $data"
         continue
     elif [ -z "$data" ] ; then
-        continue # skip empty lines immediately
+        continue # skip empty lines quietly
     fi
     # cPidDelta 0ED
     if [[ $data =~ "center_frequency" ]] && _freq="$(cExtractJsonVal center_frequency)" ; then
@@ -719,6 +720,7 @@ do
     rssi="$(    cExtractJsonVal rssi)"
     temperature="$( cExtractJsonVal temperature_C || cExtractJsonVal temperature)" 
     setpoint="$( cExtractJsonVal setpoint_C) || $( cExtractJsonVal setpoint_F)"
+    type="$( cExtractJsonVal type )" # typically type=TPMS if present
     cHasJsonKey freq && sBand="$( cMapFreqToBand "$(cExtractJsonVal freq)" )" && basetopic="$sRtlPrefix/$sBand"
     log "$(cAppendJsonKeyVal BAND "${model:+$sBand}" "$data" )" # only append band when model is given, i.e. not for non-sensor messages.
     
@@ -737,7 +739,7 @@ do
     elif [[ $model_ident && $bRewrite ]] ; then                  
         : Rewrite and clean the line from less interesting information....
         # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
-        _delkeys="$_delkeys model mod snr noise mic rssi" && [ -z "$bVerbose" ] && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
+        _delkeys="$_delkeys model mod snr noise mic rssi" && [ -z "$bVerbose" ] && _delkeys="$_delkeys freq freq1 freq2_hmult" # other stuff: subtype channel
         [[ ${aLastReadings[$model_ident]} && ${temperature/.*} -lt 50 ]] && _delkeys="$_delkeys protocol" # remove protocol after first sight  and when not unusual
         data="$( cDeleteJsonKeys "$_delkeys" "$data" )" 
         cRemoveQuotesFromNumbers
@@ -835,36 +837,37 @@ do
             echo "model_ident=$model_ident, Readings=${aLastReadings[$model_ident]}, Counts=${aCounts[$model_ident]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] ))"
         fi
         
+        topicext="$model$( [[ "$type" == "TPMS" ]] && echo "-$type" )${channel:+/$channel}$( [[ $bAddIdToTopic ]] && echo "${id:+/$id}" )" # construct the variant part of the MQTT topic
         if (( _bAnnounceReady )) ; then
             : Checking each announcement types - For now, only the following certain types of sensors are announced:
             if (( ${#temperature} || _bHasPressureKPa || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
                     || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
                 [[ $protocol    ]] && _name="${aNames["$protocol"]:-$model}" || _name="$model" # fallback
-                # if the sensor has one of the above attributes, announce all the attributes it has ...:
-                # see https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
-                [[ $temperature ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
-                [[ $humidity    ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
-                cHasJsonKey setpoint_C  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }TempTarget"      "value_json.setpoint_C"   setpoint
-                (( _bHasPressureKPa )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
-                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
-                (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Cmd"       "value_json.cmd"   motion
-                (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Data"       "value_json.data"   data
+                # if the sensor has anyone of the above attributes, announce all the attributes it has ...:
+                # see also https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
+                [[ $temperature ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
+                [[ $humidity    ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
+                cHasJsonKey setpoint_C  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }TempTarget"      "value_json.setpoint_C"   setpoint
+                (( _bHasPressureKPa )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
+                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
+                (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       "value_json.cmd"   motion
+                (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Data"       "value_json.data"   data
                 if (( _bHasRssi && bMoreVerbose )) ; then
-                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal # FIXME: simplify
+                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal # FIXME: simplify
                 fi
-                (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Counter"   "value_json.counter"   counter
-                (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Fine Parts"  "value_json.pm2_5_ug_m3" density25
-                (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Estim Course Parts"  "value_json.estimated_pm10_0_ug_m3" density10
-                (( _bHasCode       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Code"       "value_json.code"     code
-                (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }ButtonR"    "value_json.buttonr"  button
-                (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch" dipswitch
-                (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }NewBatttery"  "value_json.newbattery" newbattery
-                (( _bHasZone       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Zone"       "value_json.zone"     zone
-                (( _bHasUnit       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Unit"       "value_json.unit"     unit
-                (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Learn"       "value_json.learn"     learn
-                (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Channel"    "value_json.channel"  channel
-                (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Control"    "value_json.control"  control
-                #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "${model:+$model/}${ident:-00}" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
+                (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Counter"   "value_json.counter"   counter
+                (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Fine Parts"  "value_json.pm2_5_ug_m3" density25
+                (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Estim Course Parts"  "value_json.estimated_pm10_0_ug_m3" density10
+                (( _bHasCode       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Code"       "value_json.code"     code
+                (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonR"    "value_json.buttonr"  button
+                (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch" dipswitch
+                (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }NewBatttery"  "value_json.newbattery" newbattery
+                (( _bHasZone       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Zone"       "value_json.zone"     zone
+                (( _bHasUnit       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Unit"       "value_json.unit"     unit
+                (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Learn"       "value_json.learn"     learn
+                (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Channel"    "value_json.channel"  channel
+                (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Control"    "value_json.control"  control
+                #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
                 if  cMqttStarred log "{*event*:*debug*,*note*:*announced MQTT discovery: $model_ident ($_name)*}" ; then
                     nAnnouncedCount+=1
                     cMqttState
@@ -881,7 +884,7 @@ do
         # cPidDelta 4TH
 
         if [[ ! $_issame || $nTimeStamp -gt $(( aLastSents[$model_ident] + nTimeDiff )) || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data should be different from previous reading(s) but not if coming from replayfile
-            : now final rewrite and publish readings
+            : now final rewriting and then publish the reading
             aLastReadings[$model_ident]="$data"
             if (( bRewrite )) ; then
                 # [[ $rssi ]] && cAppendJsonKeyVal rssi "$rssi" # put rssi back in
@@ -892,7 +895,7 @@ do
                 fi
                 aSecondLastReadings[$model_ident]="$prevval"
             fi
-            if cMqttStarred "$basetopic/$model${channel:+/$channel}$( [[ $bAddIdToTopic ]] && echo "${id:+/$id}" )" "${data//\"/*}" ${bRetained:+ -r} ; then # ... try to publish the values!
+            if cMqttStarred "$basetopic/$topicext" "${data//\"/*}" ${bRetained:+ -r} ; then # ... publish the values!
                 nMqttLines+=1
                 aLastSents[$model_ident]="$nTimeStamp"
             else
@@ -919,7 +922,7 @@ do
             done
         )] "
         log "$( cExpandStarredString "$_collection")" 
-        cMqttState "*note*:*regular log*,*collected_model_ids*:*${!aLastReadings[*]}*, $_collection"
+        cMqttState "*note*:*regular log*,*collected_sensors*:*${!aLastReadings[*]}*, $_collection"
         nLastStatusSeconds=nTimeStamp
     elif (( nReadings > (nSecond*nSecond+2)*(nMinute+1)*(nHour+1) || nMqttLines%5000==0 || nReceivedCount % 10000 == 0 )) ; then # reset whole array to empty once in a while = starting over
         cMqttState
@@ -932,8 +935,8 @@ do
     fi
 done
 
-s=1 && [ ! -t 1 ] && s=30 # sleep a little longer if not running on a terminal
-_msg="$sName: read returned rc=$_rc from $( basename "${fReplayfile:-$rtl433_command}" ) ; loop ended $(cDate): rtlprocid=:${rtlcoproc_PID:; last data=$data;} sleep=${s}s"
+s=1 && [ ! -t 1 ] && s=30 # sleep longer if not running on a terminal to reduce launch storms
+_msg="$sName: read returned rc=$_rc from $( basename "${fReplayfile:-$rtl433_command}" ) ; $nLoops loop(s) at $(cDate) ; rtlprocid=:${rtlcoproc_PID:; last data=$data;}: ; sleep=${s}s"
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*note*:*$_msg*}"
 dbg END "$_msg"
