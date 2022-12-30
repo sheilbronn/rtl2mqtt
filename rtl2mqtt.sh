@@ -61,6 +61,7 @@ declare -A aProtocols
 declare -A aPrevTempVals
 declare -A aLastSents
 declare -A aAnnounced
+declare -a hMqtt
 
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" # increases security
@@ -143,8 +144,8 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
     fi
     _topic="${_topic/#\//$basetopic/}"
     _arguments=( ${sMID:+-i $sMID} -t "$_topic" -m "$( cExpandStarredString "$_msg" )" "${@:3:$#}" ) # ... append further arguments
-    [ -z "$hMqtt" ] && mosquitto_pub "${_arguments[@]}"
-    for host in $hMqtt ; do
+    [[ ${#hMqtt[@]} == 0 ]] && mosquitto_pub "${_arguments[@]}"
+    for host in "${hMqtt[@]}" ; do
         mosquitto_pub ${host:+-h $host} "${_arguments[@]}"
     done
     return $?
@@ -251,8 +252,8 @@ cHassRemoveAnnounce() { # removes ALL previous Home Assistant announcements
     _topic="$( dirname $sHassPrefix )/#" # deletes eveything below "homeassistant/..." !
     cLogMore "removing all announcements below $_topic..."
     _arguments=( "${sMID:+-i $sMID} -W 1 -t "$_topic" --remove-retained --retained-only" )
-    [ -z "$hMqtt" ] && mosquitto_sub "${_arguments[@]}"
-    for host in $hMqtt ; do
+    [[ ${#hMqtt[@]} == 0 ]]  && mosquitto_sub "${_arguments[@]}"
+    for host in "${hMqtt[@]}" ; do
         mosquitto_sub ${host:+-h $host} "${_arguments[@]}"
     done
     _rc=$?
@@ -408,12 +409,13 @@ do
         ;;
     h)  # configure the broker host here or in $HOME/.config/mosquitto_sub
         case "$OPTARG" in     #  http://www.steves-internet-guide.com/mqtt-hosting-brokers-and-servers/
-		test)    mqtthost="test.mosquitto.org" ;; # abbreviation
-		eclipse) mqtthost="mqtt.eclipseprojects.io"   ;; # abbreviation
-        hivemq)  mqtthost="broker.hivemq.com"   ;;
-		*)       mqtthost="$( echo "$OPTARG" | tr -c -d '0-9a-z_.' )" ;; # clean up for sec purposes
+		test|mosquitto) mqtthost="test.mosquitto.org" ;; # abbreviation
+		eclipse)        mqtthost="mqtt.eclipseprojects.io"   ;; # abbreviation
+        hivemq)         mqtthost="broker.hivemq.com"   ;;
+		*)              mqtthost="$( echo "$OPTARG" | tr -c -d '0-9a-z_.' )" ;; # clean up for sec purposes
 		esac
-   		hMqtt="${hMqtt:+$hMqtt }$mqtthost" # gather them
+   		hMqtt+=( "$([[ ! "${hMqtt[*]}" =~ "$mqtthost"  ]] && echo "$mqtthost")" ) # gather them, but no duplicates
+        # echo "${hMqtt[*]}"
         ;;
     p)  bAnnounceHass=1
         ;;
@@ -537,7 +539,7 @@ cEchoIfNotDuplicate() {
     fi
  }
 
-_info="*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
+_info="*host*:*$(hostname)*,*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
 if [ -t 1 ] ; then # probably running on a terminal
     log "$sName starting at $(cDate)"
     cMqttStarred log "{*event*:*starting*,$_info}"
@@ -643,7 +645,7 @@ else
         (( nMinOccurences > 1 )) && cLogMore "Will do MQTT announcements only after at least $nMinOccurences occurences..."
     fi 
     # Start the RTL433 listener as a bash coprocess .... # https://unix.stackexchange.com/questions/459367/using-shell-variables-for-command-options
-    coproc rtlcoproc ( sleep 3 ; $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json  2>&1 ; sleep 3 )
+    coproc rtlcoproc ( sleep 2 ; $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json  2>&1 ; sleep 3 )
     # -F "mqtt://$mqtthost:1883,events,devices"
 
     if (( bAnnounceHass )) && sleep 1 && (( rtlcoproc_PID  )) ; then
