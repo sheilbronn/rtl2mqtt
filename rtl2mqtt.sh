@@ -18,6 +18,7 @@ sManufacturer="RTL"
 sHassPrefix="homeassistant/sensor"
 sRtlPrefix="rtl"
 sStartDate="$(date "+%Y-%m-%dT%H:%M:%S")" # format needed for OpenHab DateTime MQTT items - for others OK, too? - as opposed to ISO8601
+sHostname="$(hostname)"
 basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
@@ -345,7 +346,8 @@ cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data i
 
 cDeleteJsonKeys() { # cDeleteJsonKeys "key1" "key2" ... "jsondata" (jsondata must be provided)
     local - && set +x   
-    local _d="" ; local _r="${*:$#}"
+    local _d=""
+    local _r="${*:$#}"
     # dbg "cDeleteJsonKeys $*"
     for k in "${@:1:($#-1)}" ; do
         # k="${k//[^a-zA-Z0-9_ ]}" # only allow alnum chars for attr names for sec reasons
@@ -396,7 +398,7 @@ cEqualJson() {   # cEqualJson "json1" "json2" "attributes to be ignored" '{"acti
 # set -x ; data1='{"act":"one","batt":100}' ; data2='{"act":"two","batt":100}' ; cEqualJson "$data1" "$data1" && echo AAA; cEqualJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data1" "act other" && echo CCC; exit
 
 [ -r "$rtl2mqtt_optfile" ] && _moreopts="$( sed -e 's/#.*//'  < "$rtl2mqtt_optfile" | tr -c -d '[:space:][:alnum:]_. -' )" && dbg "Read _moreopts from $rtl2mqtt_optfile"
-[[ $* =~ -F\ [0-9]*  ]] && _moreopts="${_moreopts//-F [0-9][0-9][0-9]}" && _moreopts="${_moreopts//-F [0-9][0-9]}" # -F on command line overules any other -F options
+[[ $* =~ -F\ [0-9]*  ]] && _moreopts="${_moreopts//-F [0-9][0-9][0-9]}" && _moreopts="${_moreopts//-F [0-9][0-9]}" # a -F on command line overules any other -F options
 cLogMore "Gathered options: $_moreopts $*"
 
 while getopts "?qh:pPt:S:drl:f:F:M:H:AR:Y:iw:c:as:t:T:2vx" opt $_moreopts "$@"
@@ -539,7 +541,7 @@ cEchoIfNotDuplicate() {
     fi
  }
 
-_info="*host*:*$(hostname)*,*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
+_info="*host*:*$sHostname*,*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
 if [ -t 1 ] ; then # probably running on a terminal
     log "$sName starting at $(cDate)"
     cMqttStarred log "{*event*:*starting*,$_info}"
@@ -560,7 +562,7 @@ trap_exit() {   # stuff to do when exiting
     (( rtlcoproc_PID )) && _cppid="$rtlcoproc_PID" && kill "$rtlcoproc_PID" && dbg "Killed coproc PID $_cppid"    # avoid race condition after killing coproc
     nReadings=${#aLastReadings[@]}
     cMqttState "*note*:*trap exit*,*collected_sensors*:*${!aLastReadings[*]}*"
-    cMqttStarred log "{*event*:*warning*,*note*:*Exiting...*}"
+    cMqttStarred log "{*event*:*warning*,*host*:*$sHostname*,*note*:*Exiting...*}"
     # logger -p daemon.err -t "$sID" -- "Exiting trap_exit."
     # rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
@@ -580,7 +582,7 @@ trap_usr1() {    # toggle verbosity
     (( bVerbose )) && bVerbose="" || bVerbose=1 # switch bVerbose
     _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs, current sBand=$sBand"
     log "$sName $_msg"
-    cMqttStarred log "{*event*:*debug*,*note*:*$_msg*}"
+    cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*note*:*$_msg*}"
   }
 trap 'trap_usr1' USR1
 
@@ -624,16 +626,16 @@ if [[ $fReplayfile ]] ; then
 #    done
     # exit 99
      
-    # coproc rtlcoproc ( shopt -s extglob ; export IFS=' ' ; while read -r line ; do read -r -a aArray <<< "${line%%{*(.)}" ; t= "${aArray[-1]}"; echo "${line##*([!{])}"; sleep 1 ; done < "$fReplayfile" ; sleep 5 ) # remove anything from the replay file before an opening curly brace
     coproc rtlcoproc ( shopt -s extglob ; export IFS=' ' ; while read -r line ; do 
-            : "line $line" 1>&2
+            : "line $line" #  e.g.   103256 rtl/433/Ambientweather-F007TH/1 { "protocol":20,"id":44,"channel":1,"freq":433.903,"temperature":19,"humidity":62,"BAND":433,"HOUR":16,"NOTE":"changed"}
+
             : "FRONT ${line%%{+(?)}" 1>&2
             data="${line##*([!{])}"
-            read -r -a aArray <<< "${line%%{+(?)}" 
-            : topic="${aArray[-1]}"  # ; echo "t $topic" 1>&2
-            IFS='/' read -r -a aTopic <<< "${aArray[-1]}" # topic might be preceded by timestamps to be removed
-            : model="${aTopic[3]}"
-            [[ ${aTopic[0]} == "rtl" &&  ${#aTopic} == 3 ]] && ! cHasJsonKey model && cAppendJsonKeyVal model "${aTopic[2]}"
+            read -r -a aFront <<< "${line%%{+(?)}" 
+            : topic="${aFront[-1]}"
+            IFS='/' read -r -a aTopic <<< "${aFront[-1]}" # topic might be preceded by timestamps that are to be removed
+            ! cHasJsonKey model && [[ ${aTopic[0]} == "rtl" && ${#aTopic[@]} > 2 ]] && 
+                    cAppendJsonKeyVal model "${aTopic[2]}" && : model="${aTopic[2]}" # extract model from topic if non given in message
             echo "$data" ; sleep 1
             set +x
         done < "$fReplayfile" ; sleep 5
@@ -645,7 +647,7 @@ else
         (( nMinOccurences > 1 )) && cLogMore "Will do MQTT announcements only after at least $nMinOccurences occurences..."
     fi 
     # Start the RTL433 listener as a bash coprocess .... # https://unix.stackexchange.com/questions/459367/using-shell-variables-for-command-options
-    coproc rtlcoproc ( sleep 2 ; $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json  2>&1 ; sleep 3 )
+    coproc rtlcoproc ( sleep 2 ; $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json 2>&1 ; sleep 3 )
     # -F "mqtt://$mqtthost:1883,events,devices"
 
     if (( bAnnounceHass )) && sleep 1 && (( rtlcoproc_PID  )) ; then
@@ -681,7 +683,7 @@ do
             cMqttStarred log "{*event*:*debug*,*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
         elif [[ $data =~ ^"Please increase your allowed usbfs buffer "|^"usb"|^"No supported devices " ]] ; then
             dbg WARNING "$data"
-            cMqttStarred log "{*event*:*error*,*note*:*${data//\*/+}*}" # log a simple JSON msg
+            cMqttStarred log "{*event*:*error*,*host*:*$sHostname*,*note*:*${data//\*/+}*}" # log a simple JSON msg
         fi
         log "Non-JSON: $data"
         continue
@@ -724,7 +726,8 @@ do
     setpoint="$( cExtractJsonVal setpoint_C) || $( cExtractJsonVal setpoint_F)"
     type="$( cExtractJsonVal type )" # typically type=TPMS if present
     cHasJsonKey freq && sBand="$( cMapFreqToBand "$(cExtractJsonVal freq)" )" && basetopic="$sRtlPrefix/$sBand"
-    log "$(cAppendJsonKeyVal BAND "${model:+$sBand}" "$data" )" # only append band when model is given, i.e. not for non-sensor messages.
+    [[ $model ]] && cAppendJsonKeyVal BAND "$sBand" # only append band when a model is given, i.e. not for non-sensor messages.
+    log "$data" 
     
     # cPidDelta DDD
     [[ $model && ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
@@ -740,7 +743,7 @@ do
         data="$( cDeleteJsonKeys "$_delkeys" "$data" )"
     elif [[ $model_ident && $bRewrite ]] ; then                  
         : Rewrite and clean the line from less interesting information....
-        # sample: {"id":20,"channel": 1,"battery_ok": 1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
+        # sample: {"id":20,"channel":1,"battery_ok":1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
         _delkeys="$_delkeys model mod snr noise mic rssi" && [ -z "$bVerbose" ] && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
         [[ ${aLastReadings[$model_ident]} && ${temperature/.*} -lt 50 ]] && _delkeys="$_delkeys protocol" # remove protocol after first sight  and when not unusual
         data="$( cDeleteJsonKeys "$_delkeys" "$data" )" 
@@ -940,7 +943,7 @@ done
 s=1 && [ ! -t 1 ] && s=30 # sleep longer if not running on a terminal to reduce launch storms
 _msg="Read rc=$_rc ($(basename "${fReplayfile:-$rtl433_command}")) ; $nLoops loop(s) at $(cDate) ; rtlprocid=:${rtlcoproc_PID:; last data=$data;}: ; sleep=${s}s"
 log "$_msg" 
-cMqttStarred log "{*event*:*endloop*,*note*:*$_msg*}"
+cMqttStarred log "{*event*:*endloop*,*host*:*$sHostname*,*note*:*$_msg*}"
 dbg END "$_msg"
 [[ $fReplayfile ]] || { sleep $s ; exit 1 ; } # return 1 only for premature end of rtl_433 command
 # now the exit trap function will be processed...
