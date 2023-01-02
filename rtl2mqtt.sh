@@ -5,7 +5,7 @@
 # Adapted and enhanced for conciseness, verboseness and flexibility by "sheilbronn"
 # (inspired by work from "IT-Berater" and M. Verleun)
 
-# set -o noglob     # file name globbing is neither needed nor wanted (for security reasons)
+set -o noglob     # file name globbing is neither needed nor wanted (for security reasons)
 set -o noclobber  # disable for security reasons
 sName="${0##*/}" && sName="${sName%.sh}"
 sMID="$( basename "${sName// /}" .sh )"
@@ -252,13 +252,12 @@ cHassAnnounce() {
 cHassRemoveAnnounce() { # removes ALL previous Home Assistant announcements  
     _topic="$( dirname $sHassPrefix )/#" # deletes eveything below "homeassistant/..." !
     cLogMore "removing all announcements below $_topic..."
-    _arguments=( "${sMID:+-i $sMID} -W 1 -t "$_topic" --remove-retained --retained-only" )
+    declare -a _arguments=( ${sMID:+-i "$sMID"} -W 1 -t "$_topic" --remove-retained --retained-only )
     [[ ${#hMqtt[@]} == 0 ]]  && mosquitto_sub "${_arguments[@]}"
     for host in "${hMqtt[@]}" ; do
         mosquitto_sub ${host:+-h $host} "${_arguments[@]}"
     done
     _rc=$?
-    sleep 1
     cMqttStarred log "{*event*:*debug*,*note*:*removed all announcements starting with $_topic returned $_rc.* }"
     return $?
 }
@@ -524,9 +523,14 @@ else
 fi
 basetopic="$sRtlPrefix/$sBand" # derive intial setting for basetopic
 
-# Enumerate the supported protocols and their names, put them into an array
-_protos="$( $rtl433_command -R 99999 2>&1 | awk '$1 ~ /\[[0-9]+\]/ { p=$1 ; printf "%d" , gensub("[\\]\\[\\*]","","g",$1)  ; $1="" ; print $0}' )" # ; exit
-declare -A aNames ; while read -r p name ; do aNames["$p"]="$name" ; done <<< "$_protos"
+# Enumerate the supported protocols and their names, put them into array aNames:
+# Sample:
+# [215]  Altronics X7064 temperature and humidity sensor
+# [216]* ANT and ANT+ devices
+declare -A aNames
+while read -r num name ; do 
+    [[ $num =~ ^\[([0-9]+)\]\*?$ ]] && aNames+=( [${BASH_REMATCH[1]}]="$name" )
+done < <( $rtl433_command -R 99999 2>&1 )
 
 cEchoIfNotDuplicate() {
     local - && set +x
@@ -634,7 +638,7 @@ if [[ $fReplayfile ]] ; then
             read -r -a aFront <<< "${line%%{+(?)}" 
             : topic="${aFront[-1]}"
             IFS='/' read -r -a aTopic <<< "${aFront[-1]}" # topic might be preceded by timestamps that are to be removed
-            ! cHasJsonKey model && [[ ${aTopic[0]} == "rtl" && ${#aTopic[@]} > 2 ]] && 
+            ! cHasJsonKey model && [[ ${aTopic[0]} == "rtl" && ${#aTopic[@]} -gt 2 ]] && 
                     cAppendJsonKeyVal model "${aTopic[2]}" && : model="${aTopic[2]}" # extract model from topic if non given in message
             echo "$data" ; sleep 1
             set +x
@@ -842,7 +846,9 @@ do
             echo "model_ident=$model_ident, Readings=${aLastReadings[$model_ident]}, Counts=${aCounts[$model_ident]}, Prev=$prevval, Prev2=$prevvals, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] ))"
         fi
         
-        topicext="$model$( [[ "$type" == "TPMS" ]] && echo "-$type" )${channel:+/$channel}$( [[ $bAddIdToTopic ]] && echo "${id:+/$id}" )" # construct the variant part of the MQTT topic
+        : channel="${channel}" : id="${id}"
+        topicext="$model$( [[ "$type" == "TPMS" ]] && echo "-$type" )${channel:+/$channel}$( [[ $bAddIdToTopic || -z $channel ]] && echo "${id:+/$id}" )" # construct the variant part of the MQTT topic
+
         if (( _bAnnounceReady )) ; then
             : Checking each announcement types - For now, only the following certain types of sensors are announced:
             if (( ${#temperature} || _bHasPressureKPa || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
