@@ -15,7 +15,7 @@ rtl2mqtt_optfile="$( [ -r "${XDG_CONFIG_HOME:=$HOME/.config}/$sName" ] && echo "
 commandArgs="$*"
 dLog="/var/log/$sMID" # /var/log is default, but will be changed to /tmp if not useable
 sManufacturer="RTL"
-sHassPrefix="homeassistant/sensor"
+sHassPrefix="homeassistant"
 sRtlPrefix="rtl"
 sStartDate="$(date "+%Y-%m-%dT%H:%M:%S")" # format needed for OpenHab DateTime MQTT items - for others OK, too? - as opposed to ISO8601
 sHostname="$(hostname)"
@@ -182,11 +182,9 @@ cHassAnnounce() {
 
     local _dev_class="${6#none}" # dont wont "none" as string for dev_class
 	local _state_class
+    local _sensor=sensor
     local _jsonpath="${5#value_json.}" # && _jsonpath="${_jsonpath//[ \/-]/}"
     local _jsonpath_red="$( echo "$_jsonpath" | tr -d "][ /_-" )" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
-    local _configtopicpart="$( echo "$3" | tr -d "][ /-" | tr "[:upper:]" "[:lower:]" )"
-    local _topic="${sHassPrefix}/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
-          _configtopicpart="${_configtopicpart^[a-z]*}" # uppercase first letter for readability
     local _devname="$2 ${_devid^}"
     local _icon_str  # mdi icons: https://pictogrammers.github.io/@mdi/font/6.5.95/
 
@@ -213,22 +211,25 @@ cHassAnnounce() {
         counter)	_icon_str="counter"         ; _unit_str=",*unit_of_measurement*:*#*"	; _state_class="total_increasing" ;;
 		clock)	    _icon_str="clock-outline"   ;;
 		signal)	    _icon_str="signal"          ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
-        switch)     _icon_str="toggle-switch*"  ;;
+        switch)     _icon_str="toggle-switch*"  ; _sensor=switch ;;
         motion)     _icon_str="motion-sensor"   ;;
-        button)     _icon_str="gesture-tap-button" ;;
+        button)     _icon_str="gesture-tap-button"  ; _sensor=switch ;;
         dipswitch)  _icon_str="dip-switch" ;;
         code)   _icon_str="lock" ;;
-        newbattery) _icon_str="battery-check" ; _unit_str=",*unit_of_measurement*:*#*"  ;;
+        newbattery) _icon_str="battery-check" ; _unit_str=",*unit_of_measurement*:*#*" ;;
        # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
         zone)       _icon_str="vector-intersection" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
         unit)       _icon_str="group"               ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
         learn)      _icon_str="plus"               ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="total_increasing" ;;
         channel)    _icon_str="format-list-numbered" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
-        battery_ok) _icon_str="" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
+        battery_ok) _icon_str="" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ; _sensor=binary_sensor ;;
 		none)		_icon_str="" ;; 
     esac
-
     _icon_str="${_icon_str:+,*icon*:*mdi:$_icon_str*}"
+
+    local _configtopicpart="$( echo "$3" | tr -d "][ /-" | tr "[:upper:]" "[:lower:]" )"
+    local _topic="${sHassPrefix}/$_sensor/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
+          _configtopicpart="${_configtopicpart^[a-z]*}" # uppercase first letter for readability
     local  _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aNames[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
     local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
            # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
@@ -250,15 +251,15 @@ cHassAnnounce() {
 #   "device_class": "signal_strength", "state_topic": "rtl_433/openhabian/devices/Smoke-GS558/25612/rssi", "unique_id": "Smoke-GS558-25612-rssi"}
 
 cHassRemoveAnnounce() { # removes ALL previous Home Assistant announcements  
-    _topic="$( dirname $sHassPrefix )/#" # deletes eveything below "homeassistant/..." !
-    cLogMore "removing all announcements below $_topic..."
-    declare -a _arguments=( ${sMID:+-i "$sMID"} -W 1 -t "$_topic" --remove-retained --retained-only )
+    declare -a _topics=( -t "$sHassPrefix/sensor/#" -t "$sHassPrefix/binary_sensor/#" )
+    cLogMore "removing announcements below $sHassPrefix..."
+    declare -a _arguments=( ${sMID:+-i "$sMID"} -W 1 "${_topics[@]}" --remove-retained --retained-only )
     [[ ${#hMqtt[@]} == 0 ]]  && mosquitto_sub "${_arguments[@]}"
     for host in "${hMqtt[@]}" ; do
         mosquitto_sub ${host:+-h $host} "${_arguments[@]}"
     done
     _rc=$?
-    cMqttStarred log "{*event*:*debug*,*note*:*removed all announcements starting with $_topic returned $_rc.* }"
+    cMqttStarred log "{*event*:*debug*,*message*:*removed all announcements starting with $sHassPrefix returned $_rc.* }"
     return $?
 }
 
@@ -553,7 +554,7 @@ else               # probably non-terminal
     delayedStartSecs=3
     log "$sName starting in $delayedStartSecs secs from $(cDate)"
     sleep "$delayedStartSecs"
-    cMqttStarred log "{*event*:*starting*,$_info,*note*:*delayed by $delayedStartSecs secs*,*sw_version*=*$rtl433_version*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*}"
+    cMqttStarred log "{*event*:*starting*,$_info,*message*:*delayed by $delayedStartSecs secs*,*sw_version*=*$rtl433_version*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*}"
 fi
 
 # Optionally remove any matching retained announcements
@@ -563,10 +564,13 @@ trap_exit() {   # stuff to do when exiting
     local - && set +x
     cLogMore "$sName exit trapped at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will also log state..."
     (( bRemoveAnnouncements )) && cHassRemoveAnnounce
-    (( rtlcoproc_PID )) && _cppid="$rtlcoproc_PID" && kill "$rtlcoproc_PID" && dbg "Killed coproc PID $_cppid"    # avoid race condition after killing coproc
+    (( COPROC_PID )) && _cppid="$COPROC_PID" && kill "$COPROC_PID" && { # avoid race condition after killing coproc
+        wait $_cppid # Cleanup, may  fail on purpose
+        dbg "Killed coproc PID $_cppid and awaited rc=$?"    
+    }
     nReadings=${#aLastReadings[@]}
     cMqttState "*note*:*trap exit*,*collected_sensors*:*${!aLastReadings[*]}*"
-    cMqttStarred log "{*event*:*warning*,*host*:*$sHostname*,*note*:*Exiting...*}"
+    cMqttStarred log "{*event*:*warning*,*host*:*$sHostname*,*message*:*Exiting...*}"
     # logger -p daemon.err -t "$sID" -- "Exiting trap_exit."
     # rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
@@ -575,7 +579,7 @@ trap 'trap_exit' EXIT # previously also: INT QUIT TERM
 trap_int() {    # log all collected sensors to MQTT
     trap '' INT 
     log "$sName received signal INT: logging state to MQTT"
-    cMqttStarred log "{*event*:*debug*,*note*:*received signal INT, will publish collected sensors* }"
+    cMqttStarred log "{*event*:*debug*,*message*:*received signal INT, will publish collected sensors* }"
     cMqttState "*note*:*trap INT*,*collected_sensors*:*${!aLastReadings[*]}* }"
     nLastStatusSeconds=$(cDate %s)
     trap 'trap_int' INT 
@@ -586,7 +590,7 @@ trap_usr1() {    # toggle verbosity
     (( bVerbose )) && bVerbose="" || bVerbose=1 # switch bVerbose
     _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs, current sBand=$sBand"
     log "$sName $_msg"
-    cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*note*:*$_msg*}"
+    cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*message*:*$_msg*}"
   }
 trap 'trap_usr1' USR1
 
@@ -594,7 +598,7 @@ trap_usr2() {    # remove all home assistant announcements
     cHassRemoveAnnounce
     _msg="received signal USR2: resetting all home assistant announcements"
     log "$sName $_msg"
-    cMqttStarred log "{*event*:*debug*,*note*:*$_msg*}"
+    cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
   }
 trap 'trap_usr2' USR2 
 
@@ -608,16 +612,16 @@ trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purpo
     done
     _msg="received signal VTALRM: logging state"
     log "$sName $_msg"
-    cMqttStarred log "{*event*:*debug*,*note*:*$_msg*}"
+    cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
   }
 trap 'trap_vtalrm' VTALRM
 
 trap_other() {
     _msg="received other signal ..."
     log "$sName $_msg"
-    cMqttStarred log "{*event*:*debug*,*note*:*$_msg*}"
+    cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
   }
-trap 'trap_other' URG XCPU XFSZ PROF WINCH PWR SYS # VTALRM
+trap 'trap_other' URG XCPU XFSZ PROF WINCH PWR SYS
 
 if [[ $fReplayfile ]] ; then
     nMinSecondsOther=0
@@ -630,47 +634,54 @@ if [[ $fReplayfile ]] ; then
 #    done
     # exit 99
      
-    coproc rtlcoproc ( shopt -s extglob ; export IFS=' ' ; while read -r line ; do 
+    coproc COPROC ( shopt -s extglob ; export IFS=' ' ; while read -r line ; do 
             : "line $line" #  e.g.   103256 rtl/433/Ambientweather-F007TH/1 { "protocol":20,"id":44,"channel":1,"freq":433.903,"temperature":19,"humidity":62,"BAND":433,"HOUR":16,"NOTE":"changed"}
 
             : "FRONT ${line%%{+(?)}" 1>&2
             data="${line##*([!{])}"
-            read -r -a aFront <<< "${line%%{+(?)}" 
+            read -r -a aFront <<< "${line%%{+(?)}" # remove anything before an opening curly brace from the replay file
             : topic="${aFront[-1]}"
             IFS='/' read -r -a aTopic <<< "${aFront[-1]}" # topic might be preceded by timestamps that are to be removed
             ! cHasJsonKey model && [[ ${aTopic[0]} == "rtl" && ${#aTopic[@]} -gt 2 ]] && 
                     cAppendJsonKeyVal model "${aTopic[2]}" && : model="${aTopic[2]}" # extract model from topic if non given in message
             echo "$data" ; sleep 1
-            set +x
         done < "$fReplayfile" ; sleep 5
-    ) # remove anything from the replay file before an opening curly brace
-    # set +x
+    )  
 else
     if [[ $bVerbose || -t 1 ]] ; then
         cLogMore "rtl_433 ${rtl433_opts[*]}"
         (( nMinOccurences > 1 )) && cLogMore "Will do MQTT announcements only after at least $nMinOccurences occurences..."
     fi 
     # Start the RTL433 listener as a bash coprocess .... # https://unix.stackexchange.com/questions/459367/using-shell-variables-for-command-options
-    coproc rtlcoproc ( sleep 2 ; $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json 2>&1 ; sleep 3 )
+    coproc COPROC ( sleep 0 ; $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json 2>&1 ; rc=$? ; sleep 2 ; exit $rc )
     # -F "mqtt://$mqtthost:1883,events,devices"
 
-    if (( bAnnounceHass )) && sleep 1 && (( rtlcoproc_PID  )) ; then
-        # _statistics="*sensorcount*:*$nReadings*,*announcedcount*:*$nAnnouncedCount*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,*readingscount*:*$nReadings*"
-        ## cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "TestVal" "value_json.mcheck" "mcheck"
-        cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount"   "value_json.announceds" "counter" &&
-        cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "SensorCount"      "value_json.sensors"  "counter"   &&
-        cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "MqttLineCount"    "value_json.mqttlines" "counter"  &&
-        cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "ReadingsCount"    "value_json.receiveds" "counter"  &&
-        cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "Start date"       "value_json.startdate" "clock"    &&
-        cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/log   "LogMessage"       ""           "none"                 
-        nRC=$?
-        (( nRC != 0 )) && echo "ERROR: HASS Announcements failed with rc=$nRC" 1>&2
-        sleep 1
+    if (( COPROC_PID  )) ; then
+        if (( bAnnounceHass )) && sleep 1 ; then
+            # _statistics="*sensorcount*:*$nReadings*,*announcedcount*:*$nAnnouncedCount*,*mqttlinecount*:*$nMqttLines*,*receivedcount*:*$nReceivedCount*,*readingscount*:*$nReadings*"
+            ## cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "TestVal" "value_json.mcheck" "mcheck"
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount"   "value_json.announceds" "counter" &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "SensorCount"      "value_json.sensors"  "counter"   &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "MqttLineCount"    "value_json.mqttlines" "counter"  &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "ReadingsCount"    "value_json.receiveds" "counter"  &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "Start date"       "value_json.startdate" "clock"    &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/log   "LogMessage"       ""           "none"                 
+            nRC=$?
+            (( nRC != 0 )) && echo "ERROR: HASS Announcements failed with rc=$nRC" 1>&2
+            sleep 1
+        fi
+        _pid="$( pidof "$rtl433_command" )" # hack to find the process of the rtl_433 command
+        # _pgrp="$(ps -o pgrp= ${COPROC_PID})"
+        _ppid="$( ps -o ppid= "$_pid" )"
+        _pgrp="$( ps -o pgrp= "$_pid" )"
+        # renice -n 15 "${COPROC_PID}" > /dev/null
+        # renice -n 17 -g "$_pgrp" # > /dev/null
+        (( _ppid == COPROC_PID )) && renice -n 17 "$_pid" > /dev/null 
+        (( bMoreVerbose )) && dbg DEBUG "COPROC_PID=$COPROC_PID, pgrp=$_pgrp, ppid=$_ppid, pid=$_pid"
     fi
-    (( rtlcoproc_PID )) && renice -n 17 "${rtlcoproc_PID}" > /dev/null
 fi 
 
-while read -r data <&"${rtlcoproc[0]}" ; _rc=$? ; (( _rc==0  || _rc==27 ))      # ... and go through the loop
+while read -r data <&"${COPROC[0]}" ; _rc=$? ; (( _rc==0  || _rc==27 ))      # ... and go through the loop
 do
     _beginPid="" # support debugging/counting/optimizing number of processes started in within the loop
 
@@ -684,10 +695,10 @@ do
     elif [[ $data =~ ^[^{] ]] ; then # transform any any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
         data=${data#\*\*\* } # Remove any leading stars "*** "
         if [[ $bMoreVerbose && $data =~ ^"Allocating " ]] ; then # "Allocating 15 zero-copy buffers"
-            cMqttStarred log "{*event*:*debug*,*note*:*${data//\*/+}*}" # convert it to a simple JSON msg
+            cMqttStarred log "{*event*:*debug*,*message*:*${data//\*/+}*}" # convert it to a simple JSON msg
         elif [[ $data =~ ^"Please increase your allowed usbfs buffer "|^"usb"|^"No supported devices " ]] ; then
             dbg WARNING "$data"
-            cMqttStarred log "{*event*:*error*,*host*:*$sHostname*,*note*:*${data//\*/+}*}" # log a simple JSON msg
+            cMqttStarred log "{*event*:*error*,*host*:*$sHostname*,*message*:*${data//\*/+}*}" # log a simple JSON msg
         fi
         log "Non-JSON: $data"
         continue
@@ -737,7 +748,7 @@ do
     [[ $model && ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
     ident="${channel:-$id}" # prefer channel (if present) over id as the unique identifier.
     model_ident="${model}${ident:+_$ident}"
-    
+
     [[ ! $bVerbose && ! $model_ident =~ $sSensorMatch ]] && : skip early && continue # skip unwanted readings (regexp) early (if not verbose)
 
     # cPidDelta 2ND
@@ -803,7 +814,7 @@ do
         fi
         cAppendJsonKeyVal BAND "$sBand"
         (( bRetained )) && cAppendJsonKeyVal HOUR "$nHour" # Append HOUR explicitly if readings are sent retained
-        [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dLog/model/$model_ident"
+        [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dLog/model/${sBand}_$model_ident"
         # cHasJsonKey freq  &&  data="$( jq -cer '.freq=(.freq + 0.5 | floor)' <<< "$data" )" # the frequency always changes a little, will distort elimination of duplicates, and is contained in MQTT topic anyway.
     fi
     # cPidDelta 3RD
@@ -879,7 +890,7 @@ do
                 (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Channel"    "value_json.channel"  channel
                 (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Control"    "value_json.control"  control
                 #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
-                if  cMqttStarred log "{*event*:*debug*,*note*:*announced MQTT discovery: $model_ident ($_name)*}" ; then
+                if  cMqttStarred log "{*event*:*debug*,*message*:*announced MQTT discovery: $model_ident ($_name)*}" ; then
                     nAnnouncedCount+=1
                     cMqttState
                     sleep 1 # give the MQTT readers an extra second to digest the announcement
@@ -888,7 +899,7 @@ do
                     : announcement had failed, will be retried next time
                 fi
             else
-                cMqttStarred log "{*event*:*debug*,*note*:*not announced for MQTT discovery (no sensible sensor): $model_ident*}"
+                cMqttStarred log "{*event*:*debug*,*message*:*not announced for MQTT discovery (no sensible sensor): $model_ident*}"
                 aAnnounced[$model_ident]=1 # 1 = took place (= dont reconsider for announcement)
             fi
         fi
@@ -921,7 +932,7 @@ do
     if (( nReadings > nPrevMax )) ; then   # a new max implies we have a new sensor
         nPrevMax=nReadings
         _sensors="${temperature:+*temperature*,}${humidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}${_bHasRain:+*rain*,}"
-        cMqttStarred log "{*event*:*sensor added*,*model*:*$model*,*id*:$id,*channel*:*$channel*,*desc*:*${protocol:+${aNames[$protocol]}}*,*protocol*:*$protocol*, *sensors*:[${_sensors%,}]}"
+        cMqttStarred log "{*event*:*sensor added*,*model*:*$model*,*protocol*:*$protocol*,*id*:$id,*channel*:*$channel*,*description*:*${protocol:+${aNames[$protocol]}}*, *sensors*:[${_sensors%,}]}"
         cMqttState
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   
         # log the status once in a while, good heuristic in a generalized neighbourhood
@@ -937,7 +948,7 @@ do
         nLastStatusSeconds=nTimeStamp
     elif (( nReadings > (nSecond*nSecond+2)*(nMinute+1)*(nHour+1) || nMqttLines%5000==0 || nReceivedCount % 10000 == 0 )) ; then # reset whole array to empty once in a while = starting over
         cMqttState
-        cMqttStarred log "{*event*:*debug*,*note*:*will reset saved values (nReadings=$nReadings,nMqttLines=$nMqttLines,nReceivedCount=$nReceivedCount)*}"
+        cMqttStarred log "{*event*:*debug*,*message*:*will reset saved values (nReadings=$nReadings,nMqttLines=$nMqttLines,nReceivedCount=$nReceivedCount)*}"
         unset aLastReadings && declare -A aLastReadings # reset the whole collection (array)
         unset aCounts   && declare -A aCounts
         unset aAnnounced && declare -A aAnnounced
@@ -947,9 +958,9 @@ do
 done
 
 s=1 && [ ! -t 1 ] && s=30 # sleep longer if not running on a terminal to reduce launch storms
-_msg="Read rc=$_rc ($(basename "${fReplayfile:-$rtl433_command}")) ; $nLoops loop(s) at $(cDate) ; rtlprocid=:${rtlcoproc_PID:; last data=$data;}: ; sleep=${s}s"
+_msg="Read rc=$_rc ($(basename "${fReplayfile:-$rtl433_command}")) ; $nLoops loop(s) at $(cDate) ; COPROC=:${COPROC_PID:; last data=$data;}: ; sleep=${s}s"
 log "$_msg" 
-cMqttStarred log "{*event*:*endloop*,*host*:*$sHostname*,*note*:*$_msg*}"
+cMqttStarred log "{*event*:*endloop*,*host*:*$sHostname*,*message*:*$_msg*}"
 dbg END "$_msg"
 [[ $fReplayfile ]] || { sleep $s ; exit 1 ; } # return 1 only for premature end of rtl_433 command
 # now the exit trap function will be processed...
