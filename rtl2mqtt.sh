@@ -29,6 +29,7 @@ declare -a rtl433_opts_more=( -R -31 -R -53 -R -86 ) # My specific personal excl
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
 sSensorMatch=".*" # any sensor name will have to match this regex
 sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 4*x (see below)
+sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php" # This is stable for years
 
 # xx=( one "*.log" ) && xx=( "${xx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;         exit 0
 
@@ -59,6 +60,7 @@ declare -i bRetained="" # make the value publishing retained or not (-r flag pas
 declare -A aLastReadings
 declare -A aSecondLastReadings
 declare -Ai aCounts
+declare -A aWuUrls
 declare -A aProtocols
 declare -A aPrevTempVals
 declare -A aLastSents
@@ -503,17 +505,12 @@ do
         ;;
     s)  sSuggSampleRate="$OPTARG"
         ;;
-    W)  sWuSensor="$OPTARG"
-        IFS=',' read -r -a aArray <<< "$OPTARG" # Syntax: -W <Station-ID>,<-Station-KEY>,Bresser-3CH_1
-        WUID="${aArray[0]}" 
-        WUKEY="${aArray[1]}" 
-        sWuSensor="${aArray[2]}"
-        # sWuSensor=Bresser-3CH_1
-        URL="https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php" # This is stable for years
-        URL="$URL?ID=$WUID&PASSWORD=$WUKEY&action=updateraw&dateutc=now"
-
-        command -v curl > /dev/null || { echo "$sName: curl not installed, but needed for uploading Wunderground data ..." 1>&2 ; exit 1 ; }
-        dbg "Will upload data for sensor $sWuSensor as station ID $WUID to Weather Underground..."
+    W)  command -v curl > /dev/null || { echo "$sName: curl not installed, but needed for uploading Wunderground data ..." 1>&2 ; exit 1 ; }
+        IFS=',' read -r _id _key _sensor <<< "$OPTARG"  # Syntax e.g.: -W <Station-ID>,<-Station-KEY>,Bresser-3CH_1
+        [[ $_sensor ]] || { echo "$sName: -W $OPTARG doesn't have three comma-separated values..." 1>&2 ; exit 1 ; }
+        aWuUrls[$_sensor]="$sWuBaseUrl?ID=$_id&PASSWORD=$_key&action=updateraw&dateutc=now"
+        _key=""
+        dbg "Will upload data for sensor $_sensor as station ID $_id to Weather Underground..." 
         ;;
     2)  bTryAlternate=1 # ease coding experiments (not to be used in production)
         ;;
@@ -549,7 +546,6 @@ fi
 
 command -v jq > /dev/null || { _msg="$sName: jq might be necessary!" ; log "$_msg" ; echo "$_msg" 1>&2 ; }
 command -v iwgetid > /dev/null || { _msg="$sName: iwgetid not found" ; log "$_msg" ; echo "$_msg" 1>&2 ; alias iwgetid : ; }
-
 
 if [[ $fReplayfile ]]; then
     sBand=999
@@ -817,7 +813,7 @@ do
         cRemoveQuotesFromNumbers
         if [[ $temperature ]] ; then
             # Fahrenheit = Celsius * 9/5 + 32, Fahrenheit = Celsius * 9/5 + 32
-            [[ $sWuSensor ]] && temperatureF=$(( $(cMultiplyTen "$temperature") * 9 / 5 + 320 )) && temperatureF="$(cDiv10 $temperatureF)"
+            (( ${#aWuUrls[@]} > 0 )) && temperatureF=$(( $(cMultiplyTen "$temperature") * 9 / 5 + 320 )) && temperatureF="$(cDiv10 $temperatureF)" # only if needed later
             temperature="$(( ( $(cMultiplyTen "$temperature") + sRoundTo/2 ) / sRoundTo * sRoundTo ))" && temperature="$(cDiv10 $temperature)"  # round to 0.x °C
             cDeleteSimpleJsonKey temperature_C
             cAppendJsonKeyVal temperature "$temperature"
@@ -961,16 +957,15 @@ do
         if [[ ! $_issame || $nTimeStamp -gt $(( aLastSents[$model_ident] + nTimeDiff )) || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data should be different from previous reading(s) but not if coming from replayfile
             : "now final rewriting and then publish the reading"
             aLastReadings[$model_ident]="$data"
-            if [[ $model_ident = "$sWuSensor" ]] ; then # upload to Wunderground
-                # humidity="44"
-                # wind_speed="10"
-                # precipitation="0"
-                baromin="$(( $(cMultiplyTen $(cMultiplyTen $(cMultiplyTen pressure_kPa) ) ) / 3386  ))" ; baromin=${baromin%%0} # 3.3863886666667
+            if [[ ${aWuUrls[$model_ident]} ]] ; then # data should be uploaded to Wunderground
+                # wind_speed="10", # precipitation="0"
+                [[ $baromin ]] && baromin="$(( $(cMultiplyTen $(cMultiplyTen $(cMultiplyTen pressure_kPa) ) ) / 3386  ))" # 3.3863886666667
 
                 URL2="tempf=$temperatureF${humidity:+&humidity=$humidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}"
-                retcurl="$( curl --silent "$URL&$URL2" 2>&1 )" && nUploads+=1
-                log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads)"
+                retcurl="$( curl --silent "${aWuUrls[$model_ident]}&$URL2" 2>&1 )" && [[ $retcurl == success ]] && nUploads+=1
+                log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, sensor=$model_ident)"
             fi
+
             if (( bRewrite )) ; then
                 # [[ $rssi ]] && cAppendJsonKeyVal rssi "$rssi" # put rssi back in
                 if [[ ! $_issame ]] ; then

@@ -1,8 +1,9 @@
 # rtl2mqtt
 
-This script enhances the data from an SDR stick and its receiving software [rtl_433](https://github.com/merbanan/rtl_433) to well defined MQTT messages.
-It also cleans the data, reduces mostly unnecessary fields and messages duplicates, while providing additional additional information as well as *Home Assistant MQTT autodiscovery* announcements! It is intended to run as a daemon, starting automatically after a device boot, or on the command line. 
-Several logging facilities ease the debugging of your local 433/866 MHz RF radio environment.
+This script enhances and filters the data received by an SDR stick and processed by [rtl_433](https://github.com/merbanan/rtl_433) to well defined MQTT messages.
+It cleans the data, reduces most unnecessary fields and messages duplicates. It provides additional additional information as well as *Home Assistant MQTT autodiscovery* announcements. Data from weathers sensors can be uploaded to a personal Weather Underground account.
+rtl2mqtt is intended to run as a daemon, starting automatically after a device boot, or on the command line.
+Additonally, some logging facilities ease the debugging of your local 433/866 MHz RF radio environment.
 
 The following sample MQTT output is from a typical suburb neighbourhood with different weather stations (inside and outside), movement sensors, smoke sensors, blind switches etc...
 
@@ -21,21 +22,22 @@ The following sample MQTT output is from a typical suburb neighbourhood with dif
 ...
 ```
 
-Many features are reimplemented and heavily extended compared to most other *Rtl2MQTT* scripts, e.g. from https://github.com/roflmao/rtl2mqtt and https://github.com/IT-Berater/rtl2mqtt (which inspired at the beginning! Thanks!) as well as the 
+A lot of features are reimplemented and heavily extended compared to many similar *Rtl2MQTT* scripts, e.g. from https://github.com/roflmao/rtl2mqtt and https://github.com/IT-Berater/rtl2mqtt (which inspired at the beginning! Thanks!) as well as the 
 Python script [rtl_433_mqtt_hass.py](https://github.com/merbanan/rtl_433/blob/master/examples/rtl_433_mqtt_hass.py) from the rtl_433 examples.
 
 So the main areas of extended features are:
 
 * Suppression of repeated (duplicate) messages. This is a configurable, very helpful feature! -- Options: `-r` `-r` (multiple)
-* Support for Home Assistant MQTT auto-discovery announcements for new sensors (it works well together with the sometimes picky [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant), too!) -- Options: `-h` `-p` `-t`
+* Support for Home Assistant MQTT auto-discovery announcements for new sensors (it works well together with the sometimes picky [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant)) -- Options: `-h` `-p` `-t`
 * Temperature output is transformed to SI units (=Celsius) and rounded to 0.5°C (configurable) for less flicker. -- Option: `-w`
 * Streamlined/removed mostly unnecessary content in the original JSON messages, e.g. no time stamp or checksum code.
 * Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time (few messages) frame are suppressed. -- Options: `-c` `-T`
 * MQTT topic contains and - configurably - the id. -- Option: `-i`
-* Configurable Upload of weather sensor data to [Weather Underground (WU)](https://www.wunderground.com) using the [PWS Upload Protocol](https://support.weather.com/s/article/PWS-Upload-Protocol)
-* Enhanced logging into a device-specific subdirectory structure, easing later source device analysis. -- Options: `-v` `-x`
+* Configurable Upload of weather sensor data to [Weather Underground (WU)](https://www.wunderground.com) using the [PWS Upload Protocol](https://support.weather.com/s/article/PWS-Upload-Protocol).  -- Option: `-W id,key,sensor`, e.g. `-W IMUNIC999,abcDEF8,Bresser-3CH_1`
+* Enhanced logging and debugging into a device-specific subdirectory structure, easing later source device analysis. -- Options: `-v` `-v`
 * A MQTT state and a log channel for the bridge is provided giving regular statistics and on certain events of the bridge itself.
 * Many command line options allowing for flexibility in the configuration (See source code for usage)
+* Command line options to be used in every invocation can be put into `~/.config/rtl2mqtt` (Start comments there with an `#`)
 * Signalling INT to rtl2mqtt will emit a status message to MQTT.
 * Signalling USR1 to rtl2mqtt will toggle the verbosity for debugging to syslog and MQTT.
 * Signalling USR2 to rtl2mqtt will log the gathered sensor data to syslog and MQTT.
@@ -44,8 +46,8 @@ NB: The Dockerfile is provided untouched and not checked since I don't run Docke
 
 ## Installation
 
-rtl2mqtt.sh should run fine on all Linux versions that support rtl_433, e.g. Raspbian Buster.
-The only prerequisites are bash, jq, and mosquitto_pub (from mosquitto).
+rtl2mqtt.sh should run fine on all Linux versions that support rtl_433, e.g. Raspbian Buster and beyond.
+The only prerequisites are bash, and mosquitto_pub (from mosquitto). The need for jq has been removed, calculations are done in bash.
 
 A very simple technique to make it run after each reboot is adding something like the following line to the crontab file:
 
@@ -69,7 +71,7 @@ Environment="LOGBASE=/var/log/rtl2mqtt"
 Environment="USER=openhabian"
 Environment="MQTTBROKER=localhost"
 ExecStartPre=+/bin/sh -c "/bin/mkdir -p $LOGBASE && chown $USER $LOGBASE && logger $LOGBASE in place."
-ExecStart=/usr/local/bin/rtl2mqtt.sh -l $LOGBASE -h $MQTTBROKER -r -r -q -W IMUNIC999,abcDEF8,Bresser-3CH_1
+ExecStart=/usr/local/bin/rtl2mqtt.sh -l $LOGBASE -h $MQTTBROKER -r -r -q
 User=openhabian
 WorkingDirectory=$LOGBASE
 StandardOutput=inherit
@@ -85,7 +87,7 @@ Don't forget to adapt the variables to your local installation. Run ```systemctl
 
 ## Hardware
 
-I'm using a [CSL DVB-T USB Stick](https://www.amazon.de/CSL-Realtek-Chip-Fernbedienung-Antenne-Windows/dp/B00CIQKFAO) plugged into a Raspberry Pi to receive the 433MhZ signals. They may be bought on Ebay for a few Euros only. Other sticks might work, too. Just let me know, e.g. open an issue, and I'll put it in the README.
+I'm using a [CSL DVB-T USB Stick](https://www.amazon.de/CSL-Realtek-Chip-Fernbedienung-Antenne-Windows/dp/B00CIQKFAO) plugged into a Raspberry Pi to receive the 433MHz and 868 Mhz signals. They may be bought on Ebay for a few Euros only. Other sticks might work, too. Just let me know, e.g. open an issue, and I'll put it in the README.
 
 ## Comparison
 
