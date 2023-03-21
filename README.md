@@ -32,12 +32,14 @@ So the main areas of extended features are:
 * Temperature output is transformed to SI units (=Celsius) and rounded to 0.5°C (configurable) for less flicker. -- Option: `-w`
 * Streamlined/removed mostly unnecessary content in the original JSON messages, e.g. no time stamp or checksum code.
 * Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time (few messages) frame are suppressed. -- Options: `-c` `-T`
-* MQTT topic contains and - configurably - the id. -- Option: `-i`
-* Configurable Upload of weather sensor data to [Weather Underground (WU)](https://www.wunderground.com) using the [PWS Upload Protocol](https://support.weather.com/s/article/PWS-Upload-Protocol).  -- Option: `-W id,key,sensor`, e.g. `-W IMUNIC999,abcDEF8,Bresser-3CH_1`
+* MQTT topic contains and - configurably - the sensor's id. -- Option: `-i`
+* New sensors are not immediately auto-announced but only after some receptions -- Option: `-c`
+* Configurable upload of weather sensor data to [Weather Underground (WU)](https://www.wunderground.com) using the [PWS Upload Protocol](https://support.weather.com/s/article/PWS-Upload-Protocol).  -- Option: `-W id,key,sensor`, e.g. `-W IMUNIC999,abcDEF8,Bresser-3CH_1`
 * Enhanced logging and debugging into a device-specific subdirectory structure, easing later source device analysis. -- Options: `-v` `-v`
 * A MQTT state and a log channel for the bridge is provided giving regular statistics and on certain events of the bridge itself.
 * Many command line options allowing for flexibility in the configuration (See source code for usage)
 * Command line options to be used in every invocation can be put into `~/.config/rtl2mqtt` (Start comments there with an `#`)
+* Log files may be replayed for debugging in your home automation environment -- Option: `-f`
 * Signalling INT to rtl2mqtt will emit a status message to MQTT.
 * Signalling USR1 to rtl2mqtt will toggle the verbosity for debugging to syslog and MQTT.
 * Signalling USR2 to rtl2mqtt will log the gathered sensor data to syslog and MQTT.

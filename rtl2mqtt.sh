@@ -7,13 +7,14 @@
 
 set -o noglob     # file name globbing is neither needed nor wanted (for security reasons)
 set -o noclobber  # disable for security reasons
+
 sName="${0##*/}" && sName="${sName%.sh}"
 sMID="$( basename "${sName// /}" .sh )"
 sID="$sMID"
 rtl2mqtt_optfile="$( [ -r "${XDG_CONFIG_HOME:=$HOME/.config}/$sName" ] && echo "$XDG_CONFIG_HOME/$sName" || echo "$HOME/.$sName" )" # ~/.config/rtl2mqtt or ~/.rtl2mqtt
 
 commandArgs="$*"
-dLog="/var/log/$sMID" # /var/log is default, but will be changed to /tmp if not useable
+dLog="/var/log/$sMID" # /var/log/rtl2mqtt is default, but will be changed to /tmp if not useable
 sManufacturer="RTL"
 sHassPrefix="homeassistant"
 sRtlPrefix="rtl"
@@ -25,13 +26,12 @@ rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_comman
 rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
 declare -a rtl433_opts=( -M protocol -M noise:300 -M level -C si )  # generic options in all settings, e.g. -M level 
 # rtl433_opts+=( $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
-declare -a rtl433_opts_more=( -R -31 -R -53 -R -86 ) # My specific personal excludes
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
 sSensorMatch=".*" # any sensor name will have to match this regex
-sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 4*x (see below)
+sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 4*x (see option -w below)
 sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php" # This is stable for years
 
-# xx=( one "*.log" ) && xx=( "${xx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;         exit 0
+# xx=( one "*.log" ) && xx=( "${xx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;  exit 0
 
 declare -i nHopSecs
 declare -i nStatsSec=900
@@ -167,7 +167,7 @@ cMqttState() {	# log the state of the rtl bridge
     cMqttStarred state "{$_stats${1:+,$1}}"
 }
 
-# Parameters for cHassAnnounce:
+# Parameters for cHassAnnounce: (Home Assistant auto-discovery)
 # $1: MQTT "base topic" for states of all the device(s), e.g. "rtl/433" or "ffmuc"
 # $2: Generic device model, e.g. a certain temperature sensor model 
 # $3: MQTT "subtopic" for the specific device instance,  e.g. ${model}/${ident}. ("..../set" indicates writeability)
@@ -500,7 +500,6 @@ do
     T)  nMinSecondsOther=$OPTARG # seconds before repeating the same reading
         ;;
     a)  bAlways=1
-        rtl433_opts+=( "${rtl433_opts_more[@]}" )
         nMinOccurences=1
         ;;
     s)  sSuggSampleRate="$OPTARG"
@@ -544,7 +543,7 @@ else
 fi
 # set -x ; cLogMore info "test test" ; exit 
 
-command -v jq > /dev/null || { _msg="$sName: jq might be necessary!" ; log "$_msg" ; echo "$_msg" 1>&2 ; }
+# command -v jq > /dev/null || { _msg="$sName: jq might be necessary!" ; log "$_msg" ; echo "$_msg" 1>&2 ; }
 command -v iwgetid > /dev/null || { _msg="$sName: iwgetid not found" ; log "$_msg" ; echo "$_msg" 1>&2 ; alias iwgetid : ; }
 
 if [[ $fReplayfile ]]; then
