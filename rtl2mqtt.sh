@@ -557,7 +557,7 @@ else
     conf_files="$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_startup" | xargs ls -1 2>/dev/null )" # try to find an existing config file
     sBand="$( cMapFreqToBand "$(cExtractJsonVal sdr_freq)" )"
 fi
-basetopic="$sRtlPrefix/$sBand" # derive intial setting for basetopic
+basetopic="$sRtlPrefix/$sBand" # intial setting for basetopic
 
 # Enumerate the supported protocols and their names, put them into array aNames:
 # Sample:
@@ -685,7 +685,7 @@ trap 'trap_int' INT
 
 trap_usr1() {    # toggle verbosity 
     (( bVerbose )) && bVerbose="" || bVerbose=1 # switch bVerbose
-    _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs, current sBand=$sBand"
+    _msg="received signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs, sBand=$sBand"
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*message*:*$_msg*}"
   }
@@ -725,7 +725,7 @@ do
     # FIXME: data should be cleaned from any suspicous characters sequences as early as possible for security reasons. 
     #        An extra jq invocation might be worth it...
 
-    (( _rc==1 )) && cMqttStarred log "{*event*:*warn*,*message*:*read _rc=$_rc, data=$data*}" && sleep 2  # FIXME: quick hack to slow down and debug fast loops
+    # (( _rc==1 )) && cMqttStarred log "{*event*:*warn*,*message*:*read _rc=$_rc, data=$data*}" && sleep 2  # quick hack to slow down and debug fast loops
 
     _beginPid="" # support debugging/counting/optimizing number of processes started in within the loop
 
@@ -753,13 +753,14 @@ do
     if cHasJsonKey center_frequency || cHasJsonKey src ; then
         data="${data//\" : /\":}" # beautify a bit, i.e. removing extra spaces
         cHasJsonKey center_frequency && _freq="$(cExtractJsonVal center_frequency)" && sBand="$(cMapFreqToBand "$_freq")" # formerly: sBand="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
-        cHasJsonKey src && [[ "$(cExtractJsonVal msg)" =~ ^Tuned\ to\ ([0-9]*)\. ]] && sBand="${BASH_REMATCH[1]}" #FIXME FIXME        
+        [[ "$(cExtractJsonVal src)" == SDR ]] && [[ "$(cExtractJsonVal msg)" =~ ^Tuned\ to\ ([0-9]*)\. ]] && sBand="${BASH_REMATCH[1]}" #FIXME FIXME        
         basetopic="$sRtlPrefix/${sBand:-999}"
         cDeleteJsonKeys time
         if (( bVerbose )) ; then
+            data="${data/{ /{}" # remove first space after opening {
             cEchoIfNotDuplicate "INFOMSG: $data"
             _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && : "${_freqs}"
-            cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*}}"
+            cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*},*band*:${sBand:-null}}"
         fi
         nLastStatsMessage="$(cDate %s)" # prepare for avoiding race condition after freq hop (FIXME: not implemented yet)
         continue
