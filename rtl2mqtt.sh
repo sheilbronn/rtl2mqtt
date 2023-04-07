@@ -129,6 +129,7 @@ cExpandStarredString() {
     _esc="quote_star_quote" ; _str="$1"
     _str="${_str//\"\*\"/$_esc}"  &&  _str="${_str//\"/\'}"  &&  _str="${_str//\*/\"}"  &&  _str="${_str//$esc/\"*\"}"  && echo "$_str"
   }
+  # set -x ; cExpandStarredString "${1:+*temperature*,}${1:+ *xhumidity\*,} ${3:+**xbattery**,} ${4:+*rain*,}" ; exit 1
 
 cRotateLogdirSometimes() {           # check for logfile rotation only with probability of 1/60
     if (( nMinute + nSecond == 67 )) ; then 
@@ -381,7 +382,7 @@ cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata must 
         done
     done
     # _r="$(jq -c "del (${_d#,  })" <<< "${@:$#}")"   # expands to: "del(.xxx, .yyy, ...)"
-    echo "$_r"
+    [[ $2 ]] && echo "$_r" || data="$_r"
 }
 # set -x ; cDeleteJsonKeys 'time mic' '{"time" : "2022-10-18 16:57:47", "protocol" : 19, "model" : "Nexus-TH", "id" : 240, "channel" : 1, "battery_ok" : 1, "temperature_C" : 21.600, "humidity" : 20}' ; exit 1
 # set -x ; cDeleteJsonKeys "one" "two" ".four five six" "*_special*" '{"one":"1", "two":2  ,"three":3,"four":"4", "five":5, "_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
@@ -402,8 +403,8 @@ cExtractJsonVal() {
             echo "${BASH_REMATCH[2]}"
         fi        
     else false ; fi # return false if not found
-}
-# set -x ; data='{ "action":"good" , "battery":99.5}' ; cPidDelta 000 && cPidDelta 111 ; cExtractJsonVal action ; cPidDelta 222 ; cExtractJsonVal battery && echo yes ; cExtractJsonVal notthere || echo no ; exit
+  }
+  # set -x ; data='{ "action":"good" , "battery":99.5}' ; cPidDelta 000 && cPidDelta 111 ; cExtractJsonVal action ; cPidDelta 222 ; cExtractJsonVal battery && echo yes ; cExtractJsonVal notthere || echo no ; exit
 
 cAssureJsonVal() {
     cHasJsonKey "$1" &&  jq -er "if (.$1 ${2:+and .$1 $2} ) then 1 else empty end" <<< "${3:-$data}"
@@ -480,7 +481,7 @@ do
             rtl433_opts+=( -f "$OPTARG" )
         fi
         basetopic="$sRtlPrefix/$OPTARG"
-        nHopSecs=${nHopSecs:-61} # ${nHopSecs:-61} # (60/2)+11 or 60+1 or 60+21 or 7, i.e. should be a coprime to 60sec
+        nHopSecs=${nHopSecs:-61} # (60/2)+11 or 60+1 or 60+21 or 7, i.e. should be a coprime to 60sec
         nStatsSec="5*(nHopSecs-1)"
         ;;
     M)  rtl433_opts+=( -M "$OPTARG" )
@@ -516,7 +517,7 @@ do
     9)  bEveryBroker=1 # send to every mentioned broker
         ;;
     v)  (( bVerbose )) && bMoreVerbose=1 && rtl433_opts=( "-M noise:60" "${rtl433_opts[@]}" -v )
-        bVerbose=1 # more output for debugging purposes
+        bVerbose=1 # for more debugging information
         ;;
     x)  set -x # turn on shell debugging from here on
         ;;
@@ -526,7 +527,7 @@ done
 shift $((OPTIND-1))   # Discard options processed by getopts, any remaining options will be passed to mosquitto_sub further down on
 
 # fixed in rtl_433 8e343ed: the real hop secs seam to be 1 higher than the value passed to -H...
-rtl433_opts+=( ${nHopSecs:+-H $nHopSecs} ${nStatsSec:+-M stats:1:$nStatsSec} )
+rtl433_opts+=( ${nHopSecs:+-H $nHopSecs -v} ${nStatsSec:+-M stats:1:$nStatsSec} )
 sRoundTo="$( cMultiplyTen "$sRoundTo" )"
 
 if [ -f "${dLog}.log" ] ; then  # one logfile only
@@ -599,17 +600,78 @@ trap_exit() {   # stuff to do when exiting
     local - && set +x
     cLogMore "$sName exit trapped at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will also log state..."
     (( bRemoveAnnouncements )) && cHassRemoveAnnounce
+    _pmsg="$( ps -f "$_pid" | tail -1 )"
     (( COPROC_PID )) && _cppid="$COPROC_PID" && kill "$COPROC_PID" && { # avoid race condition after killing coproc
         wait $_cppid # Cleanup, may  fail on purpose
         dbg "Killed coproc PID $_cppid and awaited rc=$?"    
     }
     nReadings=${#aLastReadings[@]}
     cMqttState "*note*:*trap exit*,*collected_sensors*:*${!aLastReadings[*]}*"
-    cMqttStarred log "{*event*:*$( [[ $fReplayfile ]] && echo info || echo warning )*,*host*:*$sHostname*,*message*:*Exiting${fReplayfile:+ after reading $fReplayfile}...*}"
+    cMqttStarred log "{*event*:*$( [[ $fReplayfile ]] && echo info || echo warning )*,*host*:*$sHostname*,*message*:*Exiting${fReplayfile:+ after reading $fReplayfile}...*}${_pid:+ procinfo=$_pmsg}"
     # logger -p daemon.err -t "$sID" -- "Exiting trap_exit."
     # rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
+trap '' INT USR1 USR2 ALRM
+
+if [[ $fReplayfile ]] ; then
+    coproc COPROC ( shopt -s extglob ; export IFS=' ' ; while read -r line ; do 
+            : "line $line" #  e.g.   103256 rtl/433/Ambientweather-F007TH/1 { "protocol":20,"id":44,"channel":1,"freq":433.903,"temperature":19,"humidity":62,"BAND":433,"HOUR":16,"NOTE":"changed"}
+            : "FRONT ${line%%{+(?)}" 1>&2
+            data="${line##*([!{])}" # data start with first curly bracket...
+            read -r -a aFront <<< "${line%%{+(?)}" # remove anything before an opening curly brace from the line read from the replay file
+            if ! cHasJsonKey model && ! cHasJsonKey since ; then # ... then try to determine "model" either from an MQTT topic or from the file name, but not from JSON with key "since"
+                : frontpart="${aFront[-1]}"
+                IFS='/' read -r -a aTopic <<< "${aFront[-1]}" # MQTT topic might be preceded by timestamps that are to be removed
+                [[ ${aTopic[0]} == "rtl" && ${#aTopic[@]} -gt 2 ]] && sModel="${aTopic[2]}" # extract model from topic if non given in message
+                if [[ -z $sModel ]] ; then # if still not found ...
+                    IFS='_' read -r -a aTopic <<< "$fReplayfile" # .. try to determine from the filename, e.g. "433_IBIS-Beacon_5577"
+                    sModel="${aTopic[1]}"
+                fi
+                [[ $sModel ]] && cAppendJsonKeyVal model "$sModel" 
+            fi
+            echo "$data" ; sleep 1
+        done < "$fReplayfile" ; sleep 5
+    )  
+else
+    if [[ $bVerbose || -t 1 ]] ; then
+        cLogMore "rtl_433 ${rtl433_opts[*]}"
+        (( nMinOccurences > 1 )) && cLogMore "Will do MQTT announcements only after at least $nMinOccurences occurences..."
+    fi 
+    # Start the RTL433 listener as a bash coprocess .... # https://unix.stackexchange.com/questions/459367/using-shell-variables-for-command-options
+    coproc COPROC ( $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json,v=8 2>&1 ; rc=$? ; sleep 3 ; exit $rc )
+    # -F "mqtt://$mqtthost:1883,events,devices"
+
+    sleep 1 # wait for rtl_433 to start up...
+    _pid="$( pidof "$rtl433_command" )" # hack to find the process of the rtl_433 command
+    # _pgrp="$(ps -o pgrp= ${COPROC_PID})"
+    [[ $_pid ]] &&  _ppid="$( ps -o ppid= "$_pid" )" &&  _pgrp="$( ps -o pgrp= "$_pid" )"
+    # renice -n 15 "${COPROC_PID}" > /dev/null
+    # renice -n 17 -g "$_pgrp" # > /dev/null
+    _msg="COPROC_PID=$COPROC_PID, pgrp=$_pgrp, ppid=$_ppid, pid=$_pid"
+    (( bMoreVerbose )) && dbg PID "$_msg"
+    if (( _ppid == COPROC_PID  )) ; then
+        renice -n 12 "$_pid" > /dev/null 
+        cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*message*:*rtl_433 start: $_msg*}"
+
+        if (( bAnnounceHass )) ; then
+            ## cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "TestVal" "value_json.mcheck" "mcheck"
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount" "value_json.announceds" "counter" &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "SensorCount"    "value_json.sensors"   "counter"   &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "MqttLineCount"  "value_json.mqttlines" "counter"  &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "ReadingsCount"  "value_json.receiveds" "counter"  &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "Start date"     "value_json.startdate" "clock"    &&
+            nRC=$?
+            (( nRC != 0 )) && echo "ERROR: HASS Announcements failed with rc=$nRC" 1>&2
+            sleep 1
+        fi
+    else
+        cLogMore "start of $rtl433_command failed: $_msg"
+        cMqttStarred log "{*event*:*startfailed*,*host*:*$sHostname*,*message*:*$rtl433_command ended fast: $_msg*}"
+    fi
+fi 
+
+# now install further signal handlers
 
 trap_int() {    # log all collected sensors to MQTT
     trap '' INT 
@@ -658,74 +720,13 @@ trap_other() {
   }
 trap 'trap_other' URG XCPU XFSZ PROF WINCH PWR SYS
 
-if [[ $fReplayfile ]] ; then
-    # nMinSecondsOther=0
-#    head -0 "$fReplayfile" | while read -r line ; do 
-#        # https://www.golinuxcloud.com/bash-split-string-into-array-linux
-#        IFS=' ' read -r -a aArray <<< "${line%%[{[]*}"
-#        echo "${aArray[-1]}"  # this is the topic if a time stamp is in front
-#        m="${line##*([!{])}"
-#    done
-    # exit 99
-     
-    coproc COPROC ( shopt -s extglob ; export IFS=' ' ; while read -r line ; do 
-            : "line $line" #  e.g.   103256 rtl/433/Ambientweather-F007TH/1 { "protocol":20,"id":44,"channel":1,"freq":433.903,"temperature":19,"humidity":62,"BAND":433,"HOUR":16,"NOTE":"changed"}
-            : "FRONT ${line%%{+(?)}" 1>&2
-            data="${line##*([!{])}" # data start with first curly bracket...
-            read -r -a aFront <<< "${line%%{+(?)}" # remove anything before an opening curly brace from the line read from the replay file
-            if ! cHasJsonKey model && ! cHasJsonKey since ; then # ... then try to determine "model" either from an MQTT topic or from the file name, but not from JSON with key "since"
-                : frontpart="${aFront[-1]}"
-                IFS='/' read -r -a aTopic <<< "${aFront[-1]}" # MQTT topic might be preceded by timestamps that are to be removed
-                [[ ${aTopic[0]} == "rtl" && ${#aTopic[@]} -gt 2 ]] && sModel="${aTopic[2]}" # extract model from topic if non given in message
-                if [[ -z $sModel ]] ; then # if still not found ...
-                    IFS='_' read -r -a aTopic <<< "$fReplayfile" # .. try to determine from the filename, e.g. "433_IBIS-Beacon_5577"
-                    sModel="${aTopic[1]}"
-                fi
-                [[ $sModel ]] && cAppendJsonKeyVal model "$sModel" 
-            fi
-            echo "$data" ; sleep 1
-        done < "$fReplayfile" ; sleep 5
-    )  
-else
-    if [[ $bVerbose || -t 1 ]] ; then
-        cLogMore "rtl_433 ${rtl433_opts[*]}"
-        (( nMinOccurences > 1 )) && cLogMore "Will do MQTT announcements only after at least $nMinOccurences occurences..."
-    fi 
-    # Start the RTL433 listener as a bash coprocess .... # https://unix.stackexchange.com/questions/459367/using-shell-variables-for-command-options
-    coproc COPROC ( $rtl433_command ${conf_file:+-c "$conf_file"} "${rtl433_opts[@]}" -F json 2>&1 ; rc=$? ; sleep 3 ; exit $rc )
-    # -F "mqtt://$mqtthost:1883,events,devices"
-
-    sleep 1 # wait for rtl_433 to start up...
-    _pid="$( pidof "$rtl433_command" )" # hack to find the process of the rtl_433 command
-    # _pgrp="$(ps -o pgrp= ${COPROC_PID})"
-    [[ $_pid ]] &&  _ppid="$( ps -o ppid= "$_pid" )" &&  _pgrp="$( ps -o pgrp= "$_pid" )"
-    # renice -n 15 "${COPROC_PID}" > /dev/null
-    # renice -n 17 -g "$_pgrp" # > /dev/null
-    _msg="COPROC_PID=$COPROC_PID, pgrp=$_pgrp, ppid=$_ppid, pid=$_pid"
-    (( bMoreVerbose )) && dbg PID "$_msg"
-    if (( _ppid == COPROC_PID  )) ; then
-        renice -n 12 "$_pid" > /dev/null 
-        cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*message*:*rtl_433 start: $_msg*}"
-
-        if (( bAnnounceHass )) ; then
-            ## cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "TestVal" "value_json.mcheck" "mcheck"
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount" "value_json.announceds" "counter" &&
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "SensorCount"    "value_json.sensors"   "counter"   &&
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "MqttLineCount"  "value_json.mqttlines" "counter"  &&
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "ReadingsCount"  "value_json.receiveds" "counter"  &&
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "Start date"     "value_json.startdate" "clock"    &&
-            nRC=$?
-            (( nRC != 0 )) && echo "ERROR: HASS Announcements failed with rc=$nRC" 1>&2
-            sleep 1
-        fi
-    else
-        cLogMore "start of $rtl433_command failed: $_msg"
-        cMqttStarred log "{*event*:*startfailed*,*host*:*$sHostname*,*message*:*$rtl433_command ended fast: $_msg*}"
-    fi
-fi 
-
-while read -r data <&"${COPROC[0]}" ; _rc=$? ; (( _rc==0  || _rc==27 ))      # ... and go through the loop
+while read -r data <&"${COPROC[0]}" ; _rc=$? ; (( _rc==0  || _rc==27 || ( bVerbose && _rc==1111 ) ))      # ... and go through the loop
 do
+    # FIXME: data should be cleaned from any suspicous characters sequences as early as possible for security reasons. 
+    #        An extra jq invocation might be worth it...
+
+    (( _rc==1 )) && cMqttStarred log "{*event*:*warn*,*message*:*read _rc=$_rc, data=$data*}" && sleep 2  # FIXME: quick hack to slow down and debug fast loops
+
     _beginPid="" # support debugging/counting/optimizing number of processes started in within the loop
 
     nLoops=+1
@@ -749,19 +750,23 @@ do
         continue # skip empty lines quietly
     fi
     # cPidDelta 0ED
-    if [[ $data =~ "center_frequency" ]] && _freq="$(cExtractJsonVal center_frequency)" ; then
+    if cHasJsonKey center_frequency || cHasJsonKey src ; then
         data="${data//\" : /\":}" # beautify a bit, i.e. removing extra spaces
-        sBand="$(cMapFreqToBand "$_freq")" # formerly: sBand="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
+        cHasJsonKey center_frequency && _freq="$(cExtractJsonVal center_frequency)" && sBand="$(cMapFreqToBand "$_freq")" # formerly: sBand="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
+        cHasJsonKey src && [[ "$(cExtractJsonVal msg)" =~ ^Tuned\ to\ ([0-9]*)\. ]] && sBand="${BASH_REMATCH[1]}" #FIXME FIXME        
         basetopic="$sRtlPrefix/${sBand:-999}"
-        (( bVerbose )) && cEchoIfNotDuplicate "CENTER: $data"
-        _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && : "${_freqs}"
-        (( bVerbose )) && { data="$( cDeleteJsonKeys "time" )" ; cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*}}" ; }
-        nLastCenterMessage="$(cDate %s)" # prepare for avoiding race condition after freq hop (FIXME: not implemented yet)
+        cDeleteJsonKeys time
+        if (( bVerbose )) ; then
+            cEchoIfNotDuplicate "INFOMSG: $data"
+            _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && : "${_freqs}"
+            cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*}}"
+        fi
+        nLastStatsMessage="$(cDate %s)" # prepare for avoiding race condition after freq hop (FIXME: not implemented yet)
         continue
     fi
     (( bVerbose )) && echo "================================="
     dbg RAW ":$data:"
-    data="${data//\" : /\":}" # remove superflous space around the colons
+    data="${data//\" : /\":}" # remove superflous space around (hopefully JSON) colons
     nReceivedCount=+1
 
     # cPidDelta 1ST
@@ -778,7 +783,7 @@ do
     protocol="$(cExtractJsonVal protocol)"
     channel="$( cExtractJsonVal channel)"
     id="$(      cExtractJsonVal id)"
-    { cHasJsonKey model || cHasJsonKey since ; } && model="$(cExtractJsonVal model)"
+    model="" && { cHasJsonKey model || cHasJsonKey since ; } && model="$(cExtractJsonVal model)"
     rssi="$(    cExtractJsonVal rssi)"
     temperature="$( cExtractJsonVal temperature_C || cExtractJsonVal temperature)" 
     setpoint="$( cExtractJsonVal setpoint_C) || $( cExtractJsonVal setpoint_F)"
@@ -802,13 +807,13 @@ do
 
     if [[ $model_ident && ! $bRewrite ]] ; then                  # Clean the line from less interesting information....
         : no rewriting
-        data="$( cDeleteJsonKeys "$_delkeys" )"
+        cDeleteJsonKeys "$_delkeys"
     elif [[ $model_ident && $bRewrite ]] ; then                  
         : Rewrite and clean the line from less interesting information....
         # sample: {"id":20,"channel":1,"battery_ok":1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
-        _delkeys="$_delkeys mod snr noise mic rssi" && [ -z "$bVerbose" ] && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
+        _delkeys="$_delkeys mod snr noise mic rssi" && (( ! bVerbose )) && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
         [[ ${aLastReadings[$model_ident]} && ${temperature/.*} -lt 50 ]] && _delkeys="$_delkeys model protocol" # remove protocol after first sight  and when not unusual
-        data="$( cDeleteJsonKeys "$_delkeys" )" 
+        cDeleteJsonKeys "$_delkeys"
         cRemoveQuotesFromNumbers
         if [[ $temperature ]] ; then
             # Fahrenheit = Celsius * 9/5 + 32, Fahrenheit = Celsius * 9/5 + 32
@@ -842,15 +847,15 @@ do
         _bHasControl="$(cHasJsonKey -v control)" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
         _bHasCmd="$(cHasJsonKey -v cmd)"
         _bHasData="$(cHasJsonKey -v data)"
-        _bHasCounter="$(cHasJsonKey -v counter )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
-        _bHasCode="$(   cHasJsonKey -v code  )" #                  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
+        _bHasCounter="$(cHasJsonKey -v counter )" #       {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
+        _bHasCode="$(   cHasJsonKey -v code  )" #         {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
         _bHasButtonR="$(cHasJsonKey -v rbutton  )" #  rtl/433/Cardin-S466/00 {"dipswitch":"++---o--+","rbutton":"11R"}
         _bHasDipSwitch="$(cHasJsonKey -v dipswitch)" #  rtl/433/Cardin-S466/00 {"dipswitch":"++---o--+","rbutton":"11R"}
         _bHasNewBattery="$( cHasJsonKey -v newbattery)" #  {"id":13,"battery_ok":1,"newbattery":0,"temperature_C":24,"humidity":42}
         _bHasRssi="$(cHasJsonKey -v rssi)"
 
         if (( bRewriteMore )) ; then
-            data="$( cDeleteJsonKeys "transmit test" )"
+            cDeleteJsonKeys "transmit test"
             # data="$( cHasJsonKey button &&  jq -c 'if .button == 0 then del(.button) else . end' <<< "$data" || echo "$data" )"
             # .battery_ok==1 means "OK".
             # data="$( cHasJsonKey battery_ok  &&   jq -c 'if .battery_ok == 1 then del(.battery_ok) else . end' <<< "$data" || echo "$data" )"

@@ -93,7 +93,7 @@ I'm using a [CSL DVB-T USB Stick](https://www.amazon.de/CSL-Realtek-Chip-Fernbed
 
 ## Comparison
 
-This is how the original MQTT output from ```rtl_433 -M mqtt ...''' looks like - it is split across multiple, redudant MQTT messages (which might be ok for many)
+This is how the original MQTT output from ```rtl_433 -M mqtt ...''' looks like - it is split across multiple, redudant MQTT messages (which still might be ok for most folks)
 ```log
 132122 rtl_433/openhabian/events {"time":"2022-04-19 13:21:22","protocol":52,"model":"Bresser-3CH","id":20,"channel": 1,"battery_ok": 1,"temperature_C":16.61111,"humidity":39,"mic":"CHECKSUM","mod":"ASK","freq":433.9824,"rssi":-0.965191,"snr":26.70743,"noise":-27.6726}
 132122 rtl_433/openhabian/devices/Bresser-3CH/1/20/time 2022-04-19 13:21:22
