@@ -612,7 +612,7 @@ trap_exit() {   # stuff to do when exiting
     # rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
 trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
-trap '' INT USR1 USR2 ALRM
+trap '' INT USR1 USR2 VTALRM
 
 if [[ $fReplayfile ]] ; then
     coproc COPROC ( shopt -s extglob ; export IFS=' ' ; while read -r line ; do 
@@ -707,7 +707,7 @@ trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purpo
         dbg READING "$KEY  $_msg"
         cMqttStarred reading "$_msg"
     done
-    _msg="received signal VTALRM: logging state"
+    _msg="received signal VTALRM: logged state"
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
   }
@@ -990,6 +990,7 @@ do
         fi
     fi
     nReadings=${#aLastReadings[@]}
+    data="" # reset data to "" to cater for read return code <> 0 and an unchanged variable $data
 
     if (( nReadings > nPrevMax )) ; then   # a new max implies we have a new sensor
         nPrevMax=nReadings
