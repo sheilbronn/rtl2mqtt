@@ -27,7 +27,7 @@ rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ;
 declare -a rtl433_opts=( -M protocol -M noise:300 -M level -C si )  # generic options in all settings, e.g. -M level 
 # rtl433_opts+=( $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
-sSensorMatch=".*" # any sensor name will have to match this regex
+sSensorMatch=".*" # any device name will have to match this regex
 sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 4*x (see option -w below)
 sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php" # This is stable for years
 
@@ -35,7 +35,7 @@ sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweather
 
 declare -i nHopSecs
 declare -i nStatsSec=900
-declare -r sSuggSampleRate=1024k # default fpr rtl_433 is 250k
+declare -r sSuggSampleRate=1000k # default fpr rtl_433 is 250k
 declare -i nLogMinutesPeriod=60 # once per hour
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
@@ -163,18 +163,18 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
 
 cMqttState() {	# log the state of the rtl bridge
     _ssid="$(iwgetid -r)" # iwgetid might have been aliased to ":" if not available
-    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,${nUploads:+*wuuploads*:*$nUploads*,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*currtime*:*$(cDate)*"
+    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,${nUploads:+*wuuploads*:$nUploads,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*currtime*:*$(cDate)*"
     log "$_stats"
     cMqttStarred state "{$_stats${1:+,$1}}"
 }
 
 # Parameters for cHassAnnounce: (Home Assistant auto-discovery)
 # $1: MQTT "base topic" for states of all the device(s), e.g. "rtl/433" or "ffmuc"
-# $2: Generic device model, e.g. a certain temperature sensor model 
+# $2: Generic device model, e.g. a certain temperature device model 
 # $3: MQTT "subtopic" for the specific device instance,  e.g. ${model}/${ident}. ("..../set" indicates writeability)
 # $4: Text for specific device instance and sensor type info, e.g. "(${ident}) Temp"
 # $5: JSON attribute carrying the state
-# $6: device "class" (of sensor, e.g. none, temperature, humidity, battery), 
+# $6: sensor "class" (e.g. none, temperature, humidity, battery), 
 #     used in the announcement topic, in the unique id, in the (channel) name, and FOR the icon and the device class 
 # Examples:
 # cHassAnnounce "$basetopic" "Rtl433 Bridge" "bridge/state"  "(0) SensorCount"   "value_json.sensorcount"   "none"
@@ -429,7 +429,7 @@ cLogMore "Gathered options: $_moreopts $*"
 while getopts "?qh:pPt:S:drl:f:F:M:H:AR:Y:iw:c:as:S:W:t:T:29vx" opt $_moreopts "$@"
 do
     case "$opt" in
-    \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,sensor] " 1>&2
+    \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,device] " 1>&2
         exit 1
         ;;
     q)  bQuiet=1
@@ -510,7 +510,7 @@ do
         [[ $_sensor ]] || { echo "$sName: -W $OPTARG doesn't have three comma-separated values..." 1>&2 ; exit 1 ; }
         aWuUrls[$_sensor]="$sWuBaseUrl?ID=$_id&PASSWORD=$_key&action=updateraw&dateutc=now"
         _key=""
-        dbg "Will upload data for sensor $_sensor as station ID $_id to Weather Underground..." 
+        dbg "Will upload data for device $_sensor as station ID $_id to Weather Underground..." 
         ;;
     2)  bTryAlternate=1 # ease coding experiments (not to be used in production)
         ;;
@@ -561,7 +561,7 @@ basetopic="$sRtlPrefix/$sBand" # intial setting for basetopic
 
 # Enumerate the supported protocols and their names, put them into array aNames:
 # Sample:
-# [215]  Altronics X7064 temperature and humidity sensor
+# [215]  Altronics X7064 temperature and humidity device
 # [216]* ANT and ANT+ devices
 declare -A aNames
 while read -r num name ; do 
@@ -707,7 +707,7 @@ trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purpo
         dbg READING "$KEY  $_msg"
         cMqttStarred reading "$_msg"
     done
-    _msg="received signal VTALRM: logged state"
+    _msg="received signal VTALRM: logged last MQTT messages from ${#aLastReadings[@]} sensors."
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
   }
@@ -729,7 +729,7 @@ do
 
     _beginPid="" # support debugging/counting/optimizing number of processes started in within the loop
 
-    nLoops=+1
+    nLoops+=1
     if [[ $data =~ ^SDR:.Tuned.to.([0-9]*\.[0-9]*)MHz ]] ; then # SDR: Tuned to 868.300MHz.
         # convert  msg type "SDR: Tuned to 868.300MHz." to "{"center_frequency":868300000}" (JSON) to be processed further down
         data="{\"center_frequency\":${BASH_REMATCH[1]}${BASH_REMATCH[2]}000,\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
@@ -760,7 +760,7 @@ do
             data="${data/{ /{}" # remove first space after opening {
             cEchoIfNotDuplicate "INFOMSG: $data"
             _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && : "${_freqs}"
-            cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*},*band*:${sBand:-null}}"
+            cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*},*BAND*:${sBand:-null}}"
         fi
         nLastStatsMessage="$(cDate %s)" # prepare for avoiding race condition after freq hop (FIXME: not implemented yet)
         continue
@@ -768,7 +768,7 @@ do
     (( bVerbose )) && echo "================================="
     dbg RAW ":$data:"
     data="${data//\" : /\":}" # remove superflous space around (hopefully JSON) colons
-    nReceivedCount=+1
+    nReceivedCount+=1
 
     # cPidDelta 1ST
 
@@ -812,8 +812,8 @@ do
     elif [[ $model_ident && $bRewrite ]] ; then                  
         : Rewrite and clean the line from less interesting information....
         # sample: {"id":20,"channel":1,"battery_ok":1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
-        _delkeys="$_delkeys mod snr noise mic rssi" && (( ! bVerbose )) && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
-        [[ ${aLastReadings[$model_ident]} && ${temperature/.*} -lt 50 ]] && _delkeys="$_delkeys model protocol" # remove protocol after first sight  and when not unusual
+        _delkeys="$_delkeys mod snr noise mic" && (( ! bVerbose )) && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
+        [[ ${aLastReadings[$model_ident]} && ${temperature/.*} -lt 50 ]] && _delkeys="$_delkeys model protocol rssi" # remove protocol after first sight  and when not unusual
         cDeleteJsonKeys "$_delkeys"
         cRemoveQuotesFromNumbers
         if [[ $temperature ]] ; then
@@ -865,7 +865,7 @@ do
 
             # bSkipLine="$( [[ $temperature || $humidity ]] && jq -er 'if (.humidity and .humidity>100) or (.temperature_C and .temperature_C<-50) or (.temperature and .temperature<-50) then "yes" else empty end' <<<"$data"  )"
             temperature=${temperature/.[0-9]*} ; humidity=${humidity/.[0-9]*} 
-            bSkipLine=$(( humidity > 100 || temperature < -50 )) # sanitize
+            bSkipLine=$(( humidity > 100 || temperature < -50 )) # sanitize/ignore non-plausible readings // FIXNE to: || ( temperature > 110 && humidity > 0 )
         fi
         ! cHasJsonKey BAND && cAppendJsonKeyVal BAND "$sBand"
         (( bRetained )) && cAppendJsonKeyVal HOUR "$nHour" # Append HOUR explicitly if readings are sent retained
@@ -920,7 +920,7 @@ do
             if (( ${#temperature} || _bHasRain || _bHasPressureKPa || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
                     || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
                 [[ $protocol    ]] && _name="${aNames["$protocol"]:-$model}" || _name="$model" # fallback
-                # if the sensor has anyone of the above attributes, announce all the attributes it has ...:
+                # if the device has anyone of the above attributes, announce all the attributes it has ...:
                 # see also https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
                 [[ $temperature ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
                 [[ $humidity    ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
@@ -968,7 +968,8 @@ do
 
                 URL2="tempf=$temperatureF${humidity:+&humidity=$humidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}"
                 retcurl="$( curl --silent "${aWuUrls[$model_ident]}&$URL2" 2>&1 )" && [[ $retcurl == success ]] && nUploads+=1
-                log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, sensor=$model_ident)"
+                log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, device=$model_ident)"
+                log "WUNDERGROUND2" "url was ${aWuUrls[$model_ident]}&$URL2"
             fi
 
             if (( bRewrite )) ; then
@@ -993,10 +994,10 @@ do
     nReadings=${#aLastReadings[@]}
     data="" # reset data to "" to cater for read return code <> 0 and an unchanged variable $data
 
-    if (( nReadings > nPrevMax )) ; then   # a new max implies we have a new sensor
+    if (( nReadings > nPrevMax )) ; then   # a new max implies we have a new device
         nPrevMax=nReadings
         _sensors="${temperature:+*temperature*,}${humidity:+*humidity*,}${_bHasPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}${_bHasRain:+*rain*,}"
-        cMqttStarred log "{*event*:*sensor added*,*model*:*$model*,*protocol*:*$protocol*,*id*:$id,*channel*:*$channel*,*description*:*${protocol:+${aNames[$protocol]}}*, *sensors*:[${_sensors%,}]}"
+        cMqttStarred log "{*event*:*device added*,*model*:*$model*,*protocol*:*$protocol*,*id*:$id,*channel*:*$channel*,*description*:*${protocol:+${aNames[$protocol]}}*, *sensors*:[${_sensors%,}]}"
         cMqttState
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then   
         # log the status once in a while, good heuristic in a generalized neighbourhood
