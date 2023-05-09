@@ -1,23 +1,25 @@
 # rtl2mqtt
 
-This script enhances and filters the data received by an SDR stick and processed by [rtl_433](https://github.com/merbanan/rtl_433) to well defined MQTT messages.
-It cleans the data, reduces most unnecessary fields and messages duplicates. It provides additional additional information as well as *Home Assistant MQTT autodiscovery* announcements. Data from weathers sensors can be uploaded to a personal Weather Underground account.
+This script filters and enhances the data received by an SDR stick and processed by [rtl_433](https://github.com/merbanan/rtl_433) to well defined MQTT messages.
+It cleans the data, reduces most unnecessary fields and messages duplicates. 
+It provides additional information (e.g. dewpoint calculation) as well as *Home Assistant MQTT autodiscovery* announcements. 
+Data from weathers sensors can be uploaded to a personal Weather Underground account.
 rtl2mqtt is intended to run as a daemon, starting automatically after a device boot, or on the command line.
 Additonally, some logging facilities ease the debugging of your local 433/866 MHz RF radio environment.
 
 The following sample MQTT output is from a typical suburb neighbourhood with different weather stations (inside and outside), movement sensors, smoke sensors, blind switches etc...
 
 ```log
-12:01 rtl/433/Prologue-TH/1 {"battery_ok":1,"temperature":24","humidity":14}
-12:06 rtl/433/inFactory-TH/3 {"battery_ok":0,"temperature":10.5","humidity":56}
+12:01 rtl/433/Prologue-TH/1 {"battery_ok":1,"temperature":24,"humidity":14,"dewpoint":-5.1}
+12:06 rtl/433/inFactory-TH/3 {"battery_ok":0,"temperature":10.5,"humidity":56,"dewpoint":2.1}
 12:06 rtl/433/bridge/log {"note":"sensor added","model":"inFactory-TH","id":12,"channel":1,"sensors":["temperature","humidity","battery"]}
 12:06 rtl/433/bridge/state {"sensors":2,"announceds":0,"mqttlines":2,"receiveds":2,"lastfreq":433}
-12:25 rtl/433/Bresser-3CH/1 { "protocol":52, "battery_ok":0,"temperature":9,"humidity":79}
+12:25 rtl/433/Bresser-3CH/1 { "protocol":52, "battery_ok":0,"temperature":9,"humidity":79,"dewpoint":5.6}
 12:25 rtl/433/bridge/log {"note":"sensor added","model":"Bresser-3CH","id":164,"channel":1,"sensors":["temperature","humidity","battery"]}
 12:25 rtl/433/bridge/state {"sensors":4,"announceds":0,"mqttlines":4,"receiveds":9,"lastfreq":433}
 12:36 rtl/433/Prologue-TH/1 {"battery_ok":1,"temperature":24.5,"humidity":14,"NOTE":"changed"}
-13:14 rtl/433/inFactory-TH/3 {"battery_ok":0,"temperature":10.5,"humidity":56}
-13:21 rtl/433/Bresser-3CH/1 {"battery_ok":0,"temperature":9.5,"humidity":79,"NOTE":"changed"}
+13:14 rtl/433/inFactory-TH/3 {"battery_ok":0,"temperature":10.5,"humidity":56,"dewpoint":2.1}
+13:21 rtl/433/Bresser-3CH/1 {"battery_ok":0,"temperature":9.5,"humidity":79,"dewpoint":6.0,"NOTE":"changed"}
 13:27 rtl/433/Generic-Remote/61825 { "protocol":30, "cmd":62,"tristate":"110ZX00Z011X"}
 ...
 ```
@@ -30,6 +32,8 @@ So the main areas of extended features are:
 * Suppression of repeated (duplicate) messages. This is a configurable, very helpful feature! -- Options: `-r` `-r` (multiple)
 * Support for Home Assistant MQTT auto-discovery announcements for new sensors (it works well together with the sometimes picky [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant)) -- Options: `-h` `-p` `-t`
 * Temperature output is transformed to SI units (=Celsius) and rounded to 0.5°C (configurable) for less flicker. -- Option: `-w`
+* NEW: Dewpoint calculation if sensor doesn't provide it. -- Option:  `-L`
+* Temperature and humidity of the last 24 hours can be logged to the log directory.
 * Streamlined/removed mostly unnecessary content in the original JSON messages, e.g. no time stamp or checksum code.
 * Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time (few messages) frame are suppressed. -- Options: `-c` `-T`
 * MQTT topic contains and - configurably - the sensor's id. -- Option: `-i`
