@@ -44,16 +44,16 @@ So the main areas of extended features are:
 * Many command line options allowing for flexibility in the configuration (See source code for usage)
 * Command line options to be used in every invocation can be put into `~/.config/rtl2mqtt` (Start comments there with an `#`)
 * Log files may be replayed for debugging in your home automation environment -- Option: `-f`
-* Signalling INT to rtl2mqtt will emit a status message to MQTT.
+* Signalling INT to rtl2mqtt will emit a state message to MQTT.
 * Signalling USR1 to rtl2mqtt will toggle the verbosity for debugging to syslog and MQTT.
-* Signalling USR2 to rtl2mqtt will log the gathered sensor data to syslog and MQTT.
+* Signalling USR2 to rtl2mqtt will log all gathered sensor data (to syslog and MQTT).
 
-NB: The Dockerfile is provided untouched and not checked since I don't run Docker. It might work or not.
+NB: The Dockerfile is provided untouched and not checked for years since I don't run Docker. It might work or not.
 
 ## Installation
 
 rtl2mqtt.sh should run fine on all Linux versions that support rtl_433, e.g. Raspbian Buster and beyond.
-The only prerequisites are bash, and mosquitto_pub (from mosquitto). The need for jq has been removed, calculations are done in bash.
+The only prerequisites are mosquitto_pub/mosquitto_sub (from mosquitto). The need for jq has been removed, calculations are done in bash for performance.
 
 A very simple technique to make it run after each reboot is adding something like the following line to the crontab file:
 
