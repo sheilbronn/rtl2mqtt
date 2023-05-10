@@ -196,7 +196,7 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
 
 cMqttState() {	# log the state of the rtl bridge
     _ssid="$(iwgetid -r)" # iwgetid might have been aliased to ":" if not available
-    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,${nUploads:+*wuuploads*:$nUploads,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*currtime*:*$(cDate)*"
+    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*cacheddewpoints*:${#aDewpointsCalc[@]},${nUploads:+*wuuploads*:$nUploads,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*currtime*:*$(cDate)*"
     log "$_stats"
     cMqttStarred state "{$_stats${1:+,$1}}"
 }
@@ -573,15 +573,16 @@ if [ -f "${dLog}.log" ] ; then  # one logfile only
     sDoLog="file"
 else
     sDoLog="dir"
-    if mkdir -p "$dLog/model" && [ -w "$dLog" ] ; then
+    dModel="$dLog/model.dir"
+    if mkdir -p "$dModel" && [ -w "$dLog" ] ; then
         :
     else
         dLog="/tmp/${sName// }" && cLogMore "Defaulting to dLog $dLog"
-        mkdir -p "$dLog/model" || { log "Can't mkdir $dLog/model" ; exit 1 ; }
+        mkdir -p "$dModel" || { log "Can't mkdir $dModel" ; exit 1 ; }
     fi
     cd "$dLog" || { log "Can't cd to $dLog" ; exit 1 ; }
 fi
-# set -x ; cLogMore info "test test" ; exit 
+# set -x ; cLogMore info "test test" ; exit 2
 
 # command -v jq > /dev/null || { _msg="$sName: jq might be necessary!" ; log "$_msg" ; echo "$_msg" 1>&2 ; }
 command -v iwgetid > /dev/null || { _msg="$sName: iwgetid not found" ; log "$_msg" ; echo "$_msg" 1>&2 ; alias iwgetid : ; }
@@ -784,7 +785,7 @@ do
         elif [[ $data =~ ^"Please increase your allowed usbfs buffer "|^"usb"|^"No supported devices " ]] ; then
             dbg WARNING "$data"
             cMqttStarred log "{*event*:*error*,*host*:*$sHostname*,*message*:*${data//\*/+}*}" # log a simple JSON msg
-            [[ $bMoreVerbose && $data =~ ^"usb_claim_interface error -6" ]] && [ -t 1 ] dbg WARNING "Will killall $rtl433_command" && killall -vw $rtl433_command
+            [[ $bVerbose && $data =~ ^"usb_claim_interface error -6" ]] && [ -t 1 ] && dbg WARNING "Will killall $rtl433_command" && killall -vw $rtl433_command
         fi
         log "Non-JSON: $data"
         continue
@@ -903,8 +904,8 @@ do
             bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize/ignore non-plausible readings // FIXME to: || ( vTemperature > 110 && vHumidity > 0 )
         fi
         cHasJsonKey BAND || cAppendJsonKeyVal BAND "$sBand"
-        (( bRetained )) && cAppendJsonKeyVal HOUR $nHour # Append HOUR explicitly if readings are sent retained
-        [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dLog/model/${sBand}_$model_ident"
+        (( bRetained )) && cAppendJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are sent retained
+        [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dModel/${sBand}_$model_ident"
     fi
     # cPidDelta 3RD
 
@@ -964,9 +965,7 @@ do
         if (( bMoreVerbose && ! bQuiet )) ; then
             _prefix="SAME:  "  &&  [[ ${aLastReadings[$model_ident]} != "$prevval" ]] && _prefix="CHANGE(${#aLastReadings[@]}):"
             # grep expressen was: '^[^/]*|/'
-            grep -E --color=auto '[ {].*' <<< "$_prefix $model_ident 
-$prevval
-${aLastReadings[$model_ident]}"
+            { echo "$_prefix $model_ident" ; echo "$prevval" ; echo "${aLastReadings[$model_ident]}" ; } | grep -E --color=auto '[ {].*'
         fi
         nTimeDiff=$(( ( bAlways || ${#vTemperature} || ${#vHumidity} ) && (nMinSecondsTempSensor>nMinSecondsOther)  ?  nMinSecondsTempSensor : nMinSecondsOther  ))
         _issame=$( cEqualJson "$data" "$prevval" "freq freq1 freq2 rssi id" && echo 1 )
@@ -978,8 +977,8 @@ ${aLastReadings[$model_ident]}"
             echo "nTimeDiff=$nTimeDiff, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
             # (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 ))
             
-            echo "Counts=${aCounts[$model_ident]}, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] ))"
-            (( ! bMoreVerbose )) && echo "model_ident=$model_ident, READINGS=${aLastReadings[$model_ident]}, Prev=$prevval, Prev2=$prevvals"
+            echo "Counts=${aCounts[$model_ident]}, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] )), #aDewpointsCalc=${#aDewpointsCalc[@]}"
+            (( ! bMoreVerbose )) && echo "model_ident=$model_ident, READINGS=${aLastReadings[$model_ident]}, Prev=$prevval, Prev2=$prevvals" | grep -E --color=auto 'model_ident=[^,]*|\{[^}]*}'
         fi
         
         : channel="${channel}" : id="${id}"
@@ -1033,29 +1032,33 @@ ${aLastReadings[$model_ident]}"
             : "now final rewriting and then publish the reading"
             aLastReadings[$model_ident]="$data"
 
+            IFS=";" read -r vDewptc vDewptf _rest <<< "${aDewpointsCalc[$vTemperature,$nHumidity]}"
             if [[ $vTemperature && $nHumidity ]]  &&  ! cHasJsonKey "dewp.*" "$j"  &&  [[ ${aWuUrls[$model_ident]} || $bRewrite ]] ; then 
-                : calculate dewpoint
-                dewpointcalc=$( gawk -v Tn="$vTemperature" -v RH="$nHumidity" '
-                    BEGIN {  b=17.27 ; c=237.7 ;  
-                        # Arden-Buck estimation:
-                        C=c ; B=b
-                        gamma2 = (log(RH/100) + (B*Tn)/(C+Tn)) / ((B * log(RH/100)) / (C + Tn) - log(RH/100) - 1)
-                        Td2 = (B * gamma2) / (C - gamma2)
+                if [[ $vDewptc ]] ; then # check for precalculated, cached values
+                    (( bMoreVerbose )) && dbg DEWPOINT "cached values: aDewpointsCalc[$vTemperature,$nHumidity]=${aDewpointsCalc[$vTemperature,$nHumidity]} (${#aDewpointsCalc[@]})"                    
+                else
+                    : calculate dewpoint values
+                    dewpointcalc=$( gawk -v Tn="$vTemperature" -v RH="$nHumidity" '
+                        BEGIN {  b=17.27 ; c=237.7 ;  
+                            # Arden-Buck approximation:
+                            C=c ; B=b
+                            gamma2 = (log(RH/100) + (B*Tn)/(C+Tn)) / ((B * log(RH/100)) / (C + Tn) - log(RH/100) - 1)
+                            Td2 = (B * gamma2) / (C - gamma2)
 
-                        # Antoine estimation:
-                        es = 6.112 * exp((17.67 * Tn) / (Tn + 243.5))
-                        ea = RH/100 * es
-                        gamma = log(ea/6.112)
-                        Td = (243.5 * gamma) / (17.67 - gamma)
+                            # Antoine approximation:
+                            es = 6.112 * exp((17.67 * Tn) / (Tn + 243.5))
+                            ea = RH/100 * es
+                            gamma = log(ea/6.112)
+                            Td = (243.5 * gamma) / (17.67 - gamma)
 
-                        printf("%.1f %.1f %.1f %.1f %.1f %.1f", (Td * 1.8) + 32, Td, 0, 0, Td2, gamma2) # debug
-                    }'  )
-                (( bMoreVerbose )) && dbg DEWPOINT "calculations: $dewpointcalc" 
-                read -r vDewptf vDewptc _rest <<< "$dewpointcalc" 
-                : "vDewptf=$vDewptf , vDewptc=$vDewptc"
-            else
-                vDewptf=""
-                vDewptc=""
+                            printf("%.1f %.1f %.1f %.1f %.1f %.1f", Td, (Td * 1.8) + 32, 0, 0, Td2, gamma2) # debug
+                        }'  )
+                    read -r vDewptc vDewptf _rest <<< "$dewpointcalc" 
+                    : "vDewptc=$vDewptc, vDewptf=$vDewptf"
+                    [[ $vDewptc ]] && aDewpointsCalc[$vTemperature,$nHumidity]="$vDewptc;$vDewptf"
+                    (( bMoreVerbose )) && dbg DEWPOINT "calculations: $dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
+                    (( ${#aDewpointsCalc[@]} == 999 )) && unset aDewpointsCalc && declare -A aDewpointsCalc && dbg DEWPOINT "Restarted dewpoint caching"
+                fi
             fi
 
             if [[ ${aWuUrls[$model_ident]} ]] ; then # data should be uploaded to Wunderground
@@ -1117,8 +1120,15 @@ ${aLastReadings[$model_ident]}"
         cMqttState
         cMqttStarred log "{*event*:*debug*,*message*:*will reset saved values (nReadings=$nReadings,nMqttLines=$nMqttLines,nReceivedCount=$nReceivedCount)*}"
         unset aLastReadings && declare -A aLastReadings # reset the whole collection (array)
+        unset aSecondLastReadings && declare -A aSecondLastReadings 
         unset aCounts   && declare -A aCounts
         unset aAnnounced && declare -A aAnnounced
+        unset aEarlierTemperVals10 && declare -A aEarlierTemperVals10 
+        unset aEarlierTemperTime && declare -A aEarlierTemperTime 
+        unset aEarlierHumidVals && declare -A aEarlierHumidVals 
+        unset aEarlierHumidTime && declare -A aEarlierHumidTime
+        unset aLastSents && declare -A aLastSents 
+
         nPrevMax=nPrevMax/3            # reduce it quite a bit (but not back to 0) to reduce future log message
         (( bRemoveAnnouncements )) && cHassRemoveAnnounce
     fi
@@ -1129,5 +1139,5 @@ _msg="Read rc=$_rc from $(basename "${fReplayfile:-$rtl433_command}") ; $nLoops 
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*host*:*$sHostname*,*message*:*$_msg*}"
 dbg ENDING "$_msg"
-[[ $fReplayfile ]] || { sleep $s ; exit 1 ; } # return 1 only for premature end of rtl_433 command (=not after replay)
+[[ $fReplayfile ]] || { sleep $s ; exit 3 ; } # return 3 only for premature end of rtl_433 command (=not after replay)
 # now the exit trap function will be processed...
