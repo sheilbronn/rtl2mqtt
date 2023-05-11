@@ -60,7 +60,7 @@ declare -i nReceivedCount=0
 declare -i nAnnouncedCount=0
 declare -i nMinOccurences=3
 declare -i nTemperature10=999
-declare -i nHumidity=""
+declare -i nHumidity=999
 declare -i nPrevMax=1       # start with 1 for non-triviality
 declare -i nReadings=0
 declare -i nUploads=0 # number of uploads to Wunderground
@@ -743,9 +743,15 @@ trap 'trap_usr2' USR2
 
 trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purposes)
     cMqttState
+    for KEY in "${!aDewpointsCalc[@]}"; do
+        _val="${aDewpointsCalc[$KEY]}"
+        _msg="{*key*:*$KEY*,*results*:*${_val//\"/*}*}"
+        dbg DEWPOINT "$KEY  $_msg"
+        cMqttStarred dewpoint "$_msg"
+    done
     for KEY in "${!aLastReadings[@]}"; do
-        _reading="${aLastReadings[$KEY]}" && _reading="${_reading/\{}" && _reading="${_reading/\}}"
-        _msg="{*model_ident*:*$KEY*,${_reading//\"/*}}"
+        _val="${aLastReadings[$KEY]}" && _val="${_val/\{}" && _val="${_val/\}}"
+        _msg="{*model_ident*:*$KEY*,${_val//\"/*}}"
         dbg READING "$KEY  $_msg"
         cMqttStarred reading "$_msg"
     done
@@ -831,8 +837,8 @@ do
     rssi="$(    cExtractJsonVal rssi)"
     vTemperature="" && nTemperature10=""
     _f="$( cExtractJsonVal temperature_C || cExtractJsonVal temperature )" && _f="$(cIfJSONNumber "$_f")" && vTemperature="$_f" && _f="$(cMultiplyTen "$_f")" && nTemperature10="${_f/.*}"
-    nHumidity=""
-    vHumidity="$( cExtractJsonVal humidity )" && vHumidity="$( cIfJSONNumber "$vHumidity" )" && nHumidity="${vHumidity/.[0-9]*}"
+    vHumidity="$( cExtractJsonVal humidity )" && vHumidity="$( cIfJSONNumber "$vHumidity" )" 
+    nHumidity="${vHumidity/.[0-9]*}"
     vSetPoint="$( cExtractJsonVal setpoint_C) || $( cExtractJsonVal setpoint_F)" && vSetPoint="$(cIfJSONNumber "$vSetPoint")"
     type="$( cExtractJsonVal type )" # typically type=TPMS if present
     if cHasJsonKey freq ; then 
@@ -933,7 +939,7 @@ do
 
         sDelta=""
         if [[ $vTemperature ]] ; then
-            declare -i _diff=$(( nTemperature10 - ${aEarlierTemperVals10[$model_ident]:-0} )) # used later
+            _diff=$(( nTemperature10 - ${aEarlierTemperVals10[$model_ident]:-0} )) # used later
             if ! (( ${aEarlierTemperTime[$model_ident]} )) ; then
                 sDelta=NEW
                 aEarlierTemperTime[$model_ident]=$nTimeStamp && aEarlierTemperVals10[$model_ident]=$nTemperature10
@@ -942,22 +948,21 @@ do
                 aEarlierTemperTime[$model_ident]=$nTimeStamp && aEarlierTemperVals10[$model_ident]=$nTemperature10
             else
                 : "not enough change: aEarlierTemperVals10[$model_ident]=${aEarlierTemperVals10[$model_ident]}, nTimeStamp=$nTimeStamp (vs ${aEarlierTemperTime[$model_ident]})"
-                sDelta=SAME
+                sDelta=0
             fi
             [[ $bLogTempHumidity ]] && cLogVal "$model_ident" temperature "$vTemperature"
         fi
         if [[ $vHumidity ]] ; then
-            declare -i _diff=$(( nHumidity - ${aEarlierHumidVals[$model_ident]:-0} )) # used later
+            _diff=$(( nHumidity - ${aEarlierHumidVals[$model_ident]:-0} ))
             if ! (( ${aEarlierHumidTime[$model_ident]} )) ; then
                 sDelta="${sDelta:+$sDelta:}NEW"
                 aEarlierHumidTime[$model_ident]=$nTimeStamp && aEarlierHumidVals[$model_ident]=$nHumidity && : aEarlierHumidVals[$model_ident] initialized
             elif (( nTimeStamp > ${aEarlierHumidTime[$model_ident]} + nTimeMinDelta && ( _diff > (sRoundTo*4/10) || _diff < -(sRoundTo*4/10) ) )) ; then
-                # sDelta=${sDelta:+$sDelta,}$( if (( _diff > 0 )) ; then echo "RISEHUMID" ; else echo "FALLHUMID" ;  fi )
-                sDelta="${sDelta:+$sDelta:}$( (( _diff > 0 )) && printf "INCR" || printf "DESC" )($_diff)"
+                sDelta="${sDelta:+$sDelta:}$( (( _diff>0 )) && printf "INCR" || printf "DESC" )($_diff)"
                 aEarlierHumidTime[$model_ident]=$nTimeStamp && aEarlierHumidVals[$model_ident]=$nHumidity && : aEarlierHumidVals[$model_ident] changed
             else
                 : "not enough change, aEarlierHumidVals[$model_ident]=${aEarlierHumidVals[$model_ident]}, nTimeStamp=$nTimeStamp (vs ${aEarlierHumidTime[$model_ident]})"
-                sDelta="${sDelta:+$sDelta:}SAME"
+                sDelta="${sDelta:+$sDelta:}0"
             fi
         fi
         dbg SDELTA "$sDelta"
@@ -1021,6 +1026,14 @@ do
                 else
                     : announcement had failed, will be retried next time
                 fi
+                if (( nAnnouncedCount > 1999 )) ; then # DENIAL OF SERVICE attack or malfunction from RF environment assumed
+                    cHassRemoveAnnounce
+                    _msg="nAnnouncedCount=$nAnnouncedCount exploded, DENIAL OF SERVICE attack assumed, exiting!"
+                    log "$_msg" 
+                    cMqttStarred log "{*event*:*exiting*,*message*:*$_msg*}"
+                    dbg ENDING "$_msg"
+                    exit 11 # possibly restart whole script, if systemd allows it
+                fi
             else
                 cMqttStarred log "{*event*:*debug*,*message*:*not announced for MQTT discovery (no sensible sensor): $model_ident*}"
                 aAnnounced[$model_ident]=1 # 1 = took place (= dont reconsider for announcement)
@@ -1032,18 +1045,25 @@ do
             : "now final rewriting and then publish the reading"
             aLastReadings[$model_ident]="$data"
 
-            IFS=";" read -r vDewptc vDewptf _rest <<< "${aDewpointsCalc[$vTemperature,$nHumidity]}"
-            if [[ $vTemperature && $nHumidity ]]  &&  ! cHasJsonKey "dewp.*" "$j"  &&  [[ ${aWuUrls[$model_ident]} || $bRewrite ]] ; then 
+            IFS=";" read -r vDewptc vDewptf _rest <<< "${aDewpointsCalc[$vTemperature,$vHumidity]}"
+            if [[ $vTemperature && $vHumidity ]]  &&  ! cHasJsonKey "dewp.*" "$j"  &&  [[ ${aWuUrls[$model_ident]} || $bRewrite ]] ; then 
                 if [[ $vDewptc ]] ; then # check for precalculated, cached values
-                    (( bMoreVerbose )) && dbg DEWPOINT "cached values: aDewpointsCalc[$vTemperature,$nHumidity]=${aDewpointsCalc[$vTemperature,$nHumidity]} (${#aDewpointsCalc[@]})"                    
+                    (( bMoreVerbose )) && dbg DEWPOINT "cached values: aDewpointsCalc[$vTemperature,$vHumidity]=${aDewpointsCalc[$vTemperature,$vHumidity]} (${#aDewpointsCalc[@]})"                    
                 else
                     : calculate dewpoint values
-                    dewpointcalc=$( gawk -v Tn="$vTemperature" -v RH="$nHumidity" '
-                        BEGIN {  b=17.27 ; c=237.7 ;  
-                            # Arden-Buck approximation:
-                            C=c ; B=b
-                            gamma2 = (log(RH/100) + (B*Tn)/(C+Tn)) / ((B * log(RH/100)) / (C + Tn) - log(RH/100) - 1)
-                            Td2 = (B * gamma2) / (C - gamma2)
+                    dewpointcalc=$( gawk -v Tn="$vTemperature" -v RH="$vHumidity" '
+                        BEGIN {  b=17.27 ; c=237.7 ;
+                            # Aragonite:
+                            Td4 = Tn - ((100-RH) / 5)
+
+                            # Magnus:
+                            alpha = ((b*Tn) / (c+Tn)) + log(RH/100)
+                            Td3 = c*alpha / (b-alpha)
+
+                            # Arden-Buck approximation (simplified without pressure, not OK for <0° ?!)
+                            B = 17.67 ; C = 243.5
+                            V = log(RH/100) + (B*Tn) / (C+Tn)
+                            Td2 = C*V / (B-V)
 
                             # Antoine approximation:
                             es = 6.112 * exp((17.67 * Tn) / (Tn + 243.5))
@@ -1051,11 +1071,11 @@ do
                             gamma = log(ea/6.112)
                             Td = (243.5 * gamma) / (17.67 - gamma)
 
-                            printf("%.1f %.1f %.1f %.1f %.1f %.1f", Td, (Td * 1.8) + 32, 0, 0, Td2, gamma2) # debug
+                            printf( "%.1f %.1f %.1f %.1f %.1f %.1f",  Td, (Td*1.8)+32, 0, Td2, Td3, Td4) # debug
                         }'  )
                     read -r vDewptc vDewptf _rest <<< "$dewpointcalc" 
                     : "vDewptc=$vDewptc, vDewptf=$vDewptf"
-                    [[ $vDewptc ]] && aDewpointsCalc[$vTemperature,$nHumidity]="$vDewptc;$vDewptf"
+                    [[ $vDewptc ]] && aDewpointsCalc[$vTemperature,$vHumidity]="$vDewptc;$vDewptf" # cache calculations
                     (( bMoreVerbose )) && dbg DEWPOINT "calculations: $dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
                     (( ${#aDewpointsCalc[@]} == 999 )) && unset aDewpointsCalc && declare -A aDewpointsCalc && dbg DEWPOINT "Restarted dewpoint caching"
                 fi
@@ -1066,7 +1086,7 @@ do
                 [[ $baromin ]] && baromin="$(( $(cMultiplyTen $(cMultiplyTen $(cMultiplyTen vPressure_kPa) ) ) / 3386  ))" # 3.3863886666667
                 # https://blog.meteodrenthe.nl/2021/12/27/uploading-to-the-weather-underground-api/
                 # https://support.weather.com/s/article/PWS-Upload-Protocol
-                URL2="${aWuPos[$model_ident]}tempf=$temperatureF${nHumidity:+&${aWuPos[$model_ident]}humidity=$nHumidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}${vDewptf:+&${aWuPos[$model_ident]}dewptf=$vDewptf}"
+                URL2="${aWuPos[$model_ident]}tempf=$temperatureF${vHumidity:+&${aWuPos[$model_ident]}humidity=$vHumidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}${vDewptf:+&${aWuPos[$model_ident]}dewptf=$vDewptf}"
                 retcurl="$( curl --silent "${aWuUrls[$model_ident]}&$URL2" 2>&1 )" && [[ $retcurl == success ]] && nUploads+=1
                 log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, device=$model_ident)"
                 log "WUNDERGROUND2" "url was ${aWuUrls[$model_ident]}&$URL2"
