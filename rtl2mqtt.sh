@@ -266,6 +266,7 @@ cHassAnnounce() {
         unit)       _icon_str="group"               ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
         learn)      _icon_str="plus"               ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="total_increasing" ;;
         channel)    _icon_str="format-list-numbered" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
+        voltage)    _icon_str="FIXME" ; _unit_str=",*unit_of_measurement*:*V*" ; _state_class="measurement" ;;
         battery_ok) _icon_str="" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ; _sensor=binary_sensor ;;
 		none)		_icon_str="" ;; 
         *)          cLogMore "Notice: special icon and/or unit not defined for '$6'"
@@ -882,14 +883,15 @@ do
             vHumidity="$(( ( $(cMultiplyTen $vHumidity) + sRoundTo*_hmult/2 ) / (sRoundTo*_hmult) * (sRoundTo*_hmult) ))" && vHumidity="$(cDiv10 $vHumidity)"  # round to hmult * 0.x         
             cDeleteSimpleJsonKey humidity
             cAppendJsonKeyVal humidity $vHumidity
-            nHumidity=${vHumidity/[.,][0-9]*}
+            nHumidity=${vHumidity/.[0-9]*}
         fi
         vPressure_kPa="$(cExtractJsonVal pressure_kPa)"
         [[ $vPressure_kPa =~ ^[0-9.]+$ ]] || vPressure_kPa="" # cAssureJsonVal pressure_kPa "<= 9999", at least match a number
         _bHasParts25="$( [[ $(cExtractJsonVal pm2_5_ug_m3     ) =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
         _bHasParts10="$( [[ $(cExtractJsonVal estimated_pm10_0_ug_m3 ) =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
         _bHasRain="$(     [[ $(cExtractJsonVal rain_mm   ) =~ ^[1-9][0-9.]+$ ]] && echo 1 )" # formerly: cAssureJsonVal rain_mm ">0"
-        _bHasBatteryOK="$(  [[ $(cExtractJsonVal battery_ok) =~ ^[0-9.]+$ ]] && echo 1 )" # 0,1,2 or some float ; formerly: cAssureJsonVal battery_ok "<= 2"
+        _bHasBatteryOK="$(  [[ $(cExtractJsonVal battery_ok) =~ ^[01][0-9.]*$ ]] && echo 1 )" # 0,1 or some float between (0=LOW;1=FULL)
+        _bHasBatteryV="$(  [[ $(cExtractJsonVal battery_V) =~ ^[0-9.]+$ ]] && echo 1 )" # voltage, also battery_mV
         _bHasZone="$(   cHasJsonKey -v zone)" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1,"freq":434.024}
         _bHasUnit="$(   cHasJsonKey -v unit)" #        {"id":25612,"unit":15,"learn":0,"code":"7c818f","freq":433.942}
         _bHasLearn="$(  cHasJsonKey -v learn)" #        {"id":25612,"unit":15,"learn":0,"code":"7c818f","freq":433.942}
@@ -1002,19 +1004,20 @@ do
                 (( _bHasRain )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RainMM"  "value_json.rain_mm" rain_mm
                 [[ $vPressure_kPa  ]] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
                 (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
-                (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       "value_json.cmd"   motion
-                (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Data"       "value_json.data"   data
+                (( _bHasBatteryV  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Voltage"   "value_json.battery_V"    voltage
+                (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       "value_json.cmd"       motion
+                (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Data"       "value_json.data"     data
                 (( _bHasRssi && bMoreVerbose )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal
                 (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Counter"   "value_json.counter"   counter
                 (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Fine Parts"  "value_json.pm2_5_ug_m3" density25
                 (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Estim Course Parts"  "value_json.estimated_pm10_0_ug_m3" density10
                 (( _bHasCode       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Code"       "value_json.code"     code
                 (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonR"    "value_json.buttonr"  button
-                (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch" dipswitch
+                (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch"    dipswitch
                 (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }NewBatttery"  "value_json.newbattery" newbattery
                 (( _bHasZone       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Zone"       "value_json.zone"     zone
                 (( _bHasUnit       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Unit"       "value_json.unit"     unit
-                (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Learn"       "value_json.learn"     learn
+                (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Learn"       "value_json.learn"   learn
                 (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Channel"    "value_json.channel"  channel
                 (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Control"    "value_json.control"  control
                 #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
