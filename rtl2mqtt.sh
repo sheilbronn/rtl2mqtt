@@ -130,7 +130,7 @@ cLogMore() { # log to syslog logging facility, too.
     [[ $sDoLog ]] || return
     _level=info
     (( $# > 1 )) && _level="$1" && shift
-    echo "$sName:" "$@" 1>&2
+    echo "$sName: $*" 1>&2
     logger -p "daemon.$_level" -t "$sID" -- "$*"
     log "$@"
   }
@@ -246,7 +246,8 @@ cHassAnnounce() {
 
     case "$6" in
         temperature*) _icon_str="thermometer"   ; _unit_str=",*unit_of_measurement*:*\u00b0C*" ; _state_class="measurement" ;;
-        setpoint_C)	_icon_str="thermometer"     ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
+        dewpoint) _icon_str="thermometer"   ; _unit_str=",*unit_of_measurement*:*\u00b0C*" ; _state_class="measurement" ;;
+        setpoint*)	_icon_str="thermometer"     ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
         humidity)	_icon_str="water-percent"   ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
         rain_mm)	_icon_str="weather-rainy"   ; _unit_str=",*unit_of_measurement*:*mm*"	; _state_class="total_increasing" ;;
         pressure_kPa) _icon_str="airballoon-outline" ; _unit_str=",*unit_of_measurement*:*kPa*"	; _state_class="measurement" ;;
@@ -341,7 +342,7 @@ cHasJsonKey() { # simplified check to check whether the JSON ${2:-$data} has key
     [[ $_verbose ]] && echo 1
     return 0
 }
-# set -x ; j='{"dewpoint":"null","battery" :100}' ; cHasJsonKey "dewp.*t" "$j" && echo yes ; cHasJsonKey batter[y] "$j" && echo yes ; cHasJsonKey batt*i "$j" || echo no ; exit
+# set -x ; j='{"dewpoint":"null","battery" :100}' ; cHasJsonKey "dewpoi.*" "$j" && echo yes ; cHasJsonKey batter[y] "$j" && echo yes ; cHasJsonKey batt*i "$j" || echo no ; exit
 # set -x ; data='{"dipswitch" :"++---o--+","rbutton":"11R"}' ; cHasJsonKey dipswitch  && echo yes ; cHasJsonKey jessy "$data" || echo no ; exit
 # set -x ; data='{"dipswitch" :"++---o--+","rbutton":"11R"}' ; cHasJsonKey -v dipswitch  && echo yes ; cHasJsonKey jessy "$data" || echo no ; exit
 
@@ -570,7 +571,7 @@ shift $((OPTIND-1))   # Discard options processed by getopts, any remaining opti
 rtl433_opts+=( ${nHopSecs:+-H $nHopSecs -v} ${nStatsSec:+-M stats:1:$nStatsSec} )
 sRoundTo="$( cMultiplyTen "$sRoundTo" )"
 
-if [ -f "${dLog}.log" ] ; then  # one logfile only
+if [ -f "${dLog}.log" ] ; then  # want one logfile only
     sDoLog="file"
 else
     sDoLog="dir"
@@ -623,7 +624,7 @@ cEchoIfNotDuplicate() {
     fi
  }
 
-(( bAnnounceHass )) && cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/log  "LogMessage"  ""  "none"                 
+(( bAnnounceHass )) && cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/log  "LogMessage"  ""  none
 _info="*host*:*$sHostname*,*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
 if [ -t 1 ] ; then # probably running on a terminal
     log "$sName starting at $(cDate)"
@@ -756,7 +757,7 @@ trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purpo
         dbg READING "$KEY  $_msg"
         cMqttStarred reading "$_msg"
     done
-    _msg="received signal VTALRM: logged last MQTT messages from ${#aLastReadings[@]} sensors."
+    _msg="received signal VTALRM: logged last MQTT messages from ${#aLastReadings[@]} sensors and ${#aDewpointsCalc[@]} calculations."
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
   }
@@ -992,15 +993,20 @@ do
         topicext="$model$( [[ "$type" == TPMS ]] && echo "-$type" )${channel:+/$channel}$( [[ $bAddIdToTopic || -z $channel ]] && echo "${id:+/$id}" )" # construct the variant part of the MQTT topic
 
         if (( _bAnnounceReady )) ; then
-            : Checking each announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10"
+            : Checking each announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10"
             if (( ${#vTemperature} || _bHasRain || ${#vPressure_kPa} || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
-                    || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
+                        || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
                 [[ $protocol    ]] && _name="${aNames["$protocol"]:-$model}" || _name="$model" # fallback
                 # if the device has anyone of the above attributes, announce all the attributes it has ...:
                 # see also https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
-                [[ $vTemperature ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
-                [[ $vHumidity    ]]      && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
-                cHasJsonKey setpoint_C  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }TempTarget"      "value_json.setpoint_C"   setpoint
+                [[ $vTemperature ]]    && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
+                [[ $vHumidity    ]]    && {
+                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
+                }
+                if [[ $vTemperature  && $vHumidity && $bRewrite ]] || cHasJsonKey "dewpoint" ; then # announce (possibly calculated) dewpoint, too
+                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Dewpoint"  "value_json.dewpoint"   dewpoint
+                fi
+                cHasJsonKey setpoint_C && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }TempTarget"      "value_json.setpoint_C"   setpoint
                 (( _bHasRain )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RainMM"  "value_json.rain_mm" rain_mm
                 [[ $vPressure_kPa  ]] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
                 (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
@@ -1048,9 +1054,9 @@ do
             : "now final rewriting and then publish the reading"
             aLastReadings[$model_ident]="$data"
 
-            IFS=";" read -r vDewptc vDewptf _rest <<< "${aDewpointsCalc[$vTemperature,$vHumidity]}"
-            if [[ $vTemperature && $vHumidity ]]  &&  ! cHasJsonKey "dewp.*" "$j"  &&  [[ ${aWuUrls[$model_ident]} || $bRewrite ]] ; then 
-                if [[ $vDewptc ]] ; then # check for precalculated, cached values
+            if [[ $vTemperature && $vHumidity ]]  &&  ! cHasJsonKey "dewpoint"  &&  [[ ${aWuUrls[$model_ident]} || $bRewrite ]] ; then 
+                if [[ ${aDewpointsCalc[$vTemperature,$vHumidity]} ]] ; then # check for precalculated, cached values
+                    IFS=";" read -r vDewptc vDewptf _rest <<< "${aDewpointsCalc[$vTemperature,$vHumidity]}"
                     (( bMoreVerbose )) && dbg DEWPOINT "cached values: aDewpointsCalc[$vTemperature,$vHumidity]=${aDewpointsCalc[$vTemperature,$vHumidity]} (${#aDewpointsCalc[@]})"                    
                 else
                     : calculate dewpoint values
@@ -1080,7 +1086,7 @@ do
                     : "vDewptc=$vDewptc, vDewptf=$vDewptf"
                     [[ $vDewptc ]] && aDewpointsCalc[$vTemperature,$vHumidity]="$vDewptc;$vDewptf" # cache calculations
                     (( bMoreVerbose )) && dbg DEWPOINT "calculations: $dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
-                    (( ${#aDewpointsCalc[@]} == 999 )) && unset aDewpointsCalc && declare -A aDewpointsCalc && dbg DEWPOINT "Restarted dewpoint caching"
+                    (( ${#aDewpointsCalc[@]} == 999 )) && unset aDewpointsCalc && declare -A aDewpointsCalc && dbg DEWPOINT "Restarted dewpoint calculation caching"
                 fi
             fi
 
