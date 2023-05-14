@@ -48,7 +48,7 @@ declare -i nLogMinutesPeriod=60 # once per hour
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
 declare -i nMinSecondsOther=5 # only at least every nn seconds
-declare -i nMinSecondsTempSensor=260 # only at least every 240+20 seconds
+declare -i nMinSecondsWeather=380 # only at least every 360+20 seconds for unchanged environment data (temperature, humidity)
 declare -i nTimeStamp
 declare -i nTimeMinDelta=300
 declare -i nPidDelta
@@ -112,10 +112,9 @@ log() {
     fi
   }
 
-cLogVal() { # args: device,sensor,value
+cLogVal() { # log each value to a single file, args: device,sensor,value
     local - && set +x
     [[ $sDoLog != dir ]] && return
-    dDevice="$dLog/$1"
     dSensor="$dLog/$1/$2"
     [ -d $dSensor ] || mkdir -p $dSensor
     fVal="$dSensor/$(cDate %s)" 
@@ -135,7 +134,7 @@ cLogMore() { # log to syslog logging facility, too.
     log "$@"
   }
 
-dbg() { # output the args to stderr if option bVerbose was set
+dbg() { # output the args to stderr if option bVerbose is set
 	local - && set +x
     (( bVerbose )) && { [[ $2 ]] && echo "$1:" "${@:2:$#}" 1>&2 || echo "DEBUG: $1" ; } 1>&2
 	}
@@ -534,7 +533,7 @@ do
         ;;
     c)  nMinOccurences=$OPTARG # MQTT announcements only after at least $nMinOccurences occurences...
         ;;
-    T)  nMinSecondsOther=$OPTARG # seconds before repeating the same reading
+    T)  nMinSecondsOther=$OPTARG # seconds before repeating the same (unchanged) reading
         ;;
     a)  bAlways=1
         nMinOccurences=1
@@ -625,7 +624,7 @@ cEchoIfNotDuplicate() {
  }
 
 (( bAnnounceHass )) && cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/log  "LogMessage"  ""  none
-_info="*host*:*$sHostname*,*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsTempSensor*:$nMinSecondsTempSensor,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
+_info="*host*:*$sHostname*,*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsWeather*:$nMinSecondsWeather,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
 if [ -t 1 ] ; then # probably running on a terminal
     log "$sName starting at $(cDate)"
     cMqttStarred log "{*event*:*starting*,$_info}"
@@ -858,10 +857,10 @@ do
     [[ ! $bVerbose && ! $model_ident =~ $sSensorMatch ]] && : not verbose, skip early && continue # skip unwanted readings (regexp) early (if not verbose)
     # cPidDelta 2ND
 
-    if [[ $model_ident && ! $bRewrite ]] ; then                  # Clean the line from less interesting information....
-        : no rewriting, only removing
+    if [[ $model_ident && ! $bRewrite ]] ; then
+        : no rewriting, only removing wanted
         cDeleteJsonKeys "$_delkeys"
-    elif [[ $model_ident && $bRewrite ]] ; then                  
+    elif [[ $model_ident && $bRewrite ]] ; then  # Clean the line from less interesting information....
         : Rewrite and clean the line from less interesting information....
         # sample: {"id":20,"channel":1,"battery_ok":1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
         _delkeys="$_delkeys mod snr noise mic" && (( ! bVerbose )) && _delkeys="$_delkeys freq freq1 freq2" # other stuff: subtype channel
@@ -912,7 +911,7 @@ do
             _k="$( cHasJsonKey "unknown.*" )" && [[ $(cExtractJsonVal "$_k") == 0 ]] && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
             bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize/ignore non-plausible readings // FIXME to: || ( vTemperature > 110 && vHumidity > 0 )
         fi
-        cHasJsonKey BAND || cAppendJsonKeyVal BAND "$sBand"
+        cHasJsonKey BAND || cAppendJsonKeyVal BAND "$sBand" # add BAND here to ensure it goes into the logfile for all data lines
         (( bRetained )) && cAppendJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are sent retained
         [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dModel/${sBand}_$model_ident"
     fi
@@ -927,11 +926,10 @@ do
     elif ! [[ $model_ident ]] ; then # probably a stats message
         dbg "model_ident is empty"
         (( bVerbose )) && data="${data//\" : /\":}" && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
-
     elif [[ $bAlways || ${data/"freq":434} != "${prev_data/"freq":434}" || $nTimeStamp -gt $((prev_time+nMinSecondsOther)) ]] ; then
-        : ignoring frequency changes within the 433/434 band when comparing for a change and early cutoff for pure data repetitions in prev_data
+        : "relevant, not very recemt change in any data - not small freq changes (sRoundTo=$sRoundTo)"
         if (( bVerbose )) ; then
-            (( bRewrite && bMoreVerbose && bQuiet )) && cEchoIfNotDuplicate "CLEANED: $model_ident=$( grep -E --color=yes '.*' <<< "$data")" # resulting message for MQTT
+            (( bRewrite && bMoreVerbose && ! bQuiet )) && cEchoIfNotDuplicate "CLEANED: $model_ident=$( grep -E --color=yes '.*' <<< "$data")" # resulting message for MQTT
             [[ $model_ident =~ $sSensorMatch ]] || continue # however, skip if no fit
         fi
         prev_data="$data" && prev_time=$nTimeStamp
@@ -971,18 +969,19 @@ do
         dbg SDELTA "$sDelta"
 
         if (( bMoreVerbose && ! bQuiet )) ; then
-            _prefix="SAME:  "  &&  [[ ${aLastReadings[$model_ident]} != "$prevval" ]] && _prefix="CHANGE(${#aLastReadings[@]}):"
+            _prefix="SAME:  "  &&  ! cEqualJson "${aLastReadings[$model_ident]}" "$prevval" "freq freq1 freq2 rssi id" && _prefix="CHANGE(${#aLastReadings[@]}):"
             # grep expressen was: '^[^/]*|/'
             { echo "$_prefix $model_ident" ; echo "$prevval" ; echo "${aLastReadings[$model_ident]}" ; } | grep -E --color=auto '[ {].*'
         fi
-        nTimeDiff=$(( ( bAlways || ${#vTemperature} || ${#vHumidity} ) && (nMinSecondsTempSensor>nMinSecondsOther)  ?  nMinSecondsTempSensor : nMinSecondsOther  ))
-        _issame=$( cEqualJson "$data" "$prevval" "freq freq1 freq2 rssi id" && echo 1 )
-        [[ $_issame && ! $bMoreVerbose ]] && nTimeDiff=$(( nTimeDiff * 2 )) # delay outputting further if values are the same as last time
+        nMinSeconds=$(( ( bAlways || ${#vTemperature} || ${#vHumidity} ) && (nMinSecondsWeather>nMinSecondsOther) ? nMinSecondsWeather : nMinSecondsOther ))
+        _IsSame=$( cEqualJson "$data" "$prevval" "freq freq1 freq2 rssi id snr noise" && echo 1 ) # determine whether any raw data has changed, ignoring non-important values
+        dbg ISSAME "_IsSame=$_IsSame,PREV=$prevval, DATA=$data"
+        [[ ! $_IsSame || $bMoreVerbose ]] && nMinSeconds=$(( nMinSeconds / 2 + 1 )) # delay outputting less if values have changed since last time
 
-        _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident] != 1 && aCounts[$model_ident] >= nMinOccurences ))
+        _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident] != 1 && aCounts[$model_ident] >= nMinOccurences )) # sensor has appeared mor than once 
 
         if (( bVerbose )) ; then
-            echo "nTimeDiff=$nTimeDiff, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
+            echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
             # (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 ))
             
             echo "Counts=${aCounts[$model_ident]}, Time=$nTimeStamp-${aLastSents[$model_ident]}=$(( nTimeStamp - aLastSents[$model_ident] )), #aDewpointsCalc=${#aDewpointsCalc[@]}"
@@ -1050,7 +1049,7 @@ do
         fi
         # cPidDelta 4TH
 
-        if (( nTimeStamp > aLastSents[$model_ident] + nTimeDiff )) || [[ ! $_issame || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data different from previous reading(s) or some time elapsed
+        if (( nTimeStamp > aLastSents[$model_ident] + nMinSeconds )) || [[ ! $_IsSame || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data different from previous reading(s) or some time elapsed
             : "now final rewriting and then publish the reading"
             aLastReadings[$model_ident]="$data"
 
@@ -1084,7 +1083,7 @@ do
                         }'  )
                     read -r vDewptc vDewptf _rest <<< "$dewpointcalc" 
                     : "vDewptc=$vDewptc, vDewptf=$vDewptf"
-                    [[ $vDewptc ]] && aDewpointsCalc[$vTemperature,$vHumidity]="$vDewptc;$vDewptf" # cache calculations
+                    [[ $vDewptc ]] && aDewpointsCalc[$vTemperature,$vHumidity]="$vDewptc;$vDewptf" # cache the calculations
                     (( bMoreVerbose )) && dbg DEWPOINT "calculations: $dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
                     (( ${#aDewpointsCalc[@]} == 999 )) && unset aDewpointsCalc && declare -A aDewpointsCalc && dbg DEWPOINT "Restarted dewpoint calculation caching"
                 fi
@@ -1106,10 +1105,10 @@ do
             if (( bRewrite )) ; then
                 [[ $vDewptc ]] && cAppendJsonKeyVal dewpoint "$vDewptc"
                 # [[ $rssi ]] && cAppendJsonKeyVal rssi "$rssi" # put rssi back in
-                if [[ ! $_issame ]] ; then
+                if [[ ! $_IsSame ]] ; then
                     cAppendJsonKeyVal NOTE "CHANGE"
                 elif ! cEqualJson "$data" "$prevvals" "freq freq1 freq2 rssi id" ; then
-                    (( bVerbose )) && cAppendJsonKeyVal NOTE2 "=2ND (#${aCounts[$model_ident]},_bR=$_bAnnounceReady,${nTimeDiff}s)"
+                    (( bVerbose )) && cAppendJsonKeyVal NOTE2 "=2ND (#${aCounts[$model_ident]},_bR=$_bAnnounceReady,${nMinSeconds}s)"
                 fi
                 aSecondLastReadings[$model_ident]="$prevval"
                 [[ $sDelta ]] && cAppendJsonKeyVal SDELTA "$sDelta"
