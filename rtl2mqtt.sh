@@ -496,50 +496,80 @@ cEqualJson() {   # cEqualJson "json1" "json2" "attributes to be ignored" '{"acti
 # set -x ; data1='{ "id":35, "channel":3, "battery_ok":1, "freq":433.918,"temperature":22,"humidity":60,"dewpoint":13.9,"BAND":433}' ; data2='{ "id":35, "channel":3, "battery_ok":1, "freq":433.918,"temperature":22,"humidity":60,"BAND":433}' ; cEqualJson "$data1" "$data2" && echo AAA; cEqualJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data2" "freq" && echo CCC; exit
 # set -x ; data1='{ "temperature":22,"humidity":60,"BAND":433}' ; data2='{ "temperature":22,"humidity":60,"BAND":433}' ; cEqualJson "$data1" "$data2" && echo AAA; cEqualJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data2" "freq" && echo CCC; exit
 
-cDewpoints() { # calculate a dewpoint and cache the result and side effect: set vDewptc and vDewptf
-    local - && set +x
-    _rc=0
-    if [[ ${aDewpointsCalc[$1,$2]} ]] ; then # check for precalculated, cached values
-        IFS=";" read -r vDewptc vDewptf _rest <<< "${aDewpointsCalc[$1,$2]}"
-        (( bMoreVerbose )) && dbg DEWPOINT "cached values: aDewpointsCalc[$1,$2]=${aDewpointsCalc[$1,$2]} (${#aDewpointsCalc[@]})"
+cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the result; side effect: set vDewptc and vDewptf
+    local _temperature=$( cDiv10 $(cMultiplyTen $1) ) _rh=${2/.[0-9]*} - _rc=0 && set +x 
+    
+    if [[ ${aDewpointsCalc[$_temperature,$_rh]} ]] ; then # check for precalculated, cached values
+        IFS=";" read -r vDewptc vDewptf _n _rest <<< "${aDewpointsCalc[$_temperature,$_rh]}"
+        (( bVerbose     )) && aDewpointsCalc[$_temperature,$_rh]="$vDewptc;$vDewptf;$(( _n+1 )); $_rest"
+        (( bMoreVerbose )) && dbg DEWPOINT "CACHED: aDewpointsCalc[$_temperature,$_rh]=${aDewpointsCalc[$_temperature,$_rh]} (${#aDewpointsCalc[@]})"
     else
-        : calculate dewpoint values
-        _dewpointcalc="$( gawk -v Tn="$1" -v RH="$2" '
-                BEGIN {  b=17.27 ; c=237.7 ;
-                    # Aragonite:
-                    Td4 = Tn - ((100-RH) / 5)
+        : "calculate dewpoint values for ($_temperature,$_rh)" # ignore barometric pressure for now
+        _ad=0 ; lim=60  ; (( $_rh < $lim )) && _ad=$(( 10 * ($lim - $_rh) / 5  )) # reduce by 12 at 16% (50-16=34)
+        vDewSimple=$( cDiv10 $(( $(cMultiplyTen $_temperature) - 200 + 10 * _rh / 5 - _ad )) )   #  temp - ((100-hum)/5), when humid>50 and 0°<temp<30°C
+        _dewpointcalc="$( gawk -v temp="$_temperature" -v hum="$_rh" '
+            BEGIN {  a=17.27 ; b=237.7 ;
+                # Aragonite / 2005 article by Mark G. Lawrence in the Bulletin of the American Meteorological Society
+                # https://journals.ametsoc.org/view/journals/bams/86/2/bams-86-2-225.xml
+                TAR = temp - ((100-hum) / 5)
 
-                    # Magnus:
-                    alpha = ((b*Tn) / (c+Tn)) + log(RH/100)
-                    Td3 = c*alpha / (b-alpha)
-                    # system("echo alpha=" alpha " 1>&2")
+                # Magnus approximation:
+                alpha = ((a*temp) / (b+temp)) + log(hum/100)
+                TM = (b*alpha) / (a-alpha)          # ; system("echo alpha=" alpha " 1>&2")
 
-                    # Arden-Buck approximation (simplified without pressure, not OK for <0° ?!)
-                    B = 17.67 ; C = 243.5
-                    V = log(RH/100) + (B*Tn) / (C+Tn)
-                    Td2 = C*V / (B-V)
+                # August-Roche-Magnus approximation:
+                TARM = 243.04 * (log(RH/100) + ((17.625 * T) / (243.04 + T))) / (17.625 - log(RH/100) - ((17.625 * T) / (243.04 + T)))
+                
+                #  Magnus-Tetens formula and a four-term approximation by Buck (1981).
+                # alpha2 = ((a*temp) / (b+temp)) + atan(0.067 * hum + 0.0025) + ((a * temp) / (b + temp)) * atan(0.067 * hum + 0.0025) - atan(0.067 * hum + 0.0025)**3 + ((a * temp) / (b + temp))**3
+                # TMT= (b*alpha2) / (a-alpha2)
 
-                    # Antoine approximation:
-                    es = 6.112 * exp((17.67 * Tn) / (Tn + 243.5))
-                    ea = RH/100 * es
-                    gamma = log(ea/6.112)
-                    Td = (243.5 * gamma) / (17.67 - gamma)
+                # Alduchov and Eskridge
+                a = 17.625 ; b = 243.04 
+                alphaAE = log(hum/100) + (a*temp) / (b+temp)
+                TAE = b*alpha3 / (a-alphaAE)
 
-                    printf( "%.1f %.1f %.1f %.1f %.1f %.1f",  Td, (Td*1.8)+32, 0, Td2, Td3, Td4)
-                    if (RH<0 || Td!=Td || Td3!=Td3 ) exit(1) # best practice to check for a NaN value
-                }' ; )"
+                # Arden-Buck approximation (simplified without pressure, not OK for <0° ?!)
+                B = 17.67 ; C = 243.5
+                V = log(hum/100) + (B*temp) / (C+temp)
+                TAB = C*V / (B-V)
+
+                # Antoine approximation:
+                es = 6.112 * exp((17.67 * temp) / (temp + 243.5))
+                ea = hum/100 * es
+                gamma = log(ea/6.112)
+                TA = (243.5 * gamma) / (17.67 - gamma)
+
+                printf( "%.1f %.1f %.2f %.2f %.2f %.2f %.2f %.2f",  TA, (TA*1.8)+32, TMT, TA, TAB, TM, TAR, TAE)
+                if (hum<0 || TA!=TA || TM!=TM || TMT!=TMT ) exit(1) # best practice to check for a NaN value
+            }' ; )"
         _rc=$?
         read -r vDewptc vDewptf _rest <<< "$_dewpointcalc" 
         : "vDewptc=$vDewptc, vDewptf=$vDewptf"
-        [[ $vDewptc ]] && aDewpointsCalc[$1,$2]="$vDewptc;$vDewptf" # cache the calculations
+        [[ $vDewptc ]] && {
+            aDewpointsCalc[$_temperature,$_rh]="$vDewptc;$vDewptf;1;$vDewSimple${bVerbose:+,$_dewpointcalc}" # cache the calculations (and maybe the rest for debugging)
+        }
         (( bMoreVerbose )) && dbg DEWPOINT "calculations: $_dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
-        (( ${#aDewpointsCalc[@]} == 999 )) && unset aDewpointsCalc && declare -A aDewpointsCalc && dbg DEWPOINT "Restarted dewpoint caching."
+        if (( ${#aDewpointsCalc[@]} > 999 )) ; then # maybe out-of-memory DoS attack from radio environment
+            declare -p aDewpointsCalc | xargs -n1 | tail +3 > "/tmp/$sID.$USER.$( cDate %d )" # FIXME: for debugging
+            unset aDewpointsCalc && declare -A aDewpointsCalc && log "DEWPOINT: RESTARTED dewpoint caching."
+        fi
     fi
-    echo "$vDewptc" "$vDewptf"
+    echo "$vDewptc" "$vDewptf" 
     (( _rc != 0 )) && return $_rc
+    [[ $bRewrite && $vDewptc != 0 ]] && vDewptc=$( cRound "$(cMultiplyTen $vDewptc)" ) #  reduce flicker in dewpoint as in temperature reading
     [[ $vDewptc && $vDewptf && $vDewptc != "+nan" && $vDewptf != "+nan" ]]  # determine any other return value of the function
     }
-    # set -x ; bVerbose=1 ; cDewpoints 11 100 ; cDewpoints 11 50 ; cDewpoints 11 48 ; echo rc is $? ; cDewpoints 11 -2 ; echo rc is $? ; exit 1
+    # set -x ; bVerbose=1 ; cDewpoints 11.2 100 ; echo "rc is $? ($vDewSimple,$_dewpointcalc)" ; cDewpoints 18.4 50 ; echo "rc is $? ($vDewSimple,$_dewpointcalc)" ; cDewpoints 18.4 20 ; echo "rc is $? ($_dewpointcalc)" ; cDewpoints 11 -2 ; echo "rc is $? ($_dewpointcalc)"; exit 1
+    # set -x ; bVerbose=1 ; cDewpoints 25 30 ; echo "$vDewSimple , $_dewpointcalc)" ; cDewpoints 20 40 ; echo "$vDewSimple , $_dewpointcalc)" ; cDewpoints 14 45 ; echo "$vDewSimple , $_dewpointcalc)" ; exit 1
+    # set -x ; bVerbose=1 ; for h in $(seq 70 -5 20) ; do cDewpoints 30 $h ; echo "$vDewSimple , $_dewpointcalc ========" ; done ; exit 1
+
+cRound() {
+    local - _val ; set +x # $1 has to be 10-times larger! 
+    _val=$(( ( $1 + sRoundTo*${2:-1}/2 ) / (sRoundTo*${2:-1}) * (sRoundTo*${2:-1}) ))
+    echo "$( cDiv10 $_val )" # FIXME: not correct for negative numbers
+    }
+    # set -x ; sRoundTo=5 ; cRound -7 ; cRound 7 ; cRound 14 ; echo "should have been 0.5 and 1.5" ; exit 1
 
 [ -r "$rtl2mqtt_optfile" ] && _moreopts="$( sed -e 's/#.*//'  < "$rtl2mqtt_optfile" | tr -c -d '[:space:][:alnum:]_., -' | uniq )" && dbg "Read _moreopts from $rtl2mqtt_optfile"
 
@@ -834,7 +864,7 @@ trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purpo
     cMqttState
     for KEY in "${!aDewpointsCalc[@]}"; do
         _val="${aDewpointsCalc[$KEY]}"
-        _msg="{*key*:*$KEY*,*results*:*${_val//\"/*}*}"
+        _msg="{*key*:*$KEY*,*values*:*${_val//\"/*}*}"
         dbg DEWPOINT "$KEY  $_msg"
         cMqttStarred dewpoint "$_msg"
     done
@@ -927,9 +957,9 @@ do
     model_ident="${model}${ident:+_$ident}"
     rssi="$(    cExtractJsonVal rssi)"
     vTemperature="" && nTemperature10="" && nTemperature10Diff=""
-    _f="$( cExtractJsonVal temperature_C || cExtractJsonVal temperature )" && _f="$(cIfJSONNumber "$_f")" && vTemperature="$_f" && _f="$(cMultiplyTen "$_f")" && 
-        nTemperature10="${_f/.*}" && nTemperature10Diff=$(( nTemperature10 - ${aEarlierTemperVals10[$model_ident]:-0} )) # used later
-    vHumidity="$( cExtractJsonVal humidity )" && vHumidity="$( cIfJSONNumber "$vHumidity" )" 
+    _val="$( cExtractJsonVal temperature_C || cExtractJsonVal temperature )" && _val="$(cIfJSONNumber "$_val")" && vTemperature="$_val" && _val="$(cMultiplyTen "$_val")" && 
+        nTemperature10="${_val/.*}" && nTemperature10Diff=$(( nTemperature10 - ${aEarlierTemperVals10[$model_ident]:-0} )) # used later
+    vHumidity="$( cExtractJsonVal humidity )" && vHumidity="$( cIfJSONNumber "$vHumidity" )"
     nHumidity="${vHumidity/.[0-9]*}"
     vSetPoint="$( cExtractJsonVal setpoint_C) || $( cExtractJsonVal setpoint_F)" && vSetPoint="$(cIfJSONNumber "$vSetPoint")"
     type="$( cExtractJsonVal type )" # typically type=TPMS if present
@@ -959,16 +989,22 @@ do
         if [[ $vTemperature ]] ; then
             # Fahrenheit = Celsius * 9/5 + 32, Fahrenheit = Celsius * 9/5 + 32
             (( ${#aWuUrls[$model_ident]} > 0 )) && temperatureF="$(cDiv10 $(( nTemperature10 * 9 / 5 + 320 )))" # calculate Fahrenheits only if needed later
-            vTemperature=$(( ( nTemperature10 + sRoundTo/2 ) / sRoundTo * sRoundTo )) && vTemperature=$( cDiv10 $vTemperature ) # round to 0.x °C
-            cDeleteSimpleJsonKey temperature_C
-            cAddJsonKeyVal temperature "$vTemperature"
+            if (( bRewrite )) ; then
+                # _val=$(( ( nTemperature10 + sRoundTo/2 ) / sRoundTo * sRoundTo )) && _val=$( cDiv10 $_val ) # round to 0.x °C
+                _val=$( cRound nTemperature10 ) # round to 0.x °C
+                cDeleteSimpleJsonKey temperature && cAddJsonKeyVal temperature "$_val"
+                cDeleteSimpleJsonKey temperature_C
+                _val="$(cMultiplyTen "$_val")"
+                nTemperature10="${_val/.*}"
+            fi
         fi
-        if [[ $vHumidity ]] ; then
-            _hmult=4
-            vHumidity="$(( ( $(cMultiplyTen $vHumidity) + sRoundTo*_hmult/2 ) / (sRoundTo*_hmult) * (sRoundTo*_hmult) ))" && vHumidity="$(cDiv10 $vHumidity)"  # round to hmult * 0.x         
-            cDeleteSimpleJsonKey humidity
-            cAddJsonKeyVal humidity $vHumidity
-            nHumidity=${vHumidity/.[0-9]*}
+        if [[ $vHumidity ]] ; then # 
+            if (( bRewrite )) ; then
+                # _val="$(( ( $(cMultiplyTen $vHumidity) + sRoundTo*_hmult/2 ) / (sRoundTo*_hmult) * (sRoundTo*_hmult) ))" && _val="$(cDiv10 "$_val")"  # round to hmult * 0.x         
+                _val=$( cRound $(cMultiplyTen $vHumidity) 4 ) # round to 0.x * 4 °C
+                cDeleteSimpleJsonKey humidity && cAddJsonKeyVal humidity "$_val"
+                nHumidity=${_val/.[0-9]*}
+            fi
         fi
         vPressure_kPa="$(cExtractJsonVal pressure_kPa)"
         [[ $vPressure_kPa =~ ^[0-9.]+$ ]] || vPressure_kPa="" # cAssureJsonVal pressure_kPa "<= 9999", at least match a number
@@ -994,7 +1030,7 @@ do
         if (( bRewriteMore )) ; then
             cDeleteJsonKeys "transmit test"
             _k="$( cHasJsonKey "unknown.*" )" && [[ $(cExtractJsonVal "$_k") == 0 ]] && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
-            bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize/ignore non-plausible readings // FIXME to: || ( vTemperature > 110 && vHumidity > 0 )
+            bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize/ignore non-plausible readings
         fi
         cHasJsonKey BAND || cAddJsonKeyVal BAND "$sBand" # add BAND here to ensure it goes into the logfile for all data lines
         (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are sent retained
@@ -1129,7 +1165,7 @@ do
                     sleep 1 # give the MQTT readers an extra second to digest the announcement
                     aAnnounced[$model_ident]=1 # 1=took place=dont reconsider for announcement
                 else
-                    : announcement had failed, will be retried next time
+                    : announcement had failed, will be retried again next time
                 fi
                 if (( nAnnouncedCount > 1999 )) ; then # DENIAL OF SERVICE attack or malfunction from RF environment assumed
                     cHassRemoveAnnounce
@@ -1150,7 +1186,7 @@ do
             : "now final rewriting and then publish the reading"
             aPrevReadings[$model_ident]="$data"
 
-            if [[ $vTemperature && $vHumidity ]]  &&  ! cHasJsonKey "dewpoint"  &&  [[ ${aWuUrls[$model_ident]} || $bRewrite ]] ; then # prepare dewpoint calc, e.g. for weather upload
+            if [[ $vTemperature && $nHumidity -gt 0 ]]  &&  ! cHasJsonKey "dewpoint"  &&  [[ ${aWuUrls[$model_ident]} || $bRewrite ]] ; then # prepare dewpoint calc, e.g. for weather upload
                 cDewpoints "$vTemperature" "$vHumidity" > /dev/null 
                 : "vDewptc=$vDewptc, vDewptf=$vDewptf" # were set as side effects
             fi
@@ -1212,7 +1248,7 @@ do
             done
         )] "
         log "$( cExpandStarredString "$_collection")" 
-        cMqttState "*note*:*regular log*,*collected_sensors*:*${!aPrevReadings[*]}*, $_collection"
+        cMqttState "*note*:*regular log*,*collected_sensors*:*${!aPrevReadings[*]}*, $_collection, *aDewpointsCalcNumber*:${#aDewpointsCalc[@]}"
         nLastStatusSeconds=nTimeStamp
     elif (( nReadings > (nSecond*nSecond+2)*(nMinute+1)*(nHour+1) || nMqttLines%5000==0 || nReceivedCount % 10000 == 0 )) ; then # reset whole array to empty once in a while = starting over
         cMqttState
