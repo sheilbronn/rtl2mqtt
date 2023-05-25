@@ -40,6 +40,7 @@ sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 4*x (see o
 sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php" # This is stable for years
 
 # xx=( one "*.log" ) && xx=( "${xx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;  exit 2
+cDate() { printf "%($*)T" ; } # avoids invocating a separate process to get the date
 
 declare -i nHopSecs
 declare -i nStatsSec=900
