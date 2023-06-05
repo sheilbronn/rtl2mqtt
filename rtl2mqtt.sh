@@ -50,7 +50,7 @@ declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
 declare -i nMinSecondsOther=5 # only at least every nn seconds
 declare -i nMinSecondsWeather=310 # only at least every n*60+10 seconds for unchanged environment data (temperature, humidity)
-declare -i nTimeStamp
+declare -i nTimeStamp=$(cDate %s)-$nLogMessagesPeriod # initiate with a large sensible assumption....
 declare -i nTimeStampPrev
 declare -i nTimeMinDelta=300
 declare -i nPidDelta
@@ -90,7 +90,6 @@ export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" # increases security
 
 # alias _nx="local - && set +x" # alias to stop local verbosity (within function, not allowed in bash)
-cDate() { printf "%($*)T" ; } # avoids invocating a separate process to get the date
 # cPid()  { set -x ; printf $BASHPID ; } # get a current PID, support debugging/counting/optimizing number of processes started in within the loop
 cPidDelta() { local - && set +x ; _n=$(printf %s $BASHPID) ; _n=$(( _n - ${_beginPid:=$_n} )) ; dbg PIDDELTA "$1: $_n ($_beginPid) "  ":$data:" ; _beginPid=$(( _beginPid + 1 )) ; nPidDelta=$_n ; }
 cPidDelta() { : ; }
@@ -271,7 +270,7 @@ cHassAnnounce() {
         learn)      _icon_str="plus"               ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="total_increasing" ;;
         channel)    _icon_str="format-list-numbered" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
         voltage)    _icon_str="FIXME" ; _unit_str=",*unit_of_measurement*:*V*" ; _state_class="measurement" ;;
-        battery_ok) _icon_str="" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ; _sensor=binary_sensor ;;
+        battery_ok) _icon_str="" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ; _sensor=measurement ;;
 		none)		_icon_str="" ;; 
         *)          cLogMore "Notice: special icon and/or unit not defined for '$6'"
     esac
@@ -500,10 +499,10 @@ cEqualJson() {   # cEqualJson "json1" "json2" "attributes to be ignored" '{"acti
 cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the result; side effect: set vDewptc and vDewptf
     local _temperature=$( cDiv10 $(cMultiplyTen $1) ) _rh=${2/.[0-9]*} - _rc=0 && set +x 
     
-    if [[ ${aDewpointsCalc[$_temperature,$_rh]} ]] ; then # check for precalculated, cached values
-        IFS=";" read -r vDewptc vDewptf _n _rest <<< "${aDewpointsCalc[$_temperature,$_rh]}"
-        (( bVerbose     )) && aDewpointsCalc[$_temperature,$_rh]="$vDewptc;$vDewptf;$(( _n+1 )); $_rest"
-        (( bMoreVerbose )) && dbg DEWPOINT "CACHED: aDewpointsCalc[$_temperature,$_rh]=${aDewpointsCalc[$_temperature,$_rh]} (${#aDewpointsCalc[@]})"
+    if [[ ${aDewpointsCalc[$_temperature;$_rh]} ]] ; then # check for precalculated, cached values
+        IFS=";" read -r vDewptc vDewptf _n _rest <<< "${aDewpointsCalc[$_temperature;$_rh]}"
+        (( bVerbose     )) && aDewpointsCalc[$_temperature;$_rh]="$vDewptc;$vDewptf;$(( _n+1 )); $_rest"
+        (( bMoreVerbose )) && dbg DEWPOINT "CACHED: aDewpointsCalc[$_temperature;$_rh]=${aDewpointsCalc[$_temperature;$_rh]} (${#aDewpointsCalc[@]})"
     else
         : "calculate dewpoint values for ($_temperature,$_rh)" # ignore barometric pressure for now
         _ad=0 ; lim=60  ; (( $_rh < $lim )) && _ad=$(( 10 * ($lim - $_rh) / 5  )) # reduce by 12 at 16% (50-16=34)
@@ -516,7 +515,7 @@ cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the res
 
                 # Magnus approximation:
                 alpha = ((a*temp) / (b+temp)) + log(hum/100)
-                TM = (b*alpha) / (a-alpha)          # ; system("echo alpha=" alpha " 1>&2")
+                TM = (b*alpha) / (a-alpha)
 
                 # August-Roche-Magnus approximation:
                 TARM = 243.04 * (log(RH/100) + ((17.625 * T) / (243.04 + T))) / (17.625 - log(RH/100) - ((17.625 * T) / (243.04 + T)))
@@ -548,7 +547,7 @@ cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the res
         read -r vDewptc vDewptf _rest <<< "$_dewpointcalc" 
         : "vDewptc=$vDewptc, vDewptf=$vDewptf"
         [[ $vDewptc ]] && {
-            aDewpointsCalc[$_temperature,$_rh]="$vDewptc;$vDewptf;1;$vDewSimple${bVerbose:+,$_dewpointcalc}" # cache the calculations (and maybe the rest for debugging)
+            aDewpointsCalc[$_temperature;$_rh]="$vDewptc;$vDewptf;1;$vDewSimple${bVerbose:+,$_dewpointcalc}" # cache the calculations (and maybe the rest for debugging)
         }
         (( bMoreVerbose )) && dbg DEWPOINT "calculations: $_dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
         if (( ${#aDewpointsCalc[@]} > 999 )) ; then # maybe out-of-memory DoS attack from radio environment
@@ -759,7 +758,7 @@ fi
 
 trap_exit() {   # stuff to do when exiting
     local - && set +x
-    cLogMore "$sName exit trapped at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will also log state..."
+    cLogMore "$sName exit trap at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will also log state..."
     (( bRemoveAnnouncements )) && cHassRemoveAnnounce
     _pmsg="$( ps -f "$_pidrtl" | tail -1 )"
     (( COPROC_PID )) && _cppid="$COPROC_PID" && kill "$COPROC_PID" && { # avoid race condition after killing coproc
@@ -878,6 +877,11 @@ trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purpo
     _msg="Signal VTALRM: logged last MQTT messages from ${#aPrevReadings[@]} sensors and ${#aDewpointsCalc[@]} calculations."
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
+    declare -i _delta=$(cDate %s)-nTimeStamp
+    if (( _delta > 10800 )) ; then # no radio event has been received for more than 3 hours, will restart...
+        cMqttStarred log "{*event*:*exiting*,*message*:*no radio event received for $_delta seconds, assuming fail*}"
+        exit 12 # possibly restart whole script, if systemd allows it
+    fi
   }
 trap 'trap_vtalrm' VTALRM
 
@@ -1200,7 +1204,7 @@ do
                 URL2="${aWuPos[$model_ident]}tempf=$temperatureF${vHumidity:+&${aWuPos[$model_ident]}humidity=$vHumidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}${vDewptf:+&${aWuPos[$model_ident]}dewptf=$vDewptf}"
                 retcurl="$( curl --silent "${aWuUrls[$model_ident]}&$URL2" 2>&1 )" && [[ $retcurl == success ]] && nUploads+=1
                 log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, device=$model_ident)"
-                log "WUNDERGROUND2" "url was ${aWuUrls[$model_ident]}&$URL2"
+                (( bVerbose )) && log "WUNDERGROUND2" "url was ${aWuUrls[$model_ident]}&$URL2"
             else
                 : "aWuUrls[$model_ident] is empty"
             fi
