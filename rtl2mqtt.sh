@@ -6,7 +6,7 @@
 # (inspired by work from "IT-Berater" and M. Verleun)
 
 set -o noglob     # file name globbing is neither needed nor wanted (for security reasons)
-set -o noclobber  # disable for security reasons
+set -o noclobber  # also disable for security reasons
 
 # When extending this script: keep in mind possible attacks from the RF enviroment, e.g. denial of service :
 # a) DoS: Many signals per second > should fail graciosly by not beeing able to process them all
@@ -44,7 +44,8 @@ cDate() { printf "%($*)T" ; } # avoids invocating a separate process to get the 
 
 declare -i nHopSecs
 declare -i nStatsSec=900
-declare -r sSuggSampleRate=1000k # default fpr rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
+declare    sSuggSampleRate=1024k # default fpr rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
+declare    sSuggSampleModel=minmax # -Y auto|classic|minmax
 declare -i nLogMinutesPeriod=60 # once per hour
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
@@ -619,11 +620,11 @@ do
     w)  sRoundTo="$OPTARG" # round temperature to this value and humidity to 4-times this value (_hMult)
         ;;
     F)  if   [[ $OPTARG == "868" ]] ; then
-            rtl433_opts+=( -f 868.3M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y minmax ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
+            rtl433_opts+=( -f 868.3M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y $sSuggSampleModel ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
         elif [[ $OPTARG == "915" ]] ; then
-            rtl433_opts+=( -f 915M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y minmax ) # minmax
+            rtl433_opts+=( -f 915M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y $sSuggSampleModel ) # minmax
         elif [[ $OPTARG == "27" ]] ; then
-            rtl433_opts+=( -f 27.161M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y minmax )  # minmax
+            rtl433_opts+=( -f 27.161M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y $sSuggSampleModel )  # minmax
         elif [[ $OPTARG == "150" ]] ; then
             rtl433_opts+=( -f 150.0M ) 
         elif [[ $OPTARG == "433" ]] ; then
@@ -646,6 +647,7 @@ do
         [[ ${OPTARG:0:1} != "-" ]] && dbg "WARNING" "Are you sure you didn't want to exclude protocol $OPTARG?!"
         ;;
     Y)  rtl433_opts+=( -Y "$OPTARG" )
+        $sSuggSampleModel="$OPTARG"
         ;;
     i)  bAddIdToTopic=1 
         ;;
@@ -1037,7 +1039,7 @@ do
             _k="$( cHasJsonKey "unknown.*" )" && [[ $(cExtractJsonVal "$_k") == 0 ]] && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
             bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize/ignore non-plausible readings
         fi
-        cHasJsonKey BAND || cAddJsonKeyVal BAND "$sBand" # add BAND here to ensure it goes into the logfile for all data lines
+        (( bVerbose )) && ! cHasJsonKey BAND && cAddJsonKeyVal BAND "$sBand"  # add BAND here to ensure it also goes into the logfile for all data lines
         (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are sent retained
         [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dModel/${sBand}_$model_ident"
     fi
