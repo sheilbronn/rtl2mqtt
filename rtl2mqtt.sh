@@ -326,21 +326,28 @@ cAddJsonKeyVal() {  # cAddJsonKeyVal "key" "val" "jsondata" (use $data if $3 is 
     local - && set +x
     local _bkey=""
     local _val=""
-    [[ $1 == -b ]] && { _bkey="$2" ; shift ; shift ; } # FIXME: not yet implemented
+    [[ $1 == -b ]] && { _bkey="$2" ; shift 2 ; }
     _val="$2" ; _d="${3:-$data}"
     # [ -z "$_val" ] && echo "$_d" # don't append the pair if val is empty !
-    [[ $_val =~ ^[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] || _val="\"$_val\"" # surround _val by double quotes if not-a-number
-    if [[ ! $_bkey ]] || ! [[ $_d =~ (.*[{,])([[:space:]]*\"$_bkey\"[[:space:]]*:.*)$ ]] ; then    #  cHasJsonKey $_bkey
-        _val="${_d/%\}/,\"$1\":$_val\}}"
+    [[ $_val =~ ^[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] && _valn="$_val" || _valn="\"$_val\"" # surround numeric _val by double quotes if not-a-number
+    # if [[ $_d =~ (.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*)(\"[^\"]\"|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)$ ]] ; then
+    if [[ $_d =~ (.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*)(\"[^\"]*\"|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)(.*)$ ]] ; then
+        : replace val # FIXME: replacing a val not yet fully implemented amd tested
+        _valn=:"${BASH_REMATCH[1]}$_valn${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
+    elif [[ ! $_bkey ]] || ! [[ $_d =~ (.*[{,])([[:space:]]*\"$_bkey\"[[:space:]]*:.*)$ ]] ; then    #  cHasJsonKey $_bkey
+        : insert at end
+        _valn="${_d/%\}/,\"$1\":$_valn\}}"
     else
-        : found key
-        _val="${BASH_REMATCH[1]}\"$1\":$_val,${BASH_REMATCH[2]}" # assuming the JSON wasn't empty
+        : insert before key
+        _valn="${BASH_REMATCH[1]}\"$1\":$_valn,${BASH_REMATCH[2]}" # FIXME: assuming the JSON wasn't empty
     fi
-    [[ $3 ]] && echo "$_val" || data="$_val"
+    set +x
+    [[ $3 ]] && echo "$_valn" || data="$_valn"
 }
 # set -x ; data='{"one":1}' ; cAddJsonKeyVal "x" "2x" ; echo $data ; cAddJsonKeyVal "n" "2.3" "$data" ; cAddJsonKeyVal "m" "-" "$data" ; exit 2 # returns: '{one:1,"x":"2"}'
 # set -x ; cAddJsonKeyVal "donot"  ""  '{"one":1}'  ; cAddJsonKeyVal -b one "donot"  ""  '{"zero":0,"one":1}'  ;  exit 2 # returns: '{"one":1,"donot":""}' 
 # set -x ; cAddJsonKeyVal "floati" "5.5" '{"one":1}' ;    exit 2 # returns: '{"one":1,"floati":5.5}'
+# set -x ; cAddJsonKeyVal "one" "5.5" '{"one":1,"two":"xx"}' ; cAddJsonKeyVal "two" "nn" '{"one":1,"two":"xx"}' ;    exit 2 # returns: '{"one":1,"floati":5.5}'
 
 cHasJsonKey() { # simplified check to check whether the JSON ${2:-$data} has key $1 (e.g. "temperat.*e")  (. is for [a-zA-Z0-9])
     local - && set +x
@@ -508,7 +515,7 @@ cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the res
         : "calculate dewpoint values for ($_temperature,$_rh)" # ignore barometric pressure for now
         _ad=0 ; lim=60  ; (( $_rh < $lim )) && _ad=$(( 10 * ($lim - $_rh) / 5  )) # reduce by 12 at 16% (50-16=34)
         vDewSimple=$( cDiv10 $(( $(cMultiplyTen $_temperature) - 200 + 10 * _rh / 5 - _ad )) )   #  temp - ((100-hum)/5), when humid>50 and 0°<temp<30°C
-        _dewpointcalc="$( gawk -v temp="$_temperature" -v hum="$_rh" '
+        _dewpointcalc="$( gawk -v temp="$_temperature" -v hum="$_rh" -v vDewSimple="$vDewSimple" '
             BEGIN {  a=17.27 ; b=237.7 ;
                 # Aragonite / 2005 article by Mark G. Lawrence in the Bulletin of the American Meteorological Society
                 # https://journals.ametsoc.org/view/journals/bams/86/2/bams-86-2-225.xml
@@ -541,14 +548,14 @@ cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the res
                 gamma = log(ea/6.112)
                 TA = (243.5 * gamma) / (17.67 - gamma)
 
-                printf( "%.1f %.1f %.2f %.2f %.2f %.2f %.2f %.2f",  TA, (TA*1.8)+32, TMT, TA, TAB, TM, TAR, TAE)
+                printf( "%.1f %.1f %.1f %.2f %.2f %.2f %.2f %.2f %.2f",  TA, (TA*1.8)+32, TA-vDewSimple, TMT, TA, TAB, TM, TAR, TAE)
                 if (hum<0 || TA!=TA || TM!=TM || TMT!=TMT ) exit(1) # best practice to check for a NaN value
             }' ; )"
         _rc=$?
-        read -r vDewptc vDewptf _rest <<< "$_dewpointcalc" 
+        read -r vDewptc vDewptf vDeltaSimple _rest <<< "$_dewpointcalc" 
         : "vDewptc=$vDewptc, vDewptf=$vDewptf"
         [[ $vDewptc ]] && {
-            aDewpointsCalc[$_temperature;$_rh]="$vDewptc;$vDewptf;1;$vDewSimple${bVerbose:+,$_dewpointcalc}" # cache the calculations (and maybe the rest for debugging)
+            aDewpointsCalc[$_temperature;$_rh]="$vDewptc;$vDewptf;1;$vDewSimple;delta=$vDeltaSimple;${bVerbose:+,$_dewpointcalc}" # cache the calculations (and maybe the rest for debugging)
         }
         (( bMoreVerbose )) && dbg DEWPOINT "calculations: $_dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
         if (( ${#aDewpointsCalc[@]} > 999 )) ; then # maybe out-of-memory DoS attack from radio environment
@@ -613,7 +620,7 @@ do
         ;;
     l)  dLog="$OPTARG" 
         ;;
-    f)  fReplayfile="$(readlink -f "$OPTARG")" # file to replay (e.g. for debugging), instead of rtl_433 output
+    f)  fReplayfile="$( [[ $OPTARG = "-" || $OPTARG = /dev/stdin ]] && echo /dev/stdin || readlink -f "$OPTARG" )" # file to replay (e.g. for debugging), instead of rtl_433 output
         nMinSecondsOther=0
         nMinOccurences=1
         ;;
@@ -667,7 +674,7 @@ do
         [[ $_indoor = indoor ]] && aWuPos[$_sensor]="indoor" # add this prefix to temperature key id
         _key=""
         dbg "Will upload data for device $_sensor as station ID $_id to Weather Underground..." 
-        echo "Upload data for $_sensor as station $_id ..."
+        ((bVerbose)) && echo "Upload data for $_sensor as station $_id ..."
         ;;
     2)  bTryAlternate=1 # ease coding experiments (not to be used in production)
         ;;
@@ -709,7 +716,7 @@ fi
 command -v iwgetid > /dev/null || { _msg="$sName: iwgetid not found" ; log "$_msg" ; echo "$_msg" 1>&2 ; alias iwgetid : ; }
 
 if [[ $fReplayfile ]]; then
-    sBand=999
+    sBand="${fReplayfile##*/}" ; sBand="${sBand%%_*}"
 else
     _output="$( $rtl433_command "${rtl433_opts[@]}" -T 1 2>&1 )"
     # echo "$_output" ; exit
@@ -762,14 +769,14 @@ trap_exit() {   # stuff to do when exiting
     local - && set +x
     cLogMore "$sName exit trap at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will also log state..."
     (( bRemoveAnnouncements )) && cHassRemoveAnnounce
-    _pmsg="$( ps -f "$_pidrtl" | tail -1 )"
+    [[ $_pidrtl ]] && _pmsg="$( ps -f "$_pidrtl" | tail -1 )"
     (( COPROC_PID )) && _cppid="$COPROC_PID" && kill "$COPROC_PID" && { # avoid race condition after killing coproc
         wait "$_cppid" # Cleanup, may  fail on purpose
         dbg "Killed coproc PID $_cppid and awaited rc=$?"    
     }
     nReadings=${#aPrevReadings[@]}
     cMqttState "*note*:*trap exit*,*collected_sensors*:*${!aPrevReadings[*]}*"
-    cMqttStarred log "{*event*:*$( [[ $fReplayfile ]] && echo info || echo warning )*,*host*:*$sHostname*,*message*:*Exiting${fReplayfile:+ after reading $fReplayfile}...*}${_pidrtl:+ procinfo=$_pmsg}"
+    cMqttStarred log "{*event*:*$( [[ $fReplayfile ]] && echo info || echo warning )*, *host*:*$sHostname*, *message*:*Exiting${fReplayfile:+ after reading from $fReplayfile}...*}${_pidrtl:+ procinfo=$_pmsg}"
     # logger -p daemon.err -t "$sID" -- "Exiting trap_exit."
     # rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
@@ -777,7 +784,9 @@ trap 'trap_exit' EXIT # previously also: INT QUIT TERM
 trap '' INT USR1 USR2 VTALRM
 
 if [[ $fReplayfile ]] ; then
-    coproc COPROC ( shopt -s extglob ; export IFS=' ' ; while read -r line ; do 
+    coproc COPROC ( 
+        shopt -s extglob ; export IFS=' '
+        cat "$fReplayfile" | while read -r line ; do 
             : "line $line" #  e.g.   103256 rtl/433/Ambientweather-F007TH/1 { "protocol":20,"id":44,"channel":1,"freq":433.903,"temperature":19,"humidity":62,"BAND":433,"HOUR":16,"NOTE":"changed"}
             : "FRONT ${line%%{+(?)}" 1>&2
             data="${line##*([!{])}" # data start with first curly bracket...
@@ -785,12 +794,17 @@ if [[ $fReplayfile ]] ; then
             if ! cHasJsonKey model && ! cHasJsonKey since ; then # ... then try to determine "model" either from an MQTT topic or from the file name, but not from JSON with key "since"
                 : frontpart="${aFront[-1]}"
                 IFS='/' read -r -a aTopic <<< "${aFront[-1]}" # MQTT topic might be preceded by timestamps that are to be removed
-                [[ ${aTopic[0]} == rtl && ${#aTopic[@]} -gt 2 ]] && sModel="${aTopic[2]}" # extract model from topic if non given in message
+                [[ ${aTopic[0]} == rtl && ${#aTopic[@]} -gt 2 ]] && {
+                    sBand="${aTopic[1]}" # extract band from topic if non given in message
+                    sModel="${aTopic[2]}" # extract model from topic if non given in message
+                }
                 if ! [[ $sModel ]] ; then # if still not found ...
-                    IFS='_' read -r -a aTopic <<< "$fReplayfile" # .. try to determine from the filename, e.g. "433_IBIS-Beacon_5577"
+                    IFS="_" read -r -a aTopic <<< "${fReplayfile##*/}" # .. try to determine from the filename, e.g. "433_IBIS-Beacon_5577"
+                    sBand="${aTopic[0]}"
                     sModel="${aTopic[1]}"
                 fi
-                [[ $sModel ]] && cAddJsonKeyVal model "$sModel" 
+                cAddJsonKeyVal model "${sModel:-UNKNOWN}"
+                cAddJsonKeyVal BAND "${sBand:-null}" 
             fi
             echo "$data" ; sleep 1
         done < "$fReplayfile" ; sleep 5
@@ -807,7 +821,7 @@ else
     sleep 1 # wait for rtl_433 to start up...
     _pidrtl="$( pidof "$rtl433_command" )" # hack to find the process of the rtl_433 command
     # _pgrp="$(ps -o pgrp= ${COPROC_PID})"
-    [[ $_pidrtl ]] &&  _ppid="$( ps -o ppid= "$_pidrtl" )" &&  _pgrp="$( ps -o pgrp= "$_pidrtl" )"
+    [[ $_pidrtl ]] && _ppid="$( ps -o ppid= "$_pidrtl" )" &&  _pgrp="$( ps -o pgrp= "$_pidrtl" )"
     # renice -n 15 "${COPROC_PID}" > /dev/null
     # renice -n 17 -g "$_pgrp" # > /dev/null
     _msg="COPROC_PID=$COPROC_PID, pgrp=$_pgrp, ppid=$_ppid, pid=$_pidrtl"
@@ -841,7 +855,7 @@ trap_int() {    # log all collected sensors to MQTT
     cMqttStarred log "{*event*:*debug*,*message*:*Signal INT, will emit state message* }"
     cMqttState "*note*:*trap INT*,*collected_sensors*:*${!aPrevReadings[*]}* }" # FIXME: does it still work
     nLastStatusSeconds=$(cDate %s) 
-    trap 'trap_int' INT 
+    [[ $fReplayfile ]] && exit 0 || trap 'trap_int' INT 
  }
 trap 'trap_int' INT 
 
@@ -1138,8 +1152,8 @@ do
                 [[ $protocol    ]] && _name="${aNames["$protocol"]:-$model}" || _name="$model" # fallback
                 # if the device has anyone of the above attributes, announce all the attributes it has ...:
                 # see also https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
-                [[ $vTemperature ]]    && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
-                [[ $vHumidity    ]]    && {
+                [[ $vTemperature ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
+                [[ $vHumidity    ]]  && {
                     cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
                 }
                 if [[ $vTemperature  && $vHumidity && $bRewrite ]] || cHasJsonKey "dewpoint" ; then # announce (possibly calculated) dewpoint, too
@@ -1180,7 +1194,7 @@ do
                     log "$_msg" 
                     cMqttStarred log "{*event*:*exiting*,*message*:*$_msg*}"
                     dbg ENDING "$_msg"
-                    exit 11 # possibly restart whole script, if systemd allows it
+                    exit 11 # possibly restarting the whole script, if systemd configuration allows it (=default)
                 fi
             else
                 cMqttStarred log "{*event*:*debug*,*message*:*not announced for MQTT discovery (not a sensible sensor): $model_ident*}"
@@ -1214,6 +1228,8 @@ do
             if (( bRewrite )) ; then # optimize (rewrite) JSON content
                 # [[ $rssi ]] && cAddJsonKeyVal rssi "$rssi" # put rssi back in
                 # FIXME: [[ $_IsDiff || $bVerbose ]] && cAddJsonKeyVal COMPARE "s=$_nSecDelta,$_IsDiff($(longest_common_prefix -s "$prevval" "$data"))"
+                [[ $vDewptc ]] && cAddJsonKeyVal -b BAND dewpoint "$vDewptc" # add dewpoint before BAND key
+                [[ $_IsDiff ]] && (( bVerbose || ! bVerbose )) && cAddJsonKeyVal NOTE1 "1ST($_nSecDelta/$nMinSeconds)"                 
                 if [[ $_IsDiff2 ]] ; then
                     # cAddJsonKeyVal NOTE2 "$( echo "!=2ND (c=${aCounts[$model_ident]},s=$_nSecDelta/$nMinSeconds, " ; echo "....data=$data" ;  echo ".prevval=$prevval" ;  echo "prevvals=$prevvals" ;  )" &&
                     #     dbg NOTE2 "$( echo "!=2ND (c=${aCounts[$model_ident]},s=$_nSecDelta/$nMinSeconds, " ; echo "....data=$data" ;  echo ".prevval=$prevval" ;  echo "prevvals=$prevvals" ; echo "" ; )"                
@@ -1221,9 +1237,7 @@ do
                 else
                     dbg 2ND "are same."
                 fi
-                [[ $_IsDiff ]] && (( bVerbose || ! bVerbose )) && cAddJsonKeyVal NOTE1 "1ST($_nSecDelta/$nMinSeconds)"                 
                 aSecondPrevReadings[$model_ident]="$prevval"
-                [[ $vDewptc ]] && cAddJsonKeyVal -b BAND dewpoint "$vDewptc" # add dewpoint before BAND key
                 (( bVerbose )) && [[ $sDelta ]]  && cAddJsonKeyVal SDELTA "$sDelta"
             fi
 
