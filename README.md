@@ -32,7 +32,7 @@ So the main areas of extended features are:
 * Suppression of repeated (duplicate) messages. This is a configurable, very helpful feature! -- Options: `-r` `-r` (multiple)
 * Support for Home Assistant MQTT auto-discovery announcements for new sensors (it works well together with the sometimes picky [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant)) -- Options: `-h` `-p` `-t`
 * Temperature output is transformed to SI units (=Celsius) and rounded to 0.5°C (configurable) for less flicker. -- Option: `-w`
-* NEW: Dewpoint calculation if sensor doesn't provide it. -- Option:  `-L`
+* Dewpoint calculation if sensor doesn't provide it itself. -- Option:  `-L`
 * Temperature and humidity of the last 24 hours can be logged to the log directory.
 * Streamlined/removed mostly unnecessary content in the original JSON messages, e.g. no time stamp or checksum code.
 * Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time (few messages) frame are suppressed. -- Options: `-c` `-T`

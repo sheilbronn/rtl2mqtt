@@ -14,7 +14,7 @@ set -o noclobber  # also disable for security reasons
 #    Simple fix: After 9999 HASS announcements recall all HASS announcements (FIXME), reset all arrays (FIXME'd for all arrays)
 # c) exploits for possible rtl_433 decoding errors, transmit out of band values: test all read values for boundary conditions and syntax (e.g. number)
 
-# exit codes: 1,2=installation/configuration errors; 3=.. ; 99=DoS attack from radio environment or rtl_433 bug
+# exit codes: 1,2=installation/configuration errors; 3=.. ; 127=install errors; ; 99=DoS attack from radio environment or rtl_433 bug
 
 sName="${0##*/}" && sName="${sName%.sh}"
 sMID="$( basename "${sName// }" .sh )"
@@ -30,8 +30,8 @@ sStartDate="$(date "+%Y-%m-%dT%H:%M:%S")" # format needed for OpenHab DateTime M
 sHostname="$(hostname)"
 basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
-rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 1 ; }
-rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 1
+rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 126 ; }
+rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 126
 declare -a rtl433_opts=( -M protocol -M noise:300 -M level -C si )  # generic options in all settings, e.g. -M level 
 # rtl433_opts+=( $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
@@ -504,7 +504,7 @@ cEqualJson() {   # cEqualJson "json1" "json2" "attributes to be ignored" '{"acti
 # set -x ; data1='{ "id":35, "channel":3, "battery_ok":1, "freq":433.918,"temperature":22,"humidity":60,"dewpoint":13.9,"BAND":433}' ; data2='{ "id":35, "channel":3, "battery_ok":1, "freq":433.918,"temperature":22,"humidity":60,"BAND":433}' ; cEqualJson "$data1" "$data2" && echo AAA; cEqualJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data2" "freq" && echo CCC; exit
 # set -x ; data1='{ "temperature":22,"humidity":60,"BAND":433}' ; data2='{ "temperature":22,"humidity":60,"BAND":433}' ; cEqualJson "$data1" "$data2" && echo AAA; cEqualJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data2" "freq" && echo CCC; exit
 
-cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the result; side effect: set vDewptc and vDewptf
+cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the result; side effect: set vDewptc, vDewptf, vDewSimple
     local _temperature=$( cDiv10 $(cMultiplyTen $1) ) _rh=${2/.[0-9]*} - _rc=0 && set +x 
     
     if [[ ${aDewpointsCalc[$_temperature;$_rh]} ]] ; then # check for precalculated, cached values
@@ -512,8 +512,8 @@ cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the res
         (( bVerbose     )) && aDewpointsCalc[$_temperature;$_rh]="$vDewptc;$vDewptf;$(( _n+1 )); $_rest"
         (( bMoreVerbose )) && dbg DEWPOINT "CACHED: aDewpointsCalc[$_temperature;$_rh]=${aDewpointsCalc[$_temperature;$_rh]} (${#aDewpointsCalc[@]})"
     else
-        : "calculate dewpoint values for ($_temperature,$_rh)" # ignore barometric pressure for now
-        _ad=0 ; lim=60  ; (( $_rh < $lim )) && _ad=$(( 10 * ($lim - $_rh) / 5  )) # reduce by 12 at 16% (50-16=34)
+        : "calculate dewpoint values for ($_temperature,$_rh)" # ignoring any barometric pressure for now
+        _ad=0 ; limh=${limh:-52} ; div=${div:-5} ; (( $_rh < $limh )) && _ad=$(( 10 * ($limh - $_rh) / $div  )) # reduce by 12 at 16% (50-16=34)
         vDewSimple=$( cDiv10 $(( $(cMultiplyTen $_temperature) - 200 + 10 * _rh / 5 - _ad )) )   #  temp - ((100-hum)/5), when humid>50 and 0°<temp<30°C
         _dewpointcalc="$( gawk -v temp="$_temperature" -v hum="$_rh" -v vDewSimple="$vDewSimple" '
             BEGIN {  a=17.27 ; b=237.7 ;
@@ -571,6 +571,29 @@ cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the res
     # set -x ; bVerbose=1 ; cDewpoints 11.2 100 ; echo "rc is $? ($vDewSimple,$_dewpointcalc)" ; cDewpoints 18.4 50 ; echo "rc is $? ($vDewSimple,$_dewpointcalc)" ; cDewpoints 18.4 20 ; echo "rc is $? ($_dewpointcalc)" ; cDewpoints 11 -2 ; echo "rc is $? ($_dewpointcalc)"; exit 1
     # set -x ; bVerbose=1 ; cDewpoints 25 30 ; echo "$vDewSimple , $_dewpointcalc)" ; cDewpoints 20 40 ; echo "$vDewSimple , $_dewpointcalc)" ; cDewpoints 14 45 ; echo "$vDewSimple , $_dewpointcalc)" ; exit 1
     # set -x ; bVerbose=1 ; for h in $(seq 70 -5 20) ; do cDewpoints 30 $h ; echo "$vDewSimple , $_dewpointcalc ========" ; done ; exit 1
+
+cDewpointTable() {
+    declare -An aDewpointsDeltas
+    # 52 5 are best for -10..45°C and 10..70% humidity (emphasizing: 20-45° and 40-70%), when compared to the Antoine formula
+    for limh in {51..54..1} ; do # {51..54..1}
+        for div in  {3..6..1} ; do # {3..6..1} 
+            unset aDewpointsCalc && declare -A aDewpointsCalc
+            for temp in {-10..45..4} {20..45..6} ; do # {-10..45..4} {20..45..6}
+                for hum in {20..70..5} {40..70..10} ; do # {20..70..5} {40..70..10}
+                    cDewpoints $temp $hum > /dev/null
+                    nDeltaAbs=$(cMultiplyTen $vDeltaSimple) ; nDeltaAbs=${nDeltaAbs#-}
+                    sum=$(( sum + nDeltaAbs * nDeltaAbs))
+                    # printf "%3s %3s %5s %5s %4s %5s\n" $temp $hum $vDewptc $vDewSimple $vDeltaSimple $sum
+                done
+            done
+            echo "$limh $div $sum"
+            aDewpointsDeltas[$limh,$div]="$sum"
+            sum=0
+            # echo ====================================================================================
+        done
+    done
+ }
+ # cDewpointTable ; exit 2
 
 cRound() {
     local - _val ; set +x # $1 has to be 10-times larger! 
@@ -667,7 +690,7 @@ do
         ;;
     s)  sSuggSampleRate="$( tr -c -d '[:alnum:]' <<< "$OPTARG" )"
         ;;
-    W)  command -v curl > /dev/null || { echo "$sName: curl not installed, but needed for uploading Wunderground data ..." 1>&2 ; exit 1 ; }
+    W)  command -v curl > /dev/null || { echo "$sName: curl not installed, but needed for uploading Wunderground data ..." 1>&2 ; exit 126 ; }
         IFS=',' read -r _id _key _sensor _indoor <<< "$OPTARG"  # Syntax e.g.: -W <Station-ID>,<-Station-KEY>,Bresser-3CH_1m,{indoor|outdoor}
         [[ $_indoor ]] || { echo "$sName: -W $OPTARG doesn't have three comma-separated values..." 1>&2 ; exit 2 ; }
         aWuUrls[$_sensor]="$sWuBaseUrl?ID=$_id&PASSWORD=$_key&action=updateraw&dateutc=now"
@@ -720,8 +743,8 @@ if [[ $fReplayfile ]]; then
 else
     _output="$( $rtl433_command "${rtl433_opts[@]}" -T 1 2>&1 )"
     # echo "$_output" ; exit
-    sdr_tuner="$(  awk -- '/^Found /   { print gensub("Found ", "",1, gensub(" tuner$", "",1,$0)) ; exit }' <<< "$_output" )" # matches "Found Fitipower FC0013 tuner"
-    sdr_freq="$(   awk -- '/^Tuned to/ { print gensub("MHz.", "",1,$3)                            ; exit }' <<< "$_output" )" # matches "Tuned to 433.900MHz."
+    sdr_tuner="$(  awk -- '/^Found /   { print gensub("Found ", "",1, gensub(" tuner$", "",1,$0)) ; exit}' <<< "$_output" )" # matches "Found Fitipower FC0013 tuner"
+    sdr_freq="$(   awk -- '/^Tuned to/ { print gensub("MHz.", "",1,$3)                            ; exit}' <<< "$_output" )" # matches "Tuned to 433.900MHz."
     conf_files="$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_output" | xargs ls -1 2>/dev/null )" # try to find an existing config file
     sBand="$( cMapFreqToBand "$(cExtractJsonVal sdr_freq)" )"
 fi
@@ -766,7 +789,8 @@ fi
 (( bRemoveAnnouncements )) && cHassRemoveAnnounce
 
 trap_exit() {   # stuff to do when exiting
-    local - && set +x
+    local exit_code=$? # must be first command in exit trap
+    local - && set +x;
     cLogMore "$sName exit trap at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will also log state..."
     (( bRemoveAnnouncements )) && cHassRemoveAnnounce
     [[ $_pidrtl ]] && _pmsg="$( ps -f "$_pidrtl" | tail -1 )"
@@ -775,12 +799,13 @@ trap_exit() {   # stuff to do when exiting
         dbg "Killed coproc PID $_cppid and awaited rc=$?"    
     }
     nReadings=${#aPrevReadings[@]}
-    cMqttState "*note*:*trap exit*,*collected_sensors*:*${!aPrevReadings[*]}*"
-    cMqttStarred log "{*event*:*$( [[ $fReplayfile ]] && echo info || echo warning )*, *host*:*$sHostname*, *message*:*Exiting${fReplayfile:+ after reading from $fReplayfile}...*}${_pidrtl:+ procinfo=$_pmsg}"
+    cMqttState "*note*:*trap exit*,*exit_code*:$exit_code, *collected_sensors*:*${!aPrevReadings[*]}*"
+    cMqttStarred log "{*event*:*$( [[ $fReplayfile ]] && echo info || echo warning )*, *host*:*$sHostname*, *exit_code*:$exit_code, *message*:*Exiting${fReplayfile:+ after reading from $fReplayfile}...*}${_pidrtl:+ procinfo=$_pmsg}"
     # logger -p daemon.err -t "$sID" -- "Exiting trap_exit."
     # rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
-trap 'trap_exit' EXIT # previously also: INT QUIT TERM 
+trap 'trap_exit' EXIT 
+
 trap '' INT USR1 USR2 VTALRM
 
 if [[ $fReplayfile ]] ; then
@@ -862,7 +887,7 @@ trap 'trap_int' INT
 trap_usr1() {    # toggle verbosity 
     # ORIG: (( bVerbose )) && bVerbose="" || bVerbose=1 # switch bVerbose
     bVerbose=$( ((bVerbose)) || echo 1 ) # toggle verbosity 
-    _msg="Signal USR1: toggled verbosity to ${bVerbose:-no}, nHopSecs=$nHopSecs, sBand=$sBand"
+    _msg="Signal USR1: toggled verbosity to ${bVerbose:-none}, nHopSecs=$nHopSecs, sBand=$sBand"
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*message*:*$_msg*}"
   }
@@ -1228,7 +1253,10 @@ do
             if (( bRewrite )) ; then # optimize (rewrite) JSON content
                 # [[ $rssi ]] && cAddJsonKeyVal rssi "$rssi" # put rssi back in
                 # FIXME: [[ $_IsDiff || $bVerbose ]] && cAddJsonKeyVal COMPARE "s=$_nSecDelta,$_IsDiff($(longest_common_prefix -s "$prevval" "$data"))"
-                [[ $vDewptc ]] && cAddJsonKeyVal -b BAND dewpoint "$vDewptc" # add dewpoint before BAND key
+                [[ $vDewptc ]] && {
+                    cAddJsonKeyVal -b BAND dewpoint "$vDewptc" # add dewpoint before BAND key
+                    (( bVerbose )) && [[ $vDeltaSimple ]]  && cAddJsonKeyVal DELTADEW "$vDeltaSimple"
+                }
                 [[ $_IsDiff ]] && (( bVerbose || ! bVerbose )) && cAddJsonKeyVal NOTE1 "1ST($_nSecDelta/$nMinSeconds)"                 
                 if [[ $_IsDiff2 ]] ; then
                     # cAddJsonKeyVal NOTE2 "$( echo "!=2ND (c=${aCounts[$model_ident]},s=$_nSecDelta/$nMinSeconds, " ; echo "....data=$data" ;  echo ".prevval=$prevval" ;  echo "prevvals=$prevvals" ;  )" &&
@@ -1294,5 +1322,7 @@ _msg="Read rc=$_rc from $(basename "${fReplayfile:-$rtl433_command}") ; $nLoops 
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*host*:*$sHostname*,*message*:*$_msg*}"
 dbg ENDING "$_msg"
-[[ $fReplayfile ]] || { sleep $s ; exit 3 ; } # return 3 only for premature end of rtl_433 command (=not after replay)
+[[ $fReplayfile ]] && exit 0 # replaying finished
+sleep $s
+exit 14 # return 14 only for premature end of rtl_433 command 
 # now the exit trap function will be processed...
