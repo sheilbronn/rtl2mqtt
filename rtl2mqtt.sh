@@ -7,9 +7,11 @@
 
 set -o noglob     # file name globbing is neither needed nor wanted (for security reasons)
 set -o noclobber  # also disable for security reasons
+# shopt -s lastpipe  # Enable lastpipe
+shopt -s assoc_expand_once # might lessen injection risks in bash 5.2+, FIXME: to be verified on bash 5.2
 
-# When extending this script: keep in mind possible attacks from the RF enviroment, e.g. denial of service :
-# a) DoS: Many signals per second > should fail graciosly by not beeing able to process them all
+# When extending this script: keep in mind possible attacks from the RF enviroment, e.g. a denial of service :
+# a) DoS: Many signals per second > should fail graciously by not beeing able to process them all
 # b) DoS: Many (fake) sensors introduced (protocols * possible IDs) > arrays will become huge || inboxes for HASS announcements overflows
 #    Simple fix: After 9999 HASS announcements recall all HASS announcements (FIXME), reset all arrays (FIXME'd for all arrays)
 # c) exploits for possible rtl_433 decoding errors, transmit out of band values: test all read values for boundary conditions and syntax (e.g. number)
@@ -20,13 +22,15 @@ sName="${0##*/}" && sName="${sName%.sh}"
 sMID="$( basename "${sName// }" .sh )"
 sID="$sMID"
 rtl2mqtt_optfile="$( [ -r "${XDG_CONFIG_HOME:=$HOME/.config}/$sName" ] && echo "$XDG_CONFIG_HOME/$sName" || echo "$HOME/.$sName" )" # ~/.config/rtl2mqtt or ~/.rtl2mqtt
+cDate() { local - && set +x ; a="$1" ; shift ; printf "%($a)T" "$@"; } # avoid separate process to get the date
 
 commandArgs="$*"
 dLog="/var/log/$sMID" # /var/log/rtl2mqtt is default, but will be changed to /tmp if not useable
 sManufacturer="RTL"
 sHassPrefix="homeassistant"
-sRtlPrefix="rtl"
-sStartDate="$(date "+%Y-%m-%dT%H:%M:%S")" # format needed for OpenHab DateTime MQTT items - for others OK, too? - as opposed to ISO8601
+sRtlPrefix="rtl"                        # base topic
+sDateFormat="%Y-%m-%d %H:%M:%S"
+sStartDate="$(cDate "$sDateFormat")" # format needed for OpenHab Date_r1 MQTT items - for others OK, too? - as opposed to ISO8601
 sHostname="$(hostname)"
 basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
@@ -39,8 +43,7 @@ sSensorMatch=".*" # any device name to be considered will have to match this reg
 sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 4*x (see option -w below)
 sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php" # This is stable for years
 
-# xx=( one "*.log" ) && xx=( "${xx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;  exit 2
-cDate() { printf "%($*)T" ; } # avoids invocating a separate process to get the date
+# xx=( one "*.log" ) && xx=( "${printf "%($*)T"nlaxx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;  exit 2
 
 declare -i nHopSecs
 declare -i nStatsSec=900
@@ -76,19 +79,49 @@ declare -i _n # helper integer var
 declare -A aWuUrls
 declare -A aWuPos
 declare -A aDewpointsCalc
-declare -A aPrevReadings
-declare -A aSecondPrevReadings
+declare -a hMqtt
+
+declare -A aPrevReadings # 11 arrays
+declare -A aSecondPrevReadings 
 declare -Ai aCounts
-declare -Ai aEarlierTemperVals10
-declare -Ai aEarlierTemperTime
-declare -Ai aEarlierHumidVals
+declare -Ai aAnnounced
+declare -A aTemperReadingsTimes
+declare -A aTemperReadings
+declare -A aEarlierTemperVals10 
+declare -Ai aEarlierTemperTime 
+declare -Ai aEarlierHumidVals 
 declare -Ai aEarlierHumidTime
 declare -Ai aLastPub
-declare -A aAnnounced
-declare -a hMqtt
+
+cEmptyArrays() { # reset the 11 arrays from above
+    aPrevReadings=()
+    aSecondPrevReadings=()
+    aCounts=()
+    aAnnounced=()
+    aTemperReadingsTimes=()
+    aTemperReadings=()
+    aEarlierTemperVals10=()
+    aEarlierTemperTime=()
+    aEarlierHumidVals=()
+    aEarlierHumidTime=()
+    aLastPub=()
+ }
 
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" # increases security
+
+cJoin() { # join all arguments with a space, but remove any double spaces and any newlines
+    local - && set +x
+    local _r _val
+    for _val in "$@" ; do
+        _r="${_r//  / }${_r:+ }${_val//
+/ }"
+    done
+    echo "${_r//  / }"
+  }
+    
+  # set -x ; cJoin "1 
+  # 3" " a" ; exit 1
 
 # alias _nx="local - && set +x" # alias to stop local verbosity (within function, not allowed in bash)
 # cPid()  { set -x ; printf $BASHPID ; } # get a current PID, support debugging/counting/optimizing number of processes started in within the loop
@@ -108,7 +141,7 @@ log() {
     if [[ $sDoLog == dir ]] ; then
         cRotateLogdirSometimes "$dLog"
         logfile="$dLog/$(cDate %H)"
-        echo "$(cDate %d %T)" "$*" >> "$logfile"
+        echo "$(cDate "%d %T")" "$*" >> "$logfile"
         [[ $bVerbose && $* =~ ^\{ ]] && { printf "%s" "$*" ; echo "" ; } >> "$logfile.JSON"
     elif [[ $sDoLog ]] ; then
         echo "$(cDate)" "$@" >> "$dLog.log"
@@ -199,7 +232,7 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
 
 cMqttState() {	# log the state of the rtl bridge
     _ssid="$(iwgetid -r)" # iwgetid might have been aliased to ":" if not available
-    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*cacheddewpoints*:${#aDewpointsCalc[@]},${nUploads:+*wuuploads*:$nUploads,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*currtime*:*$(cDate)*"
+    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*cacheddewpoints*:${#aDewpointsCalc[@]},${nUploads:+*wuuploads*:$nUploads,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*lastreception*:*$(date "+$sDateFormat" -d @$nTimeStamp)*,*currtime*:*$(cDate)*"
     log "$_stats"
     cMqttStarred state "{$_stats${1:+,$1}}"
 }
@@ -289,25 +322,25 @@ cHassAnnounce() {
     return $?
   }
 
-# Other examples created by 
-# homeassistant/sensor/Smoke-GS558-25612/Smoke-GS558-25612-noise/config :
-#  {"unit_of_measurement": "dB", "state_class": "measurement", "entity_category": "diagnostic", "name": "Smoke-GS558-25612-noise", "value_template": "{{ value|float|round(2) }}", "device":{"model": "Smoke-GS558", "identifiers": "Smoke-GS558-25612", "name": "Smoke-GS558-25612", "manufacturer": "rtl_433"}, "device_class": "signal_strength", "state_topic": "rtl_433/openhabian/devices/Smoke-GS558/25612/noise", "unique_id": "Smoke-GS558-25612-noise"}
-# homeassistant/sensor/Smoke-GS558-25612/Smoke-GS558-25612-snr/config :
-#  {"unit_of_measurement": "dB", "state_class": "measurement", "entity_category": "diagnostic", "name": "Smoke-GS558-25612-snr", "value_template": "{{ value|float|round(2) }}", "device":{"model": "Smoke-GS558", "identifiers": "Smoke-GS558-25612", "name": "Smoke-GS558-25612", "manufacturer": "rtl_433"}, "device_class": "signal_strength", "state_topic": "rtl_433/openhabian/devices/Smoke-GS558/25612/snr", "unique_id": "Smoke-GS558-25612-snr"}
-# homeassistant/sensor/Smoke-GS558-25612/Smoke-GS558-25612-rssi/config :
-#  {"unit_of_measurement": "dB", "state_class": "measurement", "entity_category": "diagnostic", "name": "Smoke-GS558-25612-rssi", 
-#   "value_template": "{{ value|float|round(2) }}", 
-#   "device":{"model": "Smoke-GS558", "identifiers": "Smoke-GS558-25612", "name": "Smoke-GS558-25612", "manufacturer": "rtl_433"}, 
-#   "device_class": "signal_strength", "state_topic": "rtl_433/openhabian/devices/Smoke-GS558/25612/rssi", "unique_id": "Smoke-GS558-25612-rssi"}
-# by esphome:
-# homeassistant/sensor/esp32-wroom-a/living_room_temperature/config 
-#   {dev_cla:"temperature",unit_of_meas:"C",stat_cla:"measurement",name:"Living Room Temperature",
-#    stat_t:"esp32-wroom-a/sensor/living_room_temperature/state",avty_t:"esp32-wroom-a/status",uniq_id:"ESPsensorliving_room_temperature",
-#    dev:{ids:"c8f09ef1bc94",name:"esp32-wroom-a",sw:"esphome v2023.2.4 Mar 11 2023, 16:55:12",mdl:"esp32dev",mf:"espressif"}}
-# homeassistant/sensor/esp32-wroom-a/atc_battery-level/config
-#   {dev_cla:"battery",unit_of_meas:"%",stat_cla:"measurement",name:"ATC Battery-Level",entity_category:"diagnostic",
-#    stat_t:"esp32-wroom-a/sensor/atc_battery-level/state",avty_t:"esp32-wroom-a/status",uniq_id:"ESPsensoratc_battery-level",
-#    dev:{ids:"c8f09ef1bc94",name:"esp32-wroom-a",sw:"esphome v2023.2.4 Mar 11 2023, 16:55:12",mdl:"esp32dev",mf:"espressif"}}
+    # Other examples created by 
+    # homeassistant/sensor/Smoke-GS558-25612/Smoke-GS558-25612-noise/config :
+    #  {"unit_of_measurement": "dB", "state_class": "measurement", "entity_category": "diagnostic", "name": "Smoke-GS558-25612-noise", "value_template": "{{ value|float|round(2) }}", "device":{"model": "Smoke-GS558", "identifiers": "Smoke-GS558-25612", "name": "Smoke-GS558-25612", "manufacturer": "rtl_433"}, "device_class": "signal_strength", "state_topic": "rtl_433/openhabian/devices/Smoke-GS558/25612/noise", "unique_id": "Smoke-GS558-25612-noise"}
+    # homeassistant/sensor/Smoke-GS558-25612/Smoke-GS558-25612-snr/config :
+    #  {"unit_of_measurement": "dB", "state_class": "measurement", "entity_category": "diagnostic", "name": "Smoke-GS558-25612-snr", "value_template": "{{ value|float|round(2) }}", "device":{"model": "Smoke-GS558", "identifiers": "Smoke-GS558-25612", "name": "Smoke-GS558-25612", "manufacturer": "rtl_433"}, "device_class": "signal_strength", "state_topic": "rtl_433/openhabian/devices/Smoke-GS558/25612/snr", "unique_id": "Smoke-GS558-25612-snr"}
+    # homeassistant/sensor/Smoke-GS558-25612/Smoke-GS558-25612-rssi/config :
+    #  {"unit_of_measurement": "dB", "state_class": "measurement", "entity_category": "diagnostic", "name": "Smoke-GS558-25612-rssi", 
+    #   "value_template": "{{ value|float|round(2) }}", 
+    #   "device":{"model": "Smoke-GS558", "identifiers": "Smoke-GS558-25612", "name": "Smoke-GS558-25612", "manufacturer": "rtl_433"}, 
+    #   "device_class": "signal_strength", "state_topic": "rtl_433/openhabian/devices/Smoke-GS558/25612/rssi", "unique_id": "Smoke-GS558-25612-rssi"}
+    # by esphome:
+    # homeassistant/sensor/esp32-wroom-a/living_room_temperature/config 
+    #   {dev_cla:"temperature",unit_of_meas:"C",stat_cla:"measurement",name:"Living Room Temperature",
+    #    stat_t:"esp32-wroom-a/sensor/living_room_temperature/state",avty_t:"esp32-wroom-a/status",uniq_id:"ESPsensorliving_room_temperature",
+    #    dev:{ids:"c8f09ef1bc94",name:"esp32-wroom-a",sw:"esphome v2023.2.4 Mar 11 2023, 16:55:12",mdl:"esp32dev",mf:"espressif"}}
+    # homeassistant/sensor/esp32-wroom-a/atc_battery-level/config
+    #   {dev_cla:"battery",unit_of_meas:"%",stat_cla:"measurement",name:"ATC Battery-Level",entity_category:"diagnostic",
+    #    stat_t:"esp32-wroom-a/sensor/atc_battery-level/state",avty_t:"esp32-wroom-a/status",uniq_id:"ESPsensoratc_battery-level",
+    #    dev:{ids:"c8f09ef1bc94",name:"esp32-wroom-a",sw:"esphome v2023.2.4 Mar 11 2023, 16:55:12",mdl:"esp32dev",mf:"espressif"}}
 
 cHassRemoveAnnounce() { # removes ALL previous Home Assistant announcements  
     declare -a _topics=( -t "$sHassPrefix/sensor/#" -t "$sHassPrefix/binary_sensor/#" )
@@ -320,7 +353,7 @@ cHassRemoveAnnounce() { # removes ALL previous Home Assistant announcements
     _rc=$?
     cMqttStarred log "{*event*:*debug*,*message*:*removed all announcements starting with $sHassPrefix returned $_rc.* }"
     return $?
-}
+ }
 
 cAddJsonKeyVal() {  # cAddJsonKeyVal "key" "val" "jsondata" (use $data if $3 is empty, no quotes around numbers)
     local - && set +x
@@ -329,11 +362,12 @@ cAddJsonKeyVal() {  # cAddJsonKeyVal "key" "val" "jsondata" (use $data if $3 is 
     [[ $1 == -b ]] && { _bkey="$2" ; shift 2 ; }
     _val="$2" ; _d="${3:-$data}"
     # [ -z "$_val" ] && echo "$_d" # don't append the pair if val is empty !
+    # set -x
     [[ $_val =~ ^[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] && _valn="$_val" || _valn="\"$_val\"" # surround numeric _val by double quotes if not-a-number
     # if [[ $_d =~ (.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*)(\"[^\"]\"|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)$ ]] ; then
     if [[ $_d =~ (.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*)(\"[^\"]*\"|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)(.*)$ ]] ; then
         : replace val # FIXME: replacing a val not yet fully implemented amd tested
-        _valn=:"${BASH_REMATCH[1]}$_valn${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
+        _valn="${BASH_REMATCH[1]}$_valn${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
     elif [[ ! $_bkey ]] || ! [[ $_d =~ (.*[{,])([[:space:]]*\"$_bkey\"[[:space:]]*:.*)$ ]] ; then    #  cHasJsonKey $_bkey
         : insert at end
         _valn="${_d/%\}/,\"$1\":$_valn\}}"
@@ -341,9 +375,9 @@ cAddJsonKeyVal() {  # cAddJsonKeyVal "key" "val" "jsondata" (use $data if $3 is 
         : insert before key
         _valn="${BASH_REMATCH[1]}\"$1\":$_valn,${BASH_REMATCH[2]}" # FIXME: assuming the JSON wasn't empty
     fi
-    set +x
     [[ $3 ]] && echo "$_valn" || data="$_valn"
-}
+    # set +x
+ }
 # set -x ; data='{"one":1}' ; cAddJsonKeyVal "x" "2x" ; echo $data ; cAddJsonKeyVal "n" "2.3" "$data" ; cAddJsonKeyVal "m" "-" "$data" ; exit 2 # returns: '{one:1,"x":"2"}'
 # set -x ; cAddJsonKeyVal "donot"  ""  '{"one":1}'  ; cAddJsonKeyVal -b one "donot"  ""  '{"zero":0,"one":1}'  ;  exit 2 # returns: '{"one":1,"donot":""}' 
 # set -x ; cAddJsonKeyVal "floati" "5.5" '{"one":1}' ;    exit 2 # returns: '{"one":1,"floati":5.5}'
@@ -358,7 +392,7 @@ cHasJsonKey() { # simplified check to check whether the JSON ${2:-$data} has key
     [[  "$1" =~ \*|\[   ]] && echo "$_k" && return 0  # output the first found key only if multiple fits potentially possible
     [[ $_verbose ]] && echo 1
     return 0
-}
+ }
 # set -x ; j='{"dewpoint":"null","battery" :100}' ; cHasJsonKey "dewpoi.*" "$j" && echo yes ; cHasJsonKey batter[y] "$j" && echo yes ; cHasJsonKey batt*i "$j" || echo no ; exit
 # set -x ; data='{"dipswitch" :"++---o--+","rbutton":"11R"}' ; cHasJsonKey dipswitch  && echo yes ; cHasJsonKey jessy "$data" || echo no ; exit
 # set -x ; data='{"dipswitch" :"++---o--+","rbutton":"11R"}' ; cHasJsonKey -v dipswitch  && echo yes ; cHasJsonKey jessy "$data" || echo no ; exit
@@ -372,20 +406,20 @@ cRemoveQuotesFromNumbers() { # removes double quotes from JSON numbers in $1 or 
     done
     # _d="$( sed -e 's/: *"\([0-9.-]*\)" *\([,}]\)/:\1\2/g' <<< "${1:-$data}" )" # remove double-quotes around numbers
     [[ $1 ]] && echo "$_d" || data="$_d"
-}
+ }
 # set -x ; x='"AA":"+1.1.1","BB":"-2","CC":"+3.55","DD":"-0.44"' ; data="{$x}" ; cRemoveQuotesFromNumbers ; : exit ; echo $data ; cRemoveQuotesFromNumbers "{$x, \"EE\":\"-0.5\"}" ; exit
 
 perfCheck() {
     for (( i=0; i<3; i++))
     do
-        _start=$(date +"%s%3N")
+        _start=$(cDate "%s%3N")
         r=100
         j=0 ; while (( j < r )) ; do x='"one":"1a","two": "-2","three":"3.5"' ; cRemoveQuotesFromNumbers "{$x}"; (( j++ )) ; done # > /dev/null 
         _middle=$(date +"%s%3N") ; _one=$(( _one + _middle - _start ))
         j=0 ; while (( j < r )) ; do x='"one":"1a","two" :"-2","three":"3.5"' ; cRemoveQuotesFromNumbers2 "{$x}" ; (( j++ )) ; done # > /dev/null
         _end=$(date +"%s%3N") ; _two=$(( _two + _end - _middle ))
     done ; echo "$_one : $_two"
-} 
+ } 
 # perfCheck ; exit
 
 cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data if jsondata empty)
@@ -413,7 +447,7 @@ cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data i
     fi
     # cHasJsonKey "$@" && echo "$_d"
     [[ $2 ]] && echo "$_d" || data="$_d"
-} 
+ } 
 # set -x ; cDeleteSimpleJsonKey "freq" '{"protocol":73,"id":11,"channel": 1,"battery_ok": 1,"freq":433.903,"temperature": 8,"BAND":433,"NOTE2":"=2nd (#3,_bR=1,260s)"}' ; exit 2
 # set -x ; data='{"one":"a","beta":22.1}' ; cDeleteSimpleJsonKey "one" ; cDeleteSimpleJsonKey beta ; cDeleteSimpleJsonKey two '{"alpha":"a","two":"xx"}' ; exit 2
 # set -x ; cDeleteSimpleJsonKey three '{ "three":"xxx" }' ; exit 2
@@ -436,7 +470,7 @@ cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata must 
     done
     # _r="$(jq -c "del (${_d#,  })" <<< "${@:$#}")"   # expands to: "del(.xxx, .yyy, ...)"
     [[ $2 ]] && echo "$_r" || data="$_r"
-}
+ }
 # set -x ; cDeleteJsonKeys 'time mic' '{"time" : "2022-10-18 16:57:47", "protocol" : 19, "model" : "Nexus-TH", "id" : 240, "channel" : 1, "battery_ok" : 1, "temperature_C" : 21.600, "humidity" : 20}' ; exit 1
 # set -x ; cDeleteJsonKeys "one" "two" ".four five six" "*_special*" '{"one":"1", "two":2  ,"three":3,"four":"4", "five":5, "_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
 # results in: {"three":3,"_special2":"aa*?+bb"}
@@ -444,7 +478,7 @@ cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata must 
 cComplexExtractJsonVal() {
     local - && : set -x
     cHasJsonKey "$1" && jq -r ".$1 // empty" <<< "${2:-$data}"
-}
+ }
 # set -x ; data='{"action":"good","battery":100}' ; cComplexExtractJsonVal action && echo yes ; cComplexExtractJsonVal notthere || echo no ; exit
 
 cExtractJsonVal() {
@@ -455,13 +489,13 @@ cExtractJsonVal() {
                 [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*([+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)[[:space:]]*[,}] ]] ; then # number 
             echo "${BASH_REMATCH[2]}"
         fi        
-    else false ; fi # return false if not found
+    else false ; fi # return error if not found
   }
   # set -x ; data='{ "action":"good" , "battery":99.5}' ; cPidDelta 000 && cPidDelta 111 ; cExtractJsonVal action ; cPidDelta 222 ; cExtractJsonVal battery && echo yes ; cExtractJsonVal notthere || echo no ; exit
 
 cAssureJsonVal() {
     cHasJsonKey "$1" &&  jq -er "if (.$1 ${2:+and .$1 $2} ) then 1 else empty end" <<< "${3:-$data}"
-}
+ }
 # set -x ; data='{"action":"null","battery":100}' ; cAssureJsonVal battery ">999" ; cAssureJsonVal battery ">9" ;  exit
 
 longest_common_prefix() { # variant of https://stackoverflow.com/a/6974992/18155847
@@ -488,7 +522,7 @@ longest_common_prefix() { # variant of https://stackoverflow.com/a/6974992/18155
   [[ -z $prefix ]] && echo 0 && return 255
   [[ ${#prefix} -eq ${#orig1} ]] && echo 999 && return 0
   echo ${#prefix} && return ${#prefix}
-}
+ }
 # set -x ; longest_common_prefix abc4567 abc123 && echo yes ; echo ===== ; longest_common_prefix def def && echo jaa ; exit 1
 
 cEqualJson() {   # cEqualJson "json1" "json2" "attributes to be ignored" '{"action":"null","battery":100}'
@@ -499,12 +533,12 @@ cEqualJson() {   # cEqualJson "json1" "json2" "attributes to be ignored" '{"acti
         _s2="$( cDeleteJsonKeys "$3" "$_s2" )"
     fi
     [[ $_s1 == "$_s2" ]] # return code is comparison value
-}
+ }
 # set -x ; data1='{"act":"one","batt":100}' ; data2='{"act":"two","batt":100}' ; cEqualJson "$data1" "$data1" && echo AAA; cEqualJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data1" "act other" && echo CCC; exit
 # set -x ; data1='{ "id":35, "channel":3, "battery_ok":1, "freq":433.918,"temperature":22,"humidity":60,"dewpoint":13.9,"BAND":433}' ; data2='{ "id":35, "channel":3, "battery_ok":1, "freq":433.918,"temperature":22,"humidity":60,"BAND":433}' ; cEqualJson "$data1" "$data2" && echo AAA; cEqualJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data2" "freq" && echo CCC; exit
 # set -x ; data1='{ "temperature":22,"humidity":60,"BAND":433}' ; data2='{ "temperature":22,"humidity":60,"BAND":433}' ; cEqualJson "$data1" "$data2" && echo AAA; cEqualJson "$data1" "$data2" || echo BBB; cEqualJson "$data1" "$data2" "freq" && echo CCC; exit
 
-cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the result; side effect: set vDewptc, vDewptf, vDewSimple
+cDewpoint() { # calculate a dewpoint from temp/humid/pressure and cache the result; side effect: set vDewptc, vDewptf, vDewSimple
     local _temperature=$( cDiv10 $(cMultiplyTen $1) ) _rh=${2/.[0-9]*} - _rc=0 && set +x 
     
     if [[ ${aDewpointsCalc[$_temperature;$_rh]} ]] ; then # check for precalculated, cached values
@@ -558,9 +592,9 @@ cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the res
             aDewpointsCalc[$_temperature;$_rh]="$vDewptc;$vDewptf;1;$vDewSimple;delta=$vDeltaSimple;${bVerbose:+,$_dewpointcalc}" # cache the calculations (and maybe the rest for debugging)
         }
         (( bMoreVerbose )) && dbg DEWPOINT "calculations: $_dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
-        if (( ${#aDewpointsCalc[@]} > 999 )) ; then # maybe out-of-memory DoS attack from radio environment
+        if (( ${#aDewpointsCalc[@]} > 1999 )) ; then # maybe out-of-memory DoS attack from radio environment
             declare -p aDewpointsCalc | xargs -n1 | tail +3 > "/tmp/$sID.$USER.$( cDate %d )" # FIXME: for debugging
-            unset aDewpointsCalc && declare -A aDewpointsCalc && log "DEWPOINT: RESTARTED dewpoint caching."
+            aDewpointsCalc=() && log "DEWPOINT: RESTARTED dewpoint caching."
         fi
     fi
     echo "$vDewptc" "$vDewptf" 
@@ -568,9 +602,9 @@ cDewpoints() { # calculate a dewpoint from temp/humid/pressure and cache the res
     [[ $bRewrite && $vDewptc != 0 ]] && vDewptc=$( cRound "$(cMultiplyTen $vDewptc)" ) #  reduce flicker in dewpoint as in temperature reading
     [[ $vDewptc && $vDewptf && $vDewptc != "+nan" && $vDewptf != "+nan" ]]  # determine any other return value of the function
     }
-    # set -x ; bVerbose=1 ; cDewpoints 11.2 100 ; echo "rc is $? ($vDewSimple,$_dewpointcalc)" ; cDewpoints 18.4 50 ; echo "rc is $? ($vDewSimple,$_dewpointcalc)" ; cDewpoints 18.4 20 ; echo "rc is $? ($_dewpointcalc)" ; cDewpoints 11 -2 ; echo "rc is $? ($_dewpointcalc)"; exit 1
-    # set -x ; bVerbose=1 ; cDewpoints 25 30 ; echo "$vDewSimple , $_dewpointcalc)" ; cDewpoints 20 40 ; echo "$vDewSimple , $_dewpointcalc)" ; cDewpoints 14 45 ; echo "$vDewSimple , $_dewpointcalc)" ; exit 1
-    # set -x ; bVerbose=1 ; for h in $(seq 70 -5 20) ; do cDewpoints 30 $h ; echo "$vDewSimple , $_dewpointcalc ========" ; done ; exit 1
+    # set -x ; bVerbose=1 ; cDewpoint 11.2 100 ; echo "rc is $? ($vDewSimple,$_dewpointcalc)" ; cDewpoint 18.4 50 ; echo "rc is $? ($vDewSimple,$_dewpointcalc)" ; cDewpoint 18.4 20 ; echo "rc is $? ($_dewpointcalc)" ; cDewpoint 11 -2 ; echo "rc is $? ($_dewpointcalc)"; exit 1
+    # set -x ; bVerbose=1 ; cDewpoint 25 30 ; echo "$vDewSimple , $_dewpointcalc)" ; cDewpoint 20 40 ; echo "$vDewSimple , $_dewpointcalc)" ; cDewpoint 14 45 ; echo "$vDewSimple , $_dewpointcalc)" ; exit 1
+    # set -x ; bVerbose=1 ; for h in $(seq 70 -5 20) ; do cDewpoint 30 $h ; echo "$vDewSimple , $_dewpointcalc ========" ; done ; exit 1
 
 cDewpointTable() {
     declare -An aDewpointsDeltas
@@ -580,7 +614,7 @@ cDewpointTable() {
             unset aDewpointsCalc && declare -A aDewpointsCalc
             for temp in {-10..45..4} {20..45..6} ; do # {-10..45..4} {20..45..6}
                 for hum in {20..70..5} {40..70..10} ; do # {20..70..5} {40..70..10}
-                    cDewpoints $temp $hum > /dev/null
+                    cDewpoint $temp $hum > /dev/null
                     nDeltaAbs=$(cMultiplyTen $vDeltaSimple) ; nDeltaAbs=${nDeltaAbs#-}
                     sum=$(( sum + nDeltaAbs * nDeltaAbs))
                     # printf "%3s %3s %5s %5s %4s %5s\n" $temp $hum $vDewptc $vDewSimple $vDeltaSimple $sum
@@ -630,7 +664,7 @@ do
         ;;
     P)  bRetained=1
         ;;
-    t)  basetopic="$OPTARG" # other base topic for MQTT
+    t)  basetopic="$OPTARG" # choose another base topic for MQTT
         ;;
     S)  rtl433_opts+=( -S "$OPTARG" ) # pass signal autosave option to rtl_433
         ;;
@@ -644,6 +678,7 @@ do
     l)  dLog="$OPTARG" 
         ;;
     f)  fReplayfile="$( [[ $OPTARG = "-" || $OPTARG = /dev/stdin ]] && echo /dev/stdin || readlink -f "$OPTARG" )" # file to replay (e.g. for debugging), instead of rtl_433 output
+        (( bMoreVerbose )) && dbg INFO "fReplayfile: $fReplayfile"
         nMinSecondsOther=0
         nMinOccurences=1
         ;;
@@ -652,9 +687,9 @@ do
     F)  if   [[ $OPTARG == "868" ]] ; then
             rtl433_opts+=( -f 868.3M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y $sSuggSampleModel ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
         elif [[ $OPTARG == "915" ]] ; then
-            rtl433_opts+=( -f 915M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y $sSuggSampleModel ) # minmax
+            rtl433_opts+=( -f 915M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y $sSuggSampleModel ) 
         elif [[ $OPTARG == "27" ]] ; then
-            rtl433_opts+=( -f 27.161M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y $sSuggSampleModel )  # minmax
+            rtl433_opts+=( -f 27.161M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y $sSuggSampleModel )  
         elif [[ $OPTARG == "150" ]] ; then
             rtl433_opts+=( -f 150.0M ) 
         elif [[ $OPTARG == "433" ]] ; then
@@ -708,6 +743,7 @@ do
         else
             bVerbose=1
             nTimeMinDelta=$(( nTimeMinDelta / 2 ))
+            # shopt -s lastpipe  # FIXME: test lastpipe thoroughly
         fi
         ;;
     x)  set -x # turn on shell command tracing from here on
@@ -811,10 +847,10 @@ trap '' INT USR1 USR2 VTALRM
 if [[ $fReplayfile ]] ; then
     coproc COPROC ( 
         shopt -s extglob ; export IFS=' '
-        cat "$fReplayfile" | while read -r line ; do 
+        while read -r line ; do 
             : "line $line" #  e.g.   103256 rtl/433/Ambientweather-F007TH/1 { "protocol":20,"id":44,"channel":1,"freq":433.903,"temperature":19,"humidity":62,"BAND":433,"HOUR":16,"NOTE":"changed"}
             : "FRONT ${line%%{+(?)}" 1>&2
-            data="${line##*([!{])}" # data start with first curly bracket...
+            data="${line##*([!{])}" # data starts with first curly bracket...
             read -r -a aFront <<< "${line%%{+(?)}" # remove anything before an opening curly brace from the line read from the replay file
             if ! cHasJsonKey model && ! cHasJsonKey since ; then # ... then try to determine "model" either from an MQTT topic or from the file name, but not from JSON with key "since"
                 : frontpart="${aFront[-1]}"
@@ -831,8 +867,9 @@ if [[ $fReplayfile ]] ; then
                 cAddJsonKeyVal model "${sModel:-UNKNOWN}"
                 cAddJsonKeyVal BAND "${sBand:-null}" 
             fi
-            echo "$data" ; sleep 1
-        done < "$fReplayfile" ; sleep 5
+            echo "$data" # ; echo "EMITTING: $data" 1>&2
+            sleep 1
+        done < "$fReplayfile" ; sleep 5 ; # echo "COPROC EXITING." 1>&2
     )  
 else
     if [[ $bVerbose || -t 1 ]] ; then
@@ -902,29 +939,44 @@ trap_usr2() {    # remove all home assistant announcements (CAREFUL!)
 trap 'trap_usr2' USR2 
 
 trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purposes)
-    cMqttState
-    for KEY in "${!aDewpointsCalc[@]}"; do
-        _val="${aDewpointsCalc[$KEY]}"
+    for KEY in "${!aDewpointsCalc[@]}" ; do
+        _val="${aDewpointsCalc["$KEY"]}"
         _msg="{*key*:*$KEY*,*values*:*${_val//\"/*}*}"
         dbg DEWPOINT "$KEY  $_msg"
         cMqttStarred dewpoint "$_msg"
     done
-    for KEY in "${!aPrevReadings[@]}"; do
-        _val="${aPrevReadings[$KEY]}" && _val="${_val/\{}" && _val="${_val/\}}"
-        _msg="{*model_ident*:*$KEY*,${_val//\"/*}}"
+
+   _msg="$( declare -p | awk '$0 ~ "^declare -A" && $3 ~ "^a" { printf(" %s*%s(%s)*:%d" , sep, gensub("=.*","",1,$3), gensub("-","",1,$2), gsub("]=","") ) ; sep="," }' )" # all arrays
+    dbg ARRAYS "$_msg"
+    cMqttStarred arrays "[$_msg]"
+
+    for KEY in "${!aPrevReadings[@]}" ; do
+        _val="${aPrevReadings["$KEY"]}" && _val="${_val/\{}" && _val="${_val/\}}"
+        _msg="{*model_ident*:*$KEY*,${_val//\"/*} , *COUNT*:${aCounts["$KEY"]}}"
         dbg READING "$KEY  $_msg"
         cMqttStarred reading "$_msg"
     done
+
+    if ((bVerbose)) && false ; then
+        for KEY in $( declare -p | awk '$0 ~ "^declare -A" && $3 ~ "^a" { print gensub("=.*","",1,$3) }' ) ; do
+            _val="$( declare -p "$KEY" | cut -d= -f2- | tr -c -d "=" | wc -c )"
+            _msg="$msg, $KEY()"
+            dbg ARRAY "$_msg"
+            cMqttStarred array "$_msg"
+        done
+    fi
+
     _msg="Signal VTALRM: logged last MQTT messages from ${#aPrevReadings[@]} sensors and ${#aDewpointsCalc[@]} calculations."
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
+    cMqttState
     declare -i _delta=$(cDate %s)-nTimeStamp
     if (( _delta > 10800 )) ; then # no radio event has been received for more than 3 hours, will restart...
-        cMqttStarred log "{*event*:*exiting*,*message*:*no radio event received for $_delta seconds, assuming fail*}"
+        cMqttStarred log "{*event*:*exiting*,*message*:*no radio event received for $((_delta/60)) minutes, assuming fail*}"
         exit 12 # possibly restart whole script, if systemd allows it
     fi
   }
-trap 'trap_vtalrm' VTALRM
+trap "trap_vtalrm" VTALRM
 
 trap_other() {
     _msg="received other signal ..."
@@ -938,10 +990,12 @@ do
     # FIXME: data should be cleaned from any suspicous characters sequences as early as possible for security reasons - an extra jq invocation might be worth this...
 
     # (( _rc==1 )) && cMqttStarred log "{*event*:*warn*,*message*:*read _rc=$_rc, data=$data*}" && sleep 2  # quick hack to slow down and debug fast loops
+    # dbg ATBEGINOFLOOP "nReadings=$nReadings, nMqttLines=$nMqttLines, nReceivedCount=$nReceivedCount, nAnnouncedCount=$nAnnouncedCount, nUploads=$nUploads"
 
     _beginPid="" # support debugging/counting/optimizing number of processes started in within the loop
 
     nLoops+=1
+    # dbg 000
     if [[ $data =~ ^SDR:.Tuned.to.([0-9]*\.[0-9]*)MHz ]] ; then # SDR: Tuned to 868.300MHz.
         # convert  msg type "SDR: Tuned to 868.300MHz." to "{"center_frequency":868300000}" (JSON) to be processed further down
         data="{\"center_frequency\":${BASH_REMATCH[1]}${BASH_REMATCH[2]}000,\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
@@ -957,9 +1011,11 @@ do
             cMqttStarred log "{*event*:*error*,*host*:*$sHostname*,*message*:*${data//\*/+}*}" # log a simple JSON msg
             [[ $bVerbose && $data =~ ^"usb_claim_interface error -6" ]] && [ -t 1 ] && dbg WARNING "Will killall $rtl433_command" && killall -vw $rtl433_command
         fi
+        dbg NONJSON "$data"
         log "Non-JSON: $data"
         continue
     elif ! [[ $data ]] ; then
+        dbg EMPTYLINE
         continue # skip empty lines quietly
     fi
     # cPidDelta 0ED
@@ -994,17 +1050,23 @@ do
     _delkeys="time $sSuppressAttrs"
     (( bMoreVerbose )) && cEchoIfNotDuplicate "PREPROCESSED: $data"
     # cPidDelta BBB
-    protocol="$(cExtractJsonVal protocol)"
+    protocol="$(cExtractJsonVal protocol)" ; protocol="${protocol//[^0-9]}" # Avoid arbitrary command execution vulnerability in indexes for arrays
     channel="$( cExtractJsonVal channel)"
     id="$(      cExtractJsonVal id)"
     model="" && { cHasJsonKey model || cHasJsonKey since ; } && model="$(cExtractJsonVal model)"
     [[ $model && ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
     ident="${channel:-$id}" # prefer "channel" (if present) over "id" as the identifier for the sensor instance.
     model_ident="${model}${ident:+_$ident}"
+    model_ident="${model_ident//[^A-Za-z0-9_]}" # remove arithmetic characters from  model_ident to prevent arbitrary command execution vulnerability in indexes for arrays
     rssi="$(    cExtractJsonVal rssi)"
     vTemperature="" && nTemperature10="" && nTemperature10Diff=""
+    # set -x
     _val="$( cExtractJsonVal temperature_C || cExtractJsonVal temperature )" && _val="$(cIfJSONNumber "$_val")" && vTemperature="$_val" && _val="$(cMultiplyTen "$_val")" && 
-        nTemperature10="${_val/.*}" && nTemperature10Diff=$(( nTemperature10 - ${aEarlierTemperVals10[$model_ident]:-0} )) # used later
+        nTemperature10="${_val/.*}" && 
+        : echo 1 model_ident=$model_ident &&
+        : echo 2 "${aEarlierTemperVals10[$model_ident]}" &&
+        nTemperature10Diff=$(( nTemperature10 - ${aEarlierTemperVals10[$model_ident]:-0} )) # used later
+    # set +x
     vHumidity="$( cExtractJsonVal humidity )" && vHumidity="$( cIfJSONNumber "$vHumidity" )"
     nHumidity="${vHumidity/.[0-9]*}"
     vSetPoint="$( cExtractJsonVal setpoint_C) || $( cExtractJsonVal setpoint_F)" && vSetPoint="$(cIfJSONNumber "$vSetPoint")"
@@ -1080,7 +1142,7 @@ do
         fi
         (( bVerbose )) && ! cHasJsonKey BAND && cAddJsonKeyVal BAND "$sBand"  # add BAND here to ensure it also goes into the logfile for all data lines
         (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are sent retained
-        [[ $sDoLog == "dir" ]] && echo "$(cDate %d %H:%M:%S) $data" >> "$dModel/${sBand}_$model_ident"
+        [[ $sDoLog == "dir" ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
     fi
     # cPidDelta 3RD
 
@@ -1100,12 +1162,10 @@ do
             [[ $model_ident =~ $sSensorMatch ]] || continue # however, skip if no fit
         fi
         prev_data="$data" ; nTimeStampPrev=$nTimeStamp # support ignoring any incoming duplicates within a few seconds
-        # set -x
         prevval="${aPrevReadings[$model_ident]}"
         prevvals="${aSecondPrevReadings[$model_ident]}"
-        # set +x
-        aPrevReadings[$model_ident]="$data"
-        aCounts[$model_ident]+=1
+        aPrevReadings[$model_ident]="$data" ; : "model_ident=$model_ident , now ${#aPrevReadings[@]} sensors"
+        aCounts[$model_ident]=$(( ${aCounts[$model_ident]} + 1 )) # ... += ... doesn't work numerically in assignments for array elements
 
         sDelta=""
         if [[ $vTemperature ]] ; then
@@ -1134,6 +1194,7 @@ do
                 : "not enough change, aEarlierHumidVals[$model_ident]=${aEarlierHumidVals[$model_ident]}, nTimeStamp=$nTimeStamp (vs ${aEarlierHumidTime[$model_ident]})"
                 sDelta="${sDelta:+$sDelta:}0"
             fi
+            [[ $bLogTempHumidity ]] && cLogVal "$model_ident" humidity "$vHumidity"
         fi
         dbg SDELTA "$sDelta"
 
@@ -1233,7 +1294,7 @@ do
             aPrevReadings[$model_ident]="$data"
 
             if [[ $vTemperature && $nHumidity -gt 0 ]]  &&  ! cHasJsonKey "dewpoint"  &&  [[ ${aWuUrls[$model_ident]} || $bRewrite ]] ; then # prepare dewpoint calc, e.g. for weather upload
-                cDewpoints "$vTemperature" "$vHumidity" > /dev/null 
+                cDewpoint "$vTemperature" "$vHumidity" > /dev/null 
                 : "vDewptc=$vDewptc, vDewptf=$vDewptf" # were set as side effects
             fi
 
@@ -1291,7 +1352,7 @@ do
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then  # log the status once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*:[$(  _comma=""
             for KEY in "${!aPrevReadings[@]}"; do
-                _reading="${aPrevReadings[$KEY]}" && _reading="${_reading/\{}" && _reading="${_reading/\}}"
+                _reading="${aPrevReadings["$KEY"]}" && _reading="${_reading/\{}" && _reading="${_reading/\}}"
                 echo -n "$_comma {*model_ident*:*$KEY*,${_reading//\"/*}}"
                 _comma=","
             done
@@ -1299,22 +1360,14 @@ do
         log "$( cExpandStarredString "$_collection")" 
         cMqttState "*note*:*regular log*,*collected_sensors*:*${!aPrevReadings[*]}*, $_collection, *aDewpointsCalcNumber*:${#aDewpointsCalc[@]}"
         nLastStatusSeconds=nTimeStamp
-    elif (( nReadings > (nSecond*nSecond+2)*(nMinute+1)*(nHour+1) || nMqttLines%5000==0 || nReceivedCount % 10000 == 0 )) ; then # reset whole array to empty once in a while = starting over
+    elif (( ${#aPrevReadings[@]} > 1000 || nMqttLines%10000==0 || nReceivedCount % 20000 == 0 )) ; then # reset whole array to empty once in a while = starting over, assume DoS attack when >1000 readings
         cMqttState
         cMqttStarred log "{*event*:*debug*,*message*:*will reset saved values (nReadings=$nReadings,nMqttLines=$nMqttLines,nReceivedCount=$nReceivedCount)*}"
-        unset aPrevReadings && declare -A aPrevReadings # reset the whole collection (array)
-        unset aSecondPrevReadings && declare -A aSecondPrevReadings 
-        unset aCounts   && declare -Ai aCounts
-        unset aAnnounced && declare -A aAnnounced
-        unset aEarlierTemperVals10  && declare -Ai aEarlierTemperVals10 
-        unset aEarlierTemperTime    && declare -Ai aEarlierTemperTime 
-        unset aEarlierHumidVals     && declare -Ai aEarlierHumidVals 
-        unset aEarlierHumidTime     && declare -Ai aEarlierHumidTime
-        unset aLastPub && declare -Ai aLastPub 
-
+        cEmptyArrays
         nPrevMax=nPrevMax/3            # reduce it quite a bit (but not back to 0) to reduce future log message
         (( bRemoveAnnouncements )) && cHassRemoveAnnounce
     fi
+    # dbg ATENDOFLOOP "nReadings=$nReadings, nMqttLines=$nMqttLines, nReceivedCount=$nReceivedCount, nAnnouncedCount=$nAnnouncedCount, nUploads=$nUploads"
 done
 
 s=1 && ! [ -t 1 ] && s=30 && (( nLoops < 2 )) && s=180 # will sleep longer on failures or if not running on a terminal to reduce launch storms
