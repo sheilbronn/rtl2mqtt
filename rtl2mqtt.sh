@@ -29,8 +29,9 @@ dLog="/var/log/$sMID" # /var/log/rtl2mqtt is default, but will be changed to /tm
 sManufacturer="RTL"
 sHassPrefix="homeassistant"
 sRtlPrefix="rtl"                        # base topic
-sDateFormat="%Y-%m-%d %H:%M:%S"
-sStartDate="$(cDate "$sDateFormat")" # format needed for OpenHab Date_r1 MQTT items - for others OK, too? - as opposed to ISO8601
+sDateFormat="%Y-%m-%d %H:%M:%S" # format needed for OpenHab 3 Date_Time MQTT items - for others OK, too? - as opposed to ISO8601
+sDateFormat="%Y-%m-%dT%H:%M:%S" # FIXME: test with T for OpenHAB 4
+sStartDate="$(cDate "$sDateFormat")" 
 sHostname="$(hostname)"
 basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
@@ -312,11 +313,11 @@ cHassAnnounce() {
 
     local _configtopicpart="$( echo "$3" | tr -d "][ /-" | tr "[:upper:]" "[:lower:]" )"
     local _topic="${sHassPrefix}/$_sensor/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
-          _configtopicpart="${_configtopicpart^[a-z]*}" # uppercase first letter for readability
-    local  _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aNames[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
-    local  _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
-           # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
-           # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
+          _configtopicpart="${_configtopicpart^[a-z]*}" # uppercase the first letter for readability
+    local _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aNames[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
+    local _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
+          # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
+          # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
 
    	cMqttStarred "$_topic" "{$_msg}" "-r"
     return $?
@@ -682,7 +683,7 @@ do
         nMinSecondsOther=0
         nMinOccurences=1
         ;;
-    w)  sRoundTo="$OPTARG" # round temperature to this value and humidity to 4-times this value (_hMult)
+    w)  sRoundTo="$OPTARG" # round temperature to this value and relative humidity to 4-times this value (_hMult)
         ;;
     F)  if   [[ $OPTARG == "868" ]] ; then
             rtl433_opts+=( -f 868.3M ${sSuggSampleRate:+-s $sSuggSampleRate} -Y $sSuggSampleModel ) # last tried: -Y minmax, also -Y autolevel -Y squelch   ,  frequency 868... MhZ - -s 1024k
@@ -1109,9 +1110,10 @@ do
         if [[ $vHumidity ]] ; then # 
             if (( bRewrite )) ; then
                 # _val="$(( ( $(cMultiplyTen $vHumidity) + sRoundTo*_hmult/2 ) / (sRoundTo*_hmult) * (sRoundTo*_hmult) ))" && _val="$(cDiv10 "$_val")"  # round to hmult * 0.x         
-                _val=$( cRound $(cMultiplyTen $vHumidity) 4 ) # round to 0.x * 4 °C
-                cDeleteSimpleJsonKey humidity && cAddJsonKeyVal humidity "$_val"
+                _val=$( cRound $(cMultiplyTen $vHumidity) 4 ) # round to 4 * 0.x %
                 nHumidity=${_val/.[0-9]*}
+                # FIXME: BREAKING change should have dedicated option when adding 0. in front of $nHumidity (i.e. divide by 100) - OpenHAB 4 likes a dimension-less percentage value to be in the range 0.0...1.0 :
+                cDeleteSimpleJsonKey humidity && cAddJsonKeyVal humidity "$( (( nHumidity == 100 )) && printf 1 || printf "0.%2.2d" "$nHumidity" )"
             fi
         fi
         vPressure_kPa="$(cExtractJsonVal pressure_kPa)"
@@ -1138,10 +1140,10 @@ do
         if (( bRewriteMore )) ; then
             cDeleteJsonKeys "transmit test"
             _k="$( cHasJsonKey "unknown.*" )" && [[ $(cExtractJsonVal "$_k") == 0 ]] && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
-            bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize/ignore non-plausible readings
+            bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize=skip non-plausible readings
         fi
         (( bVerbose )) && ! cHasJsonKey BAND && cAddJsonKeyVal BAND "$sBand"  # add BAND here to ensure it also goes into the logfile for all data lines
-        (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are sent retained
+        (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are to be sent retained
         [[ $sDoLog == "dir" ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
     fi
     # cPidDelta 3RD
