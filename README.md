@@ -45,7 +45,7 @@ So the main areas of extended features are:
 * Command line options to be used in every invocation can be put into `~/.config/rtl2mqtt` (Start comments there with an `#`)
 * Log files may be replayed for debugging in your home automation environment -- Option: `-f`
 * Signalling INT to rtl2mqtt will emit a state message to MQTT.
-* Signalling USR1 to rtl2mqtt will toggle the verbosity for debugging to syslog and MQTT.
+* Signalling TRAP to rtl2mqtt will toggle the verbosity for debugging to syslog and MQTT. (This was USR1 before)
 * Signalling USR2 to rtl2mqtt will log all gathered sensor data (to syslog and MQTT).
 
 NB: The Dockerfile is provided untouched and not checked for years since I don't run Docker. It might work or not.

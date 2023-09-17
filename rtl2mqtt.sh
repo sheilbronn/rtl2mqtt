@@ -850,7 +850,7 @@ trap_exit() {   # stuff to do when exiting
  }
 trap 'trap_exit' EXIT 
 
-trap '' INT USR1 USR2 VTALRM
+trap '' INT TRAP USR2 VTALRM
 
 if [[ $fReplayfile ]] ; then
     coproc COPROC ( 
@@ -929,14 +929,14 @@ trap_int() {    # log all collected sensors to MQTT
  }
 trap 'trap_int' INT 
 
-trap_usr1() {    # toggle verbosity 
+trap_trap() {    # toggle verbosity 
     # ORIG: (( bVerbose )) && bVerbose="" || bVerbose=1 # switch bVerbose
     bVerbose=$( ((bVerbose)) || echo 1 ) # toggle verbosity 
-    _msg="Signal USR1: toggled verbosity to ${bVerbose:-none}, nHopSecs=$nHopSecs, sBand=$sBand"
+    _msg="Signal TRAP: toggled verbosity to ${bVerbose:-none}, nHopSecs=$nHopSecs, sBand=$sBand"
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*message*:*$_msg*}"
   }
-trap 'trap_usr1' USR1
+trap 'trap_trap' TRAP
 
 trap_usr2() {    # remove all home assistant announcements (CAREFUL!)
     cHassRemoveAnnounce
