@@ -26,7 +26,7 @@ cDate() { local - ; set +x ; a="$1" ; shift ; printf "%($a)T" "$@"; } # avoid se
 
 commandArgs="$*"
 dLog="/var/log/$sMID" # /var/log/rtl2mqtt is default, but will be changed to /tmp if not useable
-sSignalsOther="URG XCPU XFSZ PROF WINCH PWR SYS TRAP" # signals that will be ignored
+sSignalsOther="URG XCPU XFSZ PROF WINCH PWR SYS USR1" # signals that will be logged, but ignored
 sManufacturer="RTL"
 sHassPrefix="homeassistant"
 sRtlPrefix="rtl"                        # base topic
@@ -38,7 +38,7 @@ basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 126 ; }
 rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 126
-declare -a rtl433_opts=( -M protocol -M noise:300 -M level -C si )  # generic options in all settings, e.g. -M level 
+declare -a rtl433_opts=( -M protocol -M noise:600 -M level -C si )  # generic options in all settings, e.g. -M level 
 # rtl433_opts+=( $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
 sSensorMatch=".*" # any device name to be considered will have to match this regex (to be used during debugging)
@@ -55,7 +55,7 @@ declare    sSuggSampleModel=auto # -Y auto|classic|minmax
 declare -i nLogMinutesPeriod=60 # once per hour
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
-declare -i nMinSecondsOther=5 # only at least every nn seconds
+declare -i nMinSecondsOther=5 # only at least every nn seconds, reducing flicker as from motion sensors....
 declare -i nMinSecondsWeather=310 # only at least every n*60+10 seconds for unchanged environment data (temperature, humidity)
 declare -i nTimeStamp=$(cDate %s)-$nLogMessagesPeriod # initiate with a large sensible assumption....
 declare -i nTimeStampPrev
@@ -265,7 +265,7 @@ cHassAnnounce() {
 
     local _dev_class="${6#none}" # dont wont "none" as string for dev_class
 	local _state_class
-    local _sensor=sensor
+    local _component=sensor
     local _jsonpath="${5#value_json.}" # && _jsonpath="${_jsonpath//[ \/-]/}"
     local _jsonpath_red="$( echo "$_jsonpath" | tr -d "][ /_-" )" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
     local _devname="$2 ${_devid^}"
@@ -285,38 +285,40 @@ cHassAnnounce() {
     # other syntax for non-JSON is: local _value_template_str="${5:+,*value_template*:*{{ value|float|round(1) \}\}*}"
 
     case "$6" in
-        temperature*) _icon_str="thermometer"   ; _unit_str=",*unit_of_measurement*:*\u00b0C*" ; _state_class="measurement" ;;
-        dewpoint) _icon_str="thermometer"   ; _unit_str=",*unit_of_measurement*:*\u00b0C*" ; _state_class="measurement" ;;
-        setpoint*)	_icon_str="thermometer"     ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
-        humidity)	_icon_str="water-percent"   ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
-        rain_mm)	_icon_str="weather-rainy"   ; _unit_str=",*unit_of_measurement*:*mm*"	; _state_class="total_increasing" ;;
-        pressure_kPa) _icon_str="airballoon-outline" ; _unit_str=",*unit_of_measurement*:*kPa*"	; _state_class="measurement" ;;
-        ppm)	    _icon_str="smoke"           ; _unit_str=",*unit_of_measurement*:*ppm*"	; _state_class="measurement" ;;
-        density*)	_icon_str="smoke"           ; _unit_str=",*unit_of_measurement*:*ug_m3*"	; _state_class="measurement" ;;
-        counter)	_icon_str="counter"         ; _unit_str=",*unit_of_measurement*:*#*"	; _state_class="total_increasing" ;;
+        temperature*) _icon_str="thermometer"   ; _unit_str="\u00b0C"   ; _state_class="measurement" ;;
+        dewpoint) _icon_str="thermometer"       ; _unit_str="\u00b0C"   ; _state_class="measurement" ;;
+        setpoint*)	_icon_str="thermometer"     ; _unit_str="%"	        ; _state_class="measurement" ;;
+        humidity)	_icon_str="water-percent"   ; _unit_str="%"	        ; _state_class="measurement" ;;
+        rain_mm)	_icon_str="weather-rainy"   ; _unit_str="mm"	    ; _state_class="total_increasing" ;;
+        pressure_kPa) _icon_str="airballoon-outline" ; _unit_str="kPa"	; _state_class="measurement" ;;
+        pressure_hPa) _icon_str="airballoon-outline" ; _unit_str="hPa"	; _state_class="measurement" ;;
+        ppm)	    _icon_str="smoke"           ; _unit_str="ppm"	    ; _state_class="measurement" ;;
+        density*)	_icon_str="smoke"           ; _unit_str="ug_m3"	    ; _state_class="measurement" ;;
+        counter)	_icon_str="counter"         ; _unit_str="#"	        ; _state_class="total_increasing" ;;
 		clock)	    _icon_str="clock-outline"   ;;
-		signal)	    _icon_str="signal"          ; _unit_str=",*unit_of_measurement*:*%*"	; _state_class="measurement" ;;
-        switch)     _icon_str="toggle-switch*"  ; _sensor=switch ;;
+		signal_strength)	    _icon_str="signal"          ; _unit_str="dB"	    ; _state_class="measurement" ;;
+        switch)     _icon_str="toggle-switch*"  ; _component=switch ;;
         motion)     _icon_str="motion-sensor"   ;;
-        button)     _icon_str="gesture-tap-button"  ; _sensor=switch ;;
+        button)     _icon_str="gesture-tap-button"  ; _component=switch ;;
         dipswitch)  _icon_str="dip-switch" ;;
         code)   _icon_str="lock" ;;
-        newbattery) _icon_str="battery-check" ; _unit_str=",*unit_of_measurement*:*#*" ;;
-       # battery*)     _unit_str=",*unit_of_measurement*:*B*" ;;  # 1 for "OK" and 0 for "LOW".
-        zone)       _icon_str="vector-intersection" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
-        unit)       _icon_str="group"               ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
-        learn)      _icon_str="plus"               ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="total_increasing" ;;
-        channel)    _icon_str="format-list-numbered" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ;;
-        voltage)    _icon_str="FIXME" ; _unit_str=",*unit_of_measurement*:*V*" ; _state_class="measurement" ;;
-        battery_ok) _icon_str="" ; _unit_str=",*unit_of_measurement*:*#*" ; _state_class="measurement" ; _sensor=measurement ;;
+        newbattery) _icon_str="battery-check"   ; _unit_str="#" ;;
+       # battery*)     _unit_str="B*" ;;  # 1 for "OK" and 0 for "LOW".
+        zone)       _icon_str="vector-intersection" ; _unit_str="#" ; _state_class="measurement" ;;
+        unit)       _icon_str="group"           ; _unit_str="#"     ; _state_class="measurement" ;;
+        learn)      _icon_str="plus"            ; _unit_str="#"     ; _state_class="total_increasing" ;;
+        channel)    _icon_str="format-list-numbered" ; _unit_str="#" ; _state_class="measurement" ;;
+        voltage)    _icon_str="FIXME"           ; _unit_str="V"     ; _state_class="measurement" ;;
+        battery_ok) _icon_str=""                ; _unit_str="#"     ; _state_class="measurement" ; _component=measurement ;;
 		none)		_icon_str="" ;; 
         *)          cLogMore "Notice: special icon and/or unit not defined for '$6'"
     esac
     _icon_str="${_icon_str:+,*icon*:*mdi:$_icon_str*}"
+    _unit_str="${_unit_str:+,*unit_of_measurement*:*$_unit_str*}"
 
     local _configtopicpart="$( echo "$3" | tr -d "][ /-" | tr "[:upper:]" "[:lower:]" )"
-    local _topic="${sHassPrefix}/$_sensor/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
-          _configtopicpart="${_configtopicpart^[a-z]*}" # uppercase the first letter for readability
+    local _topic="${sHassPrefix}/$_component/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
+          _configtopicpart="${_configtopicpart^[a-z]*}" # ... capitalize the first letter for readability
     local _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aNames[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
     local _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
           # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
@@ -345,10 +347,22 @@ cHassAnnounce() {
     #   {dev_cla:"battery",unit_of_meas:"%",stat_cla:"measurement",name:"ATC Battery-Level",entity_category:"diagnostic",
     #    stat_t:"esp32-wroom-a/sensor/atc_battery-level/state",avty_t:"esp32-wroom-a/status",uniq_id:"ESPsensoratc_battery-level",
     #    dev:{ids:"c8f09ef1bc94",name:"esp32-wroom-a",sw:"esphome v2023.2.4 Mar 11 2023, 16:55:12",mdl:"esp32dev",mf:"espressif"}}
+    #
+    # homeassistant/sensor/Bresser-3CH-1-180/Bresser-3CH-1-180-UTC/config {device_class:"timestamp",name:"Timestamp",entity_category:"diagnostic",enabled_by_default:false,icon:"mdi:clock-in",state_topic:"rtl_433/nextcloudpi/devices/Bresser-3CH/1/180/time",unique_id:"Bresser-3CH-1-180-UTC",device:{identifiers:["Bresser-3CH-1-180"],name:"Bresser-3CH-1-180",model:"Bresser-3CH",manufacturer:"rtl_433"}}
+    # homeassistant/device_automation/Bresser-3CH-1-180/Bresser-3CH-1-180-CH/config {automation_type:"trigger",type:"button_short_release",subtype:"button_1",topic:"rtl_433/nextcloudpi/devices/Bresser-3CH/1/180/channel",platform:"mqtt",device:{identifiers:["Bresser-3CH-1-180"],name:"Bresser-3CH-1-180",model:"Bresser-3CH",manufacturer:"rtl_433"}}
+    # homeassistant/sensor/Bresser-3CH-1-180/Bresser-3CH-1-180-B/config  {device_class:"battery",name:"Battery",unit_of_measurement:"%",value_template:"{{ float(value) * 99 + 1 }}",state_class:"measurement",entity_category:"diagnostic",state_topic:"rtl_433/nextcloudpi/devices/Bresser-3CH/1/180/battery_ok",unique_id:"Bresser-3CH-1-180-B",device:{identifiers:["Bresser-3CH-1-180"],name:"Bresser-3CH-1-180",model:"Bresser-3CH",manufacturer:"rtl_433"}}
+    # homeassistant/sensor/Bresser-3CH-1-180/Bresser-3CH-1-180-T/config  {
+        # device_class:"temperature",name:"Temperature",unit_of_measurement:"\u00b0C",value_template:"{{ value|float|round(1) }}",
+        # state_class:"measurement",state_topic:"rtl_433/nextcloudpi/devices/Bresser-3CH/1/180/temperature_C",unique_id:"Bresser-3CH-1-180-T",
+        # device:{identifiers:["Bresser-3CH-1-180"],name:"Bresser-3CH-1-180",model:"Bresser-3CH",manufacturer:"rtl_433"}}
+    # homeassistant/sensor/Bresser-3CH-1-180/Bresser-3CH-1-180-H/config  {device_class:"humidity",name:"Humidity",unit_of_measurement:"%",value_template:"{{ value|float }}",state_class:"measurement",state_topic:"rtl_433/nextcloudpi/devices/Bresser-3CH/1/180/humidity",unique_id:"Bresser-3CH-1-180-H",device:{identifiers:["Bresser-3CH-1-180"],name:"Bresser-3CH-1-180",model:"Bresser-3CH",manufacturer:"rtl_433"}}
+    # homeassistant/sensor/Bresser-3CH-1-180/Bresser-3CH-1-180-rssi/config {device_class:"signal_strength",unit_of_measurement:"dB",value_template:"{{ value|float|round(2) }}",state_class:"measurement",entity_category:"diagnostic",state_topic:"rtl_433/nextcloudpi/devices/Bresser-3CH/1/180/rssi",unique_id:"Bresser-3CH-1-180-rssi",name:"rssi",device:{identifiers:["Bresser-3CH-1-180"],name:"Bresser-3CH-1-180",model:"Bresser-3CH",manufacturer:"rtl_433"}}
+    # homeassistant/sensor/Bresser-3CH-1-180/Bresser-3CH-1-180-snr/config  {device_class:"signal_strength",unit_of_measurement:"dB",value_template:"{{ value|float|round(2) }}",state_class:"measurement",entity_category:"diagnostic",state_topic:"rtl_433/nextcloudpi/devices/Bresser-3CH/1/180/snr",unique_id:"Bresser-3CH-1-180-snr",name:"snr",device:{identifiers:["Bresser-3CH-1-180"],name:"Bresser-3CH-1-180",model:"Bresser-3CH",manufacturer:"rtl_433"}}
+    # homeassistant/sensor/Bresser-3CH-1-180/Bresser-3CH-1-180-noise/config {device_class:"signal_strength",unit_of_measurement:"dB",value_template:"{{ value|float|round(2) }}",state_class:"measurement",entity_category:"diagnostic",state_topic:"rtl_433/nextcloudpi/devices/Bresser-3CH/1/180/noise",unique_id:"Bresser-3CH-1-180-noise",name:"noise",device:{identifiers:["Bresser-3CH-1-180"],name:"Bresser-3CH-1-180",model:"Bresser-3CH",manufacturer:"rtl_433"}}
 
 cHassRemoveAnnounce() { # removes ALL previous Home Assistant announcements  
-    declare -a _topics=( -t "$sHassPrefix/sensor/#" -t "$sHassPrefix/binary_sensor/#" )
-    cLogMore "removing announcements below $sHassPrefix..."
+    declare -a _topics=( -t "$sHassPrefix/sensor/+/+/config" -t "$sHassPrefix/binary_sensor/+/+/config" )
+    cLogMore "removing sensor announcements below $sHassPrefix..."
     declare -a _arguments=( ${sMID:+-i "$sMID"} -W 1 "${_topics[@]}" --remove-retained --retained-only )
     [[ ${#hMqtt[@]} == 0 ]]  && mosquitto_sub "${_arguments[@]}"
     for host in "${hMqtt[@]}" ; do
@@ -596,7 +610,7 @@ cDewpoint() { # calculate a dewpoint from temp/humid/pressure and cache the resu
             aDewpointsCalc[$_temperature;$_rh]="$vDewptc;$vDewptf;1;$vDewSimple;delta=$vDeltaSimple;${bVerbose:+,$_dewpointcalc}" # cache the calculations (and maybe the rest for debugging)
         }
         dbg2 DEWPOINT "calculations: $_dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
-        if (( ${#aDewpointsCalc[@]} > 1999 )) ; then # maybe out-of-memory DoS attack from radio environment
+        if (( ${#aDewpointsCalc[@]} > 2999 )) ; then # maybe an out-of-memory DoS attack from the RF environment
             declare -p aDewpointsCalc | xargs -n1 | tail +3 > "/tmp/$sID.$USER.$( cDate %d )" # FIXME: for debugging
             aDewpointsCalc=() && log "DEWPOINT: RESTARTED dewpoint caching."
         fi
@@ -650,7 +664,9 @@ cLogMore "Gathered options: $_moreopts $*"
 while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:iw:c:as:S:W:t:T:29vx" opt $_moreopts "$@"
 do
     case "$opt" in
-    \?) echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,device] " 1>&2
+    \?) { echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,device]"
+        echo "Special signals:"
+        grep "trap_[a-z12]*(.*:" $0 | sed 's/.*# //' ; } 1>&2 # e.g. VTALRM: re-emit all dewpoint calcs and recorded sensor readings (e.g. for debugging purposes)
         exit 1
         ;;
     q)  bQuiet=1
@@ -919,7 +935,7 @@ fi
 
 # now install further signal handlers
 
-trap_int() {    # log all collected sensors to MQTT
+trap_int() {    # INT: log set of collected sensors to MQTT
     trap '' INT 
     log "$sName signal INT: logging state to MQTT"
     cMqttStarred log "{*event*:*debug*,*message*:*Signal INT, will emit state message* }"
@@ -929,7 +945,7 @@ trap_int() {    # log all collected sensors to MQTT
  }
 trap 'trap_int' INT 
 
-trap_trap() {    # toggle verbosity 
+trap_trap() {    # TRAP: toggle verbosity 
     # ORIG: (( bVerbose )) && bVerbose="" || bVerbose=1 # switch bVerbose
     bVerbose=$( ((bVerbose)) || echo 1 ) # toggle verbosity 
     _msg="Signal TRAP: toggled verbosity to ${bVerbose:-none}, nHopSecs=$nHopSecs, sBand=$sBand"
@@ -938,15 +954,15 @@ trap_trap() {    # toggle verbosity
   }
 trap 'trap_trap' TRAP
 
-trap_usr2() {    # remove all home assistant announcements (CAREFUL!)
+trap_usr2() {    # USR2: remove ALL home assistant announcements (CAREFUL!) with .../sensor
     cHassRemoveAnnounce
-    _msg="Signal USR2: resetting all home assistant announcements"
+    _msg="Signal USR2: resetting ALL home assistant announcements"
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
   }
 trap 'trap_usr2' USR2 
 
-trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purposes)
+trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor readings (e.g. for debugging purposes)
     for KEY in "${!aDewpointsCalc[@]}" ; do
         _val="${aDewpointsCalc["$KEY"]}"
         _msg="{*key*:*$KEY*,*values*:*${_val//\"/*}*}"
@@ -974,7 +990,7 @@ trap_vtalrm() { # re-emit all recorded sensor readings (e.g. for debugging purpo
         done
     fi
 
-    _msg="Signal VTALRM: logged last MQTT messages from ${#aPrevReadings[@]} sensors and ${#aDewpointsCalc[@]} calculations."
+    _msg="Signal VTALRM: logged last MQTT messages from ${#aPrevReadings[@]} sensors and ${#aDewpointsCalc[@]} dewpoint calculations."
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
     cMqttState
@@ -1065,7 +1081,7 @@ do
     [[ $model && ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
     ident="${channel:-$id}" # prefer "channel" (if present) over "id" as the identifier for the sensor instance.
     model_ident="${model}${ident:+_$ident}"
-    model_ident="${model_ident//[^A-Za-z0-9_]}" # remove arithmetic characters from  model_ident to prevent arbitrary command execution vulnerability in indexes for arrays
+    model_ident="${model_ident//[^A-Za-z0-9_]}" # remove any special (e.g. arithmetic) characters from model_ident to prevent arbitrary command execution vulnerability in indexes for arrays
     rssi="$(    cExtractJsonVal rssi)"
     vTemperature="" && nTemperature10="" && nTemperature10Diff=""
     # set -x
@@ -1136,6 +1152,8 @@ do
         _bHasChannel="$(cHasJsonKey -v channel)" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasControl="$(cHasJsonKey -v control)" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasCmd="$(    cHasJsonKey -v cmd)"
+        _bHasCommand="$(    cHasJsonKey -v command)"
+        _bHasValue="$(    cHasJsonKey -v value)"
         _bHasData="$(   cHasJsonKey -v data)"
         _bHasCounter="$(cHasJsonKey -v counter )" #       {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
         _bHasCode="$(   cHasJsonKey -v code  )" #         {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
@@ -1215,11 +1233,11 @@ do
         nMinSeconds=$(( ( (bAlways||${#vTemperature}||${#vHumidity}) && (nMinSecondsWeather>nMinSecondsOther) ) ? nMinSecondsWeather : nMinSecondsOther ))
         _IsDiff=$(  ! cEqualJson "$data" "$prevval"  "freq freq1 freq2 rssi id snr noise" > /dev/null && echo 1 ) # determine whether any raw data has changed, ignoring non-important values
         _IsDiff2=$( ! cEqualJson "$data" "$prevvals" "freq freq1 freq2 rssi id snr noise" > /dev/null && echo 1 ) # determine whether raw data has changed compared to second last readings
-        _IsDiff3=$( [[ $_IsDiff && $_IsDiff2 ]] && ! cEqualJson "$prevval" "$prevvals" "freq freq1 freq2 rssi id snr noise" > /dev/null && echo 1 ) # FIXME: This could be optimized by caching values
+        _IsDiff3=$( (( _IsDiff && _IsDiff2 )) && ! cEqualJson "$prevval" "$prevvals" "freq freq1 freq2 rssi id snr noise" > /dev/null && echo 1 ) # FIXME: This could be optimized by caching values
         dbg ISDIFF "_IsDiff=$_IsDiff/$_IsDiff2/$_IsDiff2, PREV=$prevval, DATA=$data"
-        if [[ $_IsDiff || $bMoreVerbose ]] ; then
-            if [[ $_IsDiff2 ]] ; then
-                if [[ $_IsDiff3 ]] ; then
+        if (( _IsDiff || bMoreVerbose )) ; then
+            if (( _IsDiff2 )) ; then
+                if (( _IsDiff3 )) ; then
                     nMinSeconds=$(( nMinSeconds / 6 + 1 )) && : different from last and second last time, and these both diffrent, too.
                 else
                     nMinSeconds=$(( nMinSeconds / 4 + 1 )) && : different only from second last time
@@ -1232,22 +1250,22 @@ do
 
         declare -i _nSecDelta=$(( nTimeStamp - aLastPub[$model_ident] ))
         if (( bVerbose )) ; then
-            echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
+            echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasCommand=$_bHasCommand, hasValue=$_bHasValue, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
             echo "Counts=${aCounts[$model_ident]}, _nSecDelta=$_nSecDelta, #aDewpointsCalc=${#aDewpointsCalc[@]}"
             (( ! bMoreVerbose )) && 
                 echo "model_ident=$model_ident, READINGS=${aPrevReadings[$model_ident]}, Prev=$prevval, Prev2=$prevvals" | grep -E --color=auto 'model_ident=[^,]*|\{[^}]*}'
         fi
         
-        topicext="$model$( [[ "$type" == TPMS ]] && echo "-$type" )${channel:+/$channel}$( [[ $bAddIdToTopic || -z $channel ]] && echo "${id:+/$id}" )" # construct the variant part of the MQTT topic
+        topicext="$model$( [[ $type == TPMS ]] && echo "-$type" )${channel:+/$channel}$( [[ $bAddIdToTopic || -z $channel ]] && echo "${id:+/$id}" )" # construct the variant part of the MQTT topic
 
         if (( _bAnnounceReady )) ; then # deal with HASS annoucement need
             : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10"
-            if (( ${#vTemperature} || _bHasRain || ${#vPressure_kPa} || _bHasCmd || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
+            if (( ${#vTemperature} || _bHasRain || ${#vPressure_kPa} || _bHasCmd || _bHasCommand || _bHasValue || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
                         || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
                 [[ $protocol    ]] && _name="${aNames["$protocol"]:-$model}" || _name="$model" # fallback
                 # if the device has anyone of the above attributes, announce all the attributes it has ...:
                 # see also https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
-                [[ $vTemperature ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature
+                [[ $vTemperature ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature # "value_json.temperature|float|round(1)"
                 [[ $vHumidity    ]]  && {
                     cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
                 }
@@ -1257,11 +1275,13 @@ do
                 cHasJsonKey setpoint_C && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }TempTarget"      "value_json.setpoint_C"   setpoint
                 (( _bHasRain )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RainMM"  "value_json.rain_mm" rain_mm
                 [[ $vPressure_kPa  ]] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
-                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery_ok
+                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery
                 (( _bHasBatteryV  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Voltage"   "value_json.battery_V"    voltage
                 (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       "value_json.cmd"       motion
+                (( _bHasCommand    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Command"       "value_json.command"       command
+                (( _bHasValue      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Value"       "value_json.value"       value
                 (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Data"       "value_json.data"     data
-                (( _bHasRssi && bMoreVerbose )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal
+                (( _bHasRssi && bMoreVerbose )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal_strength # "value_json.rssi|float|round(2)"
                 (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Counter"   "value_json.counter"   counter
                 (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Fine Parts"  "value_json.pm2_5_ug_m3" density25
                 (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Estim Course Parts"  "value_json.estimated_pm10_0_ug_m3" density10
@@ -1367,7 +1387,7 @@ do
             done
         )] "
         log "$( cExpandStarredString "$_collection")" 
-        cMqttState "*note*:*regular log*,*collected_sensors*:*${!aPrevReadings[*]}*, $_collection, *aDewpointsCalcNumber*:${#aDewpointsCalc[@]}"
+        cMqttState "*note*:*regular log*,*collected_sensors*:*${!aPrevReadings[*]}*, $_collection, *cacheddewpoints*:${#aDewpointsCalc[@]}"
         nLastStatusSeconds=nTimeStamp
     elif (( ${#aPrevReadings[@]} > 1000 || nMqttLines%10000==0 || nReceivedCount % 20000 == 0 )) ; then # reset whole array to empty once in a while = starting over, assume DoS attack when >1000 readings
         cMqttState
