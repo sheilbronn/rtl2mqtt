@@ -49,12 +49,15 @@ sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweather
 
 declare -i nHopSecs
 declare -i nStatsSec=900
-declare    sSuggSampleRate=250k # default fpr rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
-declare    sSuggSampleRate=1000k # default fpr rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
+declare    sSuggSampleRate=250k # default for rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
+declare    sSuggSampleRate=1000k # default for rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
+# declare    sSuggSampleRate=1500k # default for rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
 declare    sSuggSampleModel=auto # -Y auto|classic|minmax
 declare -i nLogMinutesPeriod=60 # once per hour
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
+# if no radio event has been received for more than x hours (108x*3600 seconds), the restart
+declare -i nRestartAfterSeconds=$(( 2 * 3600 ))
 declare -i nMinSecondsOther=5 # only at least every nn seconds, reducing flicker as from motion sensors....
 declare -i nMinSecondsWeather=310 # only at least every n*60+10 seconds for unchanged environment data (temperature, humidity)
 declare -i nTimeStamp=$(cDate %s)-$nLogMessagesPeriod # initiate with a large sensible assumption....
@@ -159,7 +162,7 @@ cLogVal() { # log each value to a single file, args: device,sensor,value
     fVal="$dSensor/$(cDate %s)" 
     [ -f $fVal ] || echo "$3" > $fVal
     # [ "$(find $dDevice -name .checked -mtime -1)" ] || { find "$dSensor" -xdev -type f -mtime +1 -exec rm '{}' ";" ; touch $dDevice/.checked ; }
-    [[ $fVal =~ 7$ ]] && { find $dSensor -xdev -type f -mtime +2 -exec rm '{}' ";" ; } && dbg "INFO" cleaning value log # only remove files older than 1 day when the seconds end in 37...
+    [[ $fVal =~ 7$ ]] && { find $dSensor -xdev -type f -mtime +3 -exec rm '{}' ";" ; } && dbg "INFO" cleaning value log # only remove files older than 1 day when the seconds end in 37...
     return 0
   }
 
@@ -168,7 +171,7 @@ cLogMore() { # log to syslog logging facility, too.
     [[ $sDoLog ]] || return
     _level=info
     (( $# > 1 )) && _level="$1" && shift
-    echo "$sName: $*" 1>&2
+    [ -t 2 ] && echo "$sName: $*" 1>&2
     logger -p "daemon.$_level" -t "$sID" -- "$*"
     log "$@"
   }
@@ -206,7 +209,7 @@ cExpandStarredString() {
 cRotateLogdirSometimes() {           # check for logfile rotation only with probability of 1/60
     local - && set +x
     if (( nMinute + nSecond == 67 )) && cd "$1" ; then 
-        _files="$( find . -xdev -maxdepth 2 -type f -size +500k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 | xargs -0 ;
+        _files="$( find . -xdev -maxdepth 2 -type f -size +1000k "!" -name "*.old" -exec mv '{}' '{}'.old ";" -print0 | xargs -0 ;
                 find . -xdev -maxdepth 2 -type f -size -250c -mtime +13 -exec rm '{}' ";" -print0 | xargs -0 )"
         nSecond+=1
         [[ $_files ]] && cLogMore "Rotated files: $_files"
@@ -222,6 +225,7 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
         _topic="$1"
         [[ $1 =~ / ]] || _topic="$sRtlPrefix/bridge/$1" # add bridge prefix if no slash contained
         _msg="$2"
+        [[ $1 == "log" ]] && cLogMore "MQTTLOG: $2"
     fi
     _topic="${_topic/#\//$basetopic}"
     _arguments=( ${sMID:+-i $sMID} -t "$_topic" -m "$( cExpandStarredString "$_msg" )" "${@:3:$#}" ) # ... append further arguments
@@ -722,7 +726,7 @@ do
         fi
         basetopic="$sRtlPrefix/$OPTARG"
         nHopSecs=${nHopSecs:-61} # (60/2)+11 or 60+1 or 60+21 or 7, i.e. should be a proper coprime to 60sec
-        nStatsSec="5*(nHopSecs-1)"
+        nStatsSec="10*(nHopSecs-1)"
         ;;
     M)  rtl433_opts+=( -M "$OPTARG" )
         ;;
@@ -995,7 +999,7 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
     cMqttState
     declare -i _delta=$(cDate %s)-nTimeStamp
-    if (( _delta > 10800 )) ; then # no radio event has been received for more than 3 hours, will restart...
+    if (( _delta > nRestartAfterSeconds )) ; then # no radio event has been received for more than x hours, will restart...
         cMqttStarred log "{*event*:*exiting*,*message*:*no radio event received for $((_delta/60)) minutes, assuming fail*}"
         exit 12 # possibly restart whole script, if systemd allows it
     fi
@@ -1020,12 +1024,20 @@ do
 
     nLoops+=1
     # dbg 000
-    if [[ $data =~ ^SDR:.Tuned.to.([0-9]*\.[0-9]*)MHz ]] ; then # SDR: Tuned to 868.300MHz.
+    # convert  msg type "SDR: Tuned to 868.300MHz." to "{"center_frequency":868300000}" (JSON) to be processed further down
+    if [[ $data =~ xxx.:.\"Tuned.to.([0-9]*\.[0-9]*)MHz\.\" ]] ; then 
+        # matches:  {"time" : "2023-10-12 22:38:16", "src" : "SDR", "lvl" : 5, "msg" : "Tuned to 433.910MHz."}
+        # data="{\"center_frequency\":${BASH_REMATCH[1]},\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
+        data="{\"center_frequency\":${BASH_REMATCH[1]}}"
+    elif [[ $data =~ ^SDR:.Tuned.to.([0-9]*\.[0-9]*)MHz ]] ; then 
+        # SDR: Tuned to 868.300MHz.   # .... older, former variant of log message
         # convert  msg type "SDR: Tuned to 868.300MHz." to "{"center_frequency":868300000}" (JSON) to be processed further down
-        data="{\"center_frequency\":${BASH_REMATCH[1]}${BASH_REMATCH[2]}000,\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
+        # data="{\"center_frequency\":${BASH_REMATCH[1]}${BASH_REMATCH[2]}000,\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
+        data="{\"center_frequency\":${BASH_REMATCH[1]}${BASH_REMATCH[2]}000}"
     elif [[ $data =~ ^rtlsdr_set_center_freq.([0-9\.]*) ]] ; then 
-        # convert older msg type "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) to be processed further down
-        data="{\"center_frequency\":${BASH_REMATCH[1]},\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
+        # convert older, former msg type "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) to be processed further down
+        # data="{\"center_frequency\":${BASH_REMATCH[1]},\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
+        data="{\"center_frequency\":${BASH_REMATCH[1]}}"
     elif [[ $data =~ ^[^{] ]] ; then # transform any any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
         data=${data#\*\*\* } # Remove any leading stars "*** "
         if [[ $bMoreVerbose && $data =~ ^"Allocating " ]] ; then # "Allocating 15 zero-copy buffers"
@@ -1048,6 +1060,7 @@ do
         cHasJsonKey center_frequency && _freq="$(cExtractJsonVal center_frequency)" && sBand="$(cMapFreqToBand "$_freq")" # formerly: sBand="$( jq -r '.center_frequency / 1000000 | floor  // empty' <<< "$data" )"
         [[ "$(cExtractJsonVal src)" == SDR ]] && [[ "$(cExtractJsonVal msg)" =~ ^Tuned\ to\ ([0-9]*)\. ]] && sBand="${BASH_REMATCH[1]}" #FIXME FIXME        
         basetopic="$sRtlPrefix/${sBand:-999}"
+        # sLastTuneTime="$(cExtractJsonVal time)"
         cDeleteJsonKeys time
         if (( bVerbose )) ; then
             data="${data/{ /{}" # remove first space after opening {
@@ -1055,13 +1068,19 @@ do
             _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && : "${_freqs}"
             cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*},*BAND*:${sBand:-null}}"
         fi
-        nLastStatsMessage="$(cDate %s)" # prepare for introducing a delay for avoiding race condition after freq hop (FIXME: not implemented yet)
+        nLastTuneMessage="$(cDate %s)" # prepare for introducing a delay for avoiding race condition after freq hop (FIXME: not implemented yet)
         continue
     fi
     (( bVerbose )) && [[ $datacopy != "$data" ]] && echo "==========================================" && datacopy="$data"
     dbg RAW "$data"
-    data="${data//\" : /\":}" # remove any space around (hopefully JSON) colons
+    data="${data//\" : /\":}" # remove any space around (hopefully JSON-like) colons
     nReceivedCount+=1
+
+    # EXPERIMENTAL: skip message if in the same second as the previous tune message
+    if [[ $nLastTuneMessage == "$(cDate %s)" ]] ; then
+        dbg TOOEARLY "$data"
+        continue
+    fi
 
     # cPidDelta 1ST
 
