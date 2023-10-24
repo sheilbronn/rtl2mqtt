@@ -323,7 +323,7 @@ cHassAnnounce() {
     local _configtopicpart="$( echo "$3" | tr -d "][ /-" | tr "[:upper:]" "[:lower:]" )"
     local _topic="${sHassPrefix}/$_component/${1///}${_configtopicpart}$_jsonpath_red/${6:-none}/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
           _configtopicpart="${_configtopicpart^[a-z]*}" # ... capitalize the first letter for readability
-    local _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aNames[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
+    local _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aProtocols[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
     local _msg="*name*:*$_channelname*,*~*:*$_sensortopic*,*state_topic*:*~*,$_device,*device_class*:*${6:-none}*,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit_str}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
           # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
           # _msg="$_msg,*json_attributes_topic*:*~*" # STILL TO DEBUG
@@ -814,14 +814,14 @@ else
 fi
 basetopic="$sRtlPrefix/$sBand" # intial setting for basetopic
 
-# Enumerate the supported protocols and their names, put them into array aNames:
+# Enumerate the supported protocols and their names, put them into array aProtocols:
 # Here a sample: 
 # ...
 # [215]  Altronics X7064 temperature and humidity device
 # [216]* ANT and ANT+ devices
-declare -A aNames
+declare -A aProtocols
 while read -r num name ; do 
-    [[ $num =~ ^\[([0-9]+)\]\*?$ ]] && aNames+=( [${BASH_REMATCH[1]}]="$name" )
+    [[ $num =~ ^\[([0-9]+)\]\*?$ ]] && aProtocols+=( [${BASH_REMATCH[1]}]="$name" )
 done < <( $rtl433_command -R 99999 2>&1 )
 
 cEchoIfNotDuplicate() {
@@ -974,12 +974,14 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
         cMqttStarred dewpoint "$_msg"
     done
 
-   _msg="$( declare -p | awk '$0 ~ "^declare -A" && $3 ~ "^a" { printf(" %s*%s(%s)*:%d" , sep, gensub("=.*","",1,$3), gensub("-","",1,$2), gsub("]=","") ) ; sep="," }' )" # all arrays
+    # output all arrays, filter associative arrays starting with lowercase a
+   _msg="$( declare -p | awk '$0 ~ "^declare -A" && $3 ~ "^a" { printf("%s*%s(%s)*:%d" , sep, gensub("=.*","",1,$3), gensub("-","",1,$2), gsub("]=","") ) ; sep="," }' )" # all arrays
     dbg ARRAYS "$_msg"
     cMqttStarred arrays "[$_msg]"
 
-    for KEY in "${!aPrevReadings[@]}" ; do
-        _val="${aPrevReadings["$KEY"]}" && _val="${_val/\{}" && _val="${_val/\}}"
+    # output ascending and sorted by count of readings, no security risk since keys are cleaned from any suspicious characters
+    for KEY in $(for key in "${!aCounts[@]}"; do echo "${aCounts[$key]} $key" ; done | sort -n | cut -d" " -f2-) ; do
+        _val="${aPrevReadings["$KEY"]}" && _val="${_val/\{}" && _val="${_val/\}}" # remove leading and trailing curly braces
         _msg="{*model_ident*:*$KEY*,${_val//\"/*} , *COUNT*:${aCounts["$KEY"]}}"
         dbg READING "$KEY  $_msg"
         cMqttStarred reading "$_msg"
@@ -1281,7 +1283,7 @@ do
             : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10"
             if (( ${#vTemperature} || _bHasRain || ${#vPressure_kPa} || _bHasCmd || _bHasCommand || _bHasValue || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
                         || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
-                [[ $protocol    ]] && _name="${aNames["$protocol"]:-$model}" || _name="$model" # fallback
+                [[ $protocol    ]] && _name="${aProtocols["$protocol"]:-$model}" || _name="$model" # fallback
                 # if the device has anyone of the above attributes, announce all the attributes it has ...:
                 # see also https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
                 [[ $vTemperature ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature # "value_json.temperature|float|round(1)"
@@ -1395,7 +1397,7 @@ do
     if (( nReadings > nPrevMax )) ; then   # a new max implies we have a new device
         nPrevMax=nReadings
         _sensors="${vTemperature:+*temperature*,}${vHumidity:+*humidity*,}${vPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery*,}${_bHasRain:+*rain*,}"
-        cMqttStarred log "{*event*:*device added*,*model*:*$model*,*protocol*:*$protocol*,*id*:$id,*channel*:*$channel*,*description*:*${protocol:+${aNames[$protocol]}}*, *sensors*:[${_sensors%,}]}"
+        cMqttStarred log "{*event*:*device added*,*model*:*$model*,*protocol*:*$protocol*,*id*:$id,*channel*:*$channel*,*description*:*${protocol:+${aProtocols[$protocol]}}*, *sensors*:[${_sensors%,}]}"
         cMqttState
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then  # log the status once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*:[$(  _comma=""
