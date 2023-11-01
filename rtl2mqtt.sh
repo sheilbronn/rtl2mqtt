@@ -100,8 +100,6 @@ declare -Ai aEarlierHumidVals
 declare -Ai aEarlierHumidTime
 declare -Ai aLastPub
 
-alias areVerbose="(( bVerbose ))"
-
 cEmptyArrays() { # reset the 11 arrays from above
     aPrevReadings=()
     aSecondPrevReadings=()
@@ -182,7 +180,7 @@ cLogMore() { # log to syslog logging facility, too.
 
 dbg() { # output the args to stderr if option bVerbose is set
 	local - && set +x
-    areVerbose && { [[ $2 ]] && echo "$1:" "${@:2:$#}" 1>&2 || echo "DEBUG: $1" ; } 1>&2
+     (( bVerbose )) && { [[ $2 ]] && echo "$1:" "${@:2:$#}" 1>&2 || echo "DEBUG: $1" ; } 1>&2
 	}
     # set -x ; dbg ONE TWO || echo ok to fail... ; exit
     # set -x ; bVerbose=1 ; dbg MANY MORE OF IT ; dbg "ALL TOGETHER" ; exit
@@ -769,7 +767,7 @@ do
         ;;
     9)  bEveryBroker=1 # send to every mentioned broker
         ;;
-    v)  if areVerbose ; then
+    v)  if  (( bVerbose )) ; then
             bMoreVerbose=1 && rtl433_opts=( "-M noise:60" "${rtl433_opts[@]}" -v )
             dbg2() { local - ; set +x ; (( bMoreVerbose)) && dbg "$@" ; }
         else
@@ -1069,7 +1067,7 @@ do
         basetopic="$sRtlPrefix/${sBand:-999}"
         # sLastTuneTime="$(cExtractJsonVal time)"
         cDeleteJsonKeys time
-        if areVerbose ; then
+        if  (( bVerbose )) ; then
             data="${data/{ /{}" # remove first space after opening {
             cEchoIfNotDuplicate "INFOMSG: $data"
             _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && : "${_freqs}"
@@ -1078,7 +1076,7 @@ do
         nLastTuneMessage="$(cDate %s)" # prepare for introducing a delay for avoiding race condition after freq hop (FIXME: not implemented yet)
         continue
     fi
-    areVerbose && [[ $datacopy != "$data" ]] && echo "==========================================" && datacopy="$data"
+     (( bVerbose )) && [[ $datacopy != "$data" ]] && echo "==========================================" && datacopy="$data"
     dbg RAW "$data"
     data="${data//\" : /\":}" # remove any space around (hopefully JSON-like) colons
     nReceivedCount+=1
@@ -1193,7 +1191,7 @@ do
             _k="$( cHasJsonKey "unknown.*" )" && [[ $(cExtractJsonVal "$_k") == 0 ]] && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
             bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize=skip non-plausible readings
         fi
-        areVerbose && ! cHasJsonKey BAND && cAddJsonKeyVal BAND "$sBand"  # add BAND here to ensure it also goes into the logfile for all data lines
+         (( bVerbose )) && ! cHasJsonKey BAND && cAddJsonKeyVal BAND "$sBand"  # add BAND here to ensure it also goes into the logfile for all data lines
         (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are to be sent retained
         [[ $sDoLog == "dir" ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
     fi
@@ -1207,10 +1205,10 @@ do
         continue
     elif ! [[ $model_ident ]] ; then # probably a stats message
         dbg "model_ident is empty"
-        areVerbose && data="${data//\" : /\":}" && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
+         (( bVerbose )) && data="${data//\" : /\":}" && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
     elif [[ $bAlways || $nTimeStamp -gt $((nTimeStampPrev+nMinSecondsOther)) ]] || ! cEqualJson "$data" "$sDataPrev" "freq rssi"; then
         : "relevant, not super-recent change to previous signal - ignore freq+rssi changes, sRoundTo=$sRoundTo"
-        if areVerbose ; then
+        if  (( bVerbose )) ; then
             (( bRewrite && bMoreVerbose && ! bQuiet )) && cEchoIfNotDuplicate "CLEANED: $model_ident=$( grep -E --color=yes '.*' <<< "$data")" # resulting message for MQTT
             [[ $model_ident =~ $sSensorMatch ]] || continue # however, skip if no fit
         fi
@@ -1276,7 +1274,7 @@ do
         _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident] != 1 && aCounts[$model_ident] >= nMinOccurences )) # sensor has appeared several times
 
         declare -i _nSecDelta=$(( nTimeStamp - aLastPub[$model_ident] ))
-        if areVerbose ; then
+        if  (( bVerbose )) ; then
             echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasCommand=$_bHasCommand, hasValue=$_bHasValue, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl"
             echo "Counts=${aCounts[$model_ident]}, _nSecDelta=$_nSecDelta, #aDewpointsCalc=${#aDewpointsCalc[@]}"
             (( ! bMoreVerbose )) && 
@@ -1372,13 +1370,13 @@ do
                 # cAddJsonKeyVal -n rssi "$rssi" # put rssi back in
                 # FIXME: [[ $_IsDiff || $bVerbose ]] && cAddJsonKeyVal COMPARE "s=$_nSecDelta,$_IsDiff($(longest_common_prefix -s "$sReadPrev" "$data"))"
                 cAddJsonKeyVal -b BAND -n dewpoint "$vDewptc" # add dewpoint before BAND key
-                areVerbose && [[ $vDewptc ]] && cAddJsonKeyVal -n DELTADEW "$vDeltaSimple"
+                 (( bVerbose )) && [[ $vDewptc ]] && cAddJsonKeyVal -n DELTADEW "$vDeltaSimple"
                 ! [[ $_IsDiff2 ]] && dbg "2ND" "are same."
                 # (( bVerbose || ! bVerbose )) &&
-                areVerbose && cAddJsonKeyVal -n NOTE "${_IsDiff:+1ST($_nSecDelta/$nMinSeconds) }${_IsDiff2:+2ND(c=${aCounts[$model_ident]},s=$_nSecDelta/$nMinSeconds,IsDiff3=$_IsDiff3)}" # accept extraneous space
+                 (( bVerbose )) && cAddJsonKeyVal -n NOTE "${_IsDiff:+1ST($_nSecDelta/$nMinSeconds) }${_IsDiff2:+2ND(c=${aCounts[$model_ident]},s=$_nSecDelta/$nMinSeconds,IsDiff3=$_IsDiff3)}" # accept extraneous space
 
                 aSecondPrevReadings[$model_ident]="$sReadPrev"
-                areVerbose && cAddJsonKeyVal -n SDELTA "$sDelta"
+                 (( bVerbose )) && cAddJsonKeyVal -n SDELTA "$sDelta"
             fi
 
             if cMqttStarred "$basetopic/$topicext" "${data//\"/*}" ${bRetained:+ -r} ; then # ... finally: publish the values to broker
