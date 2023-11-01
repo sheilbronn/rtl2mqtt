@@ -184,7 +184,7 @@ dbg() { # output the args to stderr if option bVerbose is set
 	}
     # set -x ; dbg ONE TWO || echo ok to fail... ; exit
     # set -x ; bVerbose=1 ; dbg MANY MORE OF IT ; dbg "ALL TOGETHER" ; exit
-dbg2() { : ; }  # predefine to do nothing, but allow to redefine it later
+dbg2() { : ; }  # predefine it now to do nothing, but allow to redefine it later
 
 cMapFreqToBand() {
     local - && set +x
@@ -665,7 +665,7 @@ cRound() {
 [[ $* =~ '-v'      ]] && _moreopts="${_moreopts//-v}" # -v on command line restarts gathering -v options
 cLogMore "Gathered options: $_moreopts $*"
 
-while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:iI:w:c:as:S:W:t:T:29vx" opt $_moreopts "$@"
+while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:iI:B:w:c:as:S:W:t:T:29vx" opt $_moreopts "$@"
 do
     case "$opt" in
     \?) { echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,device]"
@@ -745,9 +745,11 @@ do
         ;;
     I)  sSuppressAttrs="$sSuppressAttrs $OPTARG" # suppress attribute from the output
         ;;
-    c)  nMinOccurences=$OPTARG # MQTT announcements only after at least $nMinOccurences occurences...
+    B)  sRtlPrefix="$OPTARG"
         ;;
-    T)  nMinSecondsOther=$OPTARG # seconds before repeating the same (unchanged) reading
+    c)  nMinOccurences="$OPTARG" # MQTT announcements only after at least $nMinOccurences occurences...
+        ;;
+    T)  nMinSecondsOther="$OPTARG" # seconds before repeating the same (unchanged) reading
         ;;
     a)  bAlways=1
         nMinOccurences=1
