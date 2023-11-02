@@ -296,6 +296,7 @@ cHassAnnounce() {
         setpoint*)	_icon_str="thermometer"     ; _unit_str="%"	        ; _state_class="measurement" ;;
         humidity)	_icon_str="water-percent"   ; _unit_str="%"	        ; _state_class="measurement" ;;
         rain_mm)	_icon_str="weather-rainy"   ; _unit_str="mm"	    ; _state_class="total_increasing" ;;
+        wind_avg_km_h) _icon_str="weather-windy" ; _unit_str="km_h"	    ; _state_class="measurement" ;;
         pressure_kPa) _icon_str="airballoon-outline" ; _unit_str="kPa"	; _state_class="measurement" ;;
         pressure_hPa) _icon_str="airballoon-outline" ; _unit_str="hPa"	; _state_class="measurement" ;;
         ppm)	    _icon_str="smoke"           ; _unit_str="ppm"	    ; _state_class="measurement" ;;
@@ -315,6 +316,7 @@ cHassAnnounce() {
         learn)      _icon_str="plus"            ; _unit_str="#"     ; _state_class="total_increasing" ;;
         channel)    _icon_str="format-list-numbered" ; _unit_str="#" ; _state_class="measurement" ;;
         voltage)    _icon_str="FIXME"           ; _unit_str="V"     ; _state_class="measurement" ;;
+        battery)	_icon_str=""                ; _unit_str="#"	    ; _state_class="measurement" ;;
         battery_ok) _icon_str=""                ; _unit_str="#"     ; _state_class="measurement" ; _component=measurement ;;
 		none)		_icon_str="" ;; 
         *)          cLogMore "Notice: special icon and/or unit not defined for '$6'"
@@ -665,7 +667,7 @@ cRound() {
 [[ $* =~ '-v'      ]] && _moreopts="${_moreopts//-v}" # -v on command line restarts gathering -v options
 cLogMore "Gathered options: $_moreopts $*"
 
-while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:iI:B:w:c:as:S:W:t:T:29vx" opt $_moreopts "$@"
+while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:OiI:B:w:c:as:S:W:t:T:29vx" opt $_moreopts "$@"
 do
     case "$opt" in
     \?) { echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,device]"
@@ -702,10 +704,23 @@ do
         ;;
     l)  dLog="$OPTARG" 
         ;;
-    f)  fReplayfile="$( [[ $OPTARG = "-" || $OPTARG = /dev/stdin ]] && echo /dev/stdin || readlink -f "$OPTARG" )" # file to replay (e.g. for debugging), instead of rtl_433 output
+    f)  if [[ $OPTARG = "-" || $OPTARG = /dev/stdin ]] ; then
+            echo "ERROR: reading stdin currently not supported" 1>&2
+            exit 1
+        elif [[ $OPTARG == MQTT || $OPTARG =~ MQTT: ]] ; then # syntax: -f MQTT:brokerhost:topicprefixforlistening
+            fReplayfile=MQTT:
+            OPTARG="${OPTARG#MQTT:}" && OPTARG="${OPTARG#MQTT}"
+            hMqttSource="${OPTARG//:*}" ; [[ $hMqttSource ]] || hMqttSource=test.mosquitto.org
+            sMqttTopic="${OPTARG##$hMqtt}" ; sMqttTopic="${sMqttTopic#:}"
+            [[ $sMqttTopic ]] || sMqttTopic=home/rtl_433
+            # nMinSecondsOther=1
+            # nMinOccurences=2
+        else
+            fReplayfile="$( readlink -f "$OPTARG" )" # file to replay (e.g. for debugging), instead of rtl_433 output
+            nMinSecondsOther=0
+            nMinOccurences=1
+        fi
         dbg2 INFO "fReplayfile: $fReplayfile"
-        nMinSecondsOther=0
-        nMinOccurences=1
         ;;
     w)  sRoundTo="$OPTARG" # round temperature to this value and relative humidity to 4-times this value (_hMult)
         ;;
@@ -741,7 +756,9 @@ do
     Y)  rtl433_opts+=( -Y "$OPTARG" )
         sSuggSampleModel="$OPTARG"
         ;;
-    i)  bAddIdToTopic=1 
+    O)  bPreferIdOverChannel=1
+        ;;
+    i)  bAddIdToTopic=1
         ;;
     I)  sSuppressAttrs="$sSuppressAttrs $OPTARG" # suppress attribute from the output
         ;;
@@ -806,8 +823,10 @@ fi
 # command -v jq > /dev/null || { _msg="$sName: jq might be necessary!" ; log "$_msg" ; echo "$_msg" 1>&2 ; }
 command -v iwgetid > /dev/null || { _msg="$sName: iwgetid not found" ; log "$_msg" ; echo "$_msg" 1>&2 ; alias iwgetid : ; }
 
-if [[ $fReplayfile ]]; then
-    sBand="${fReplayfile##*/}" ; sBand="${sBand%%_*}"
+if [[ $fReplayfile ]]; then # for both file as well as MQTT...
+    sBand="999"
+    _band="${fReplayfile##*/}" ; _band="${_band%%_*}" # if a numeric sBand is the first part of the filename, e.g. 433 in 433_BresserCH1_...
+    [[ $_band =~ ^[0-9]+$ ]] && sBand="$_band"
 else
     _output="$( $rtl433_command "${rtl433_opts[@]}" -T 1 2>&1 )"
     # echo "$_output" ; exit
@@ -876,10 +895,20 @@ trap 'trap_exit' EXIT
 
 trap '' INT TRAP USR2 VTALRM
 
-if [[ $fReplayfile ]] ; then
+if [[ $fReplayfile =~ ^MQTT: ]] ; then
+    echo MQTT: $fReplayfile 1>&2
+    coproc COPROC (
+        set -x
+        mosquitto_sub -h "$hMqttSource" -t "$sMqttTopic"
+    )
+elif [[ $fReplayfile == /dev/stdin ]] ; then
+    exit 0 # doesn't work correctly, filtered out above at command line parsing
+elif [[ $fReplayfile ]] ; then
     coproc COPROC ( 
+        sleep 1
         shopt -s extglob ; export IFS=' '
-        while read -r line ; do 
+        # set -x ; : fReplayfile=$fReplayfile, 
+        while read -t 2 -r line ; _rc=$? ; [[ $_rc == 0 ]] ; do 
             : "line $line" #  e.g.   103256 rtl/433/Ambientweather-F007TH/1 { "protocol":20,"id":44,"channel":1,"freq":433.903,"temperature":19,"humidity":62,"BAND":433,"HOUR":16,"NOTE":"changed"}
             : "FRONT ${line%%{+(?)}" 1>&2
             data="${line##*([!{])}" # data starts with first curly bracket...
@@ -898,11 +927,22 @@ if [[ $fReplayfile ]] ; then
                 fi
                 cAddJsonKeyVal model "${sModel:-UNKNOWN}"
                 cAddJsonKeyVal BAND "${sBand:-null}" 
+            else
+                : ! cHasJsonKey BAND && cAddJsonKeyVal BAND "${sBand:-null}"
             fi
             echo "$data" # ; echo "EMITTING: $data" 1>&2
             sleep 1
-        done < "$fReplayfile" ; sleep 5 ; # echo "COPROC EXITING." 1>&2
+        done < "$fReplayfile"
+        dbg INFO "Replay file ended, last rc=$_rc."
+        sleep 3 ; # echo "COPROC EXITING." 1>&2
     )  
+        # Reconnect the coprocess's stdin to a new input file
+    exec {COPROC[1]}<&0
+    exec 1<&- # close my stdin
+    # exec {COPROC[0]} </path/to/new/input/file
+
+    sleep 2
+    set +x
 else
     if [[ $bVerbose || -t 1 ]] ; then
         cLogMore "rtl_433 ${rtl433_opts[*]}"
@@ -920,7 +960,10 @@ else
     # renice -n 17 -g "$_pgrp" # > /dev/null
     _msg="COPROC_PID=$COPROC_PID, pgrp=$_pgrp, ppid=$_ppid, pid=$_pidrtl"
     dbg2 PID "$_msg"
-    if (( _ppid == COPROC_PID  )) ; then
+    if ! (( _ppid == COPROC_PID  )) ; then
+        cLogMore "start of $rtl433_command failed: $_msg"
+        cMqttStarred log "{*event*:*startfailed*,*host*:*$sHostname*,*message*:*$rtl433_command ended fast: $_msg*}"
+    else
         renice -n 12 "$_pidrtl" > /dev/null 
         cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*message*:*rtl_433 start: $_msg*}"
 
@@ -936,13 +979,11 @@ else
             (( nRC != 0 )) && echo "ERROR: HASS Announcements failed with rc=$nRC" 1>&2
             sleep 1
         fi
-    else
-        cLogMore "start of $rtl433_command failed: $_msg"
-        cMqttStarred log "{*event*:*startfailed*,*host*:*$sHostname*,*message*:*$rtl433_command ended fast: $_msg*}"
+
     fi
 fi 
 
-# now install further signal handlers
+# also install additional signal handlers
 
 trap_int() {    # INT: log set of collected sensors to MQTT
     trap '' INT 
@@ -950,8 +991,8 @@ trap_int() {    # INT: log set of collected sensors to MQTT
     cMqttStarred log "{*event*:*debug*,*message*:*Signal INT, will emit state message* }"
     cMqttState "*note*:*trap INT*,*collected_sensors*:*${!aPrevReadings[*]}* }" # FIXME: does it still work
     nLastStatusSeconds=$(cDate %s) 
-    [[ $fReplayfile ]] && exit 0 || trap 'trap_int' INT 
- }
+    [[ $fReplayfile && ! $fReplayfile =~ MQTT: ]] && exit 0 || trap 'trap_int' INT # FIXME: killing mosquitto_sub...
+  }
 trap 'trap_int' INT 
 
 trap_trap() {    # TRAP: toggle verbosity 
@@ -980,7 +1021,7 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
     done
 
     # output all arrays, filter associative arrays starting with lowercase a
-   _msg="$( declare -p | awk '$0 ~ "^declare -A" && $3 ~ "^a" { printf("%s*%s(%s)*:%d" , sep, gensub("=.*","",1,$3), gensub("-","",1,$2), gsub("]=","") ) ; sep="," }' )" # all arrays
+    _msg="$( declare -p | awk '$0 ~ "^declare -A" && $3 ~ "^a" { printf("%s*%s(%s)*:%d" , sep, gensub("=.*","",1,$3), gensub("-","",1,$2), gsub("]=","") ) ; sep="," }' )" # all arrays
     dbg ARRAYS "$_msg"
     cMqttStarred arrays "[$_msg]"
 
@@ -1020,8 +1061,10 @@ trap_other() {
   }
 trap 'trap_other' $sSignalsOther # STOP TSTP CONT HUP QUIT ABRT PIPE TERM
 
+# set -x ; : COPROC[0]=${COPROC[0]} COPROC[1]=${COPROC[1]} # debug
 while read -r data <&"${COPROC[0]}" ; _rc=$? ; (( _rc==0  || _rc==27 || ( bVerbose && _rc==1111 ) ))      # ... and go through the loop
 do
+    set +x
     # FIXME: data should be cleaned from any suspicous characters sequences as early as possible for security reasons - an extra jq invocation might be worth this...
 
     # (( _rc==1 )) && cMqttStarred log "{*event*:*warn*,*message*:*read _rc=$_rc, data=$data*}" && sleep 2  # quick hack to slow down and debug fast loops
@@ -1105,7 +1148,7 @@ do
     id="$(      cExtractJsonVal id)"
     model="" && { cHasJsonKey model || cHasJsonKey since ; } && model="$(cExtractJsonVal model)"
     [[ $model && ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
-    ident="${channel:-$id}" # prefer "channel" (if present) over "id" as the identifier for the sensor instance.
+    (( bPreferIdOverChannel )) && ident="${id:-$channel}" || ident="${channel:-$id}" # prefer "id" (if present) over "channel" as the identifier for the sensor instance.
     model_ident="${model}${ident:+_$ident}"
     model_ident="${model_ident//[^A-Za-z0-9_]}" # remove any special (e.g. arithmetic) characters from model_ident to prevent arbitrary command execution vulnerability in indexes for arrays
     rssi="$(    cExtractJsonVal rssi)"
@@ -1169,7 +1212,9 @@ do
         [[ $vPressure_kPa =~ ^[0-9.]+$ ]] || vPressure_kPa="" # cAssureJsonVal pressure_kPa "<= 9999", at least match a number
         _bHasParts25="$( [[ $(cExtractJsonVal pm2_5_ug_m3     ) =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
         _bHasParts10="$( [[ $(cExtractJsonVal estimated_pm10_0_ug_m3 ) =~ ^[0-9.]+$ ]] && echo 1 )" # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
-        _bHasRain="$(     [[ $(cExtractJsonVal rain_mm   ) =~ ^[1-9][0-9.]+$ ]] && echo 1 )" # formerly: cAssureJsonVal rain_mm ">0"
+        _bHasRain="$(       [[ $(cExtractJsonVal rain_mm   ) =~ ^[1-9][0-9.]+$ ]] && echo 1 )" # formerly: cAssureJsonVal rain_mm ">0"
+        _bHasWindAvgKmh="$( [[ $(cExtractJsonVal wind_avg_km_h ) =~ ^[1-9][0-9.]+$ ]] && echo 1 )" # not for value values starting with 0
+        _bHasWindDirDeg="$( [[ $(cExtractJsonVal wind_dir_deg  ) =~ ^[1-9][0-9.]+$ ]] && echo 1 )" # not for value values starting with 0
         _bHasBatteryOK="$(  [[ $(cExtractJsonVal battery_ok) =~ ^[01][0-9.]*$ ]] && echo 1 )" # 0,1 or some float between (0=LOW;1=FULL)
         _bHasBatteryV="$(  [[ $(cExtractJsonVal battery_V) =~ ^[0-9.]+$ ]] && echo 1 )" # voltage, also battery_mV
         _bHasZone="$(   cHasJsonKey -v zone)" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1}
@@ -1257,7 +1302,7 @@ do
             # grep expressen was: '^[^/]*|/'
             { echo "$_prefix $model_ident" ; echo "$sReadPrev" ; echo "${aPrevReadings[$model_ident]}" ; } | grep -E --color=auto '[ {].*'
         fi
-        nMinSeconds=$(( ( (bAlways||${#vTemperature}||${#vHumidity}) && (nMinSecondsWeather>nMinSecondsOther) ) ? nMinSecondsWeather : nMinSecondsOther ))
+        nMinSeconds=$(( ( (bAlways || ${#vTemperature} || ${#vHumidity} ) && (nMinSecondsWeather>nMinSecondsOther) ) ? nMinSecondsWeather : nMinSecondsOther ))
         _IsDiff=$(  ! cEqualJson "$data" "$sReadPrev"  "freq freq1 freq2 rssi id snr noise" > /dev/null && echo 1 ) # determine whether any raw data has changed, ignoring non-important values
         _IsDiff2=$( ! cEqualJson "$data" "$sReadPrevS" "freq freq1 freq2 rssi id snr noise" > /dev/null && echo 1 ) # determine whether raw data has changed compared to second last readings
         _IsDiff3=$( (( _IsDiff && _IsDiff2 )) && ! cEqualJson "$sReadPrev" "$sReadPrevS" "freq freq1 freq2 rssi id snr noise" > /dev/null && echo 1 ) # FIXME: This could be optimized by caching values
@@ -1287,7 +1332,7 @@ do
 
         if (( _bAnnounceReady )) ; then # deal with HASS annoucement need
             : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10"
-            if (( ${#vTemperature} || _bHasRain || ${#vPressure_kPa} || _bHasCmd || _bHasCommand || _bHasValue || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
+            if (( ${#vTemperature} || _bHasRain || _bHasWindAvgKmh || ${#vPressure_kPa} || _bHasCmd || _bHasCommand || _bHasValue || _bHasData ||_bHasCode || _bHasButtonR || _bHasDipSwitch 
                         || _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
                 [[ $protocol    ]] && _name="${aProtocols["$protocol"]:-$model}" || _name="$model" # fallback
                 # if the sensor has anyone of the above attributes, announce all the attributes it has ...:
@@ -1301,6 +1346,8 @@ do
                 fi
                 cHasJsonKey setpoint_C && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }TempTarget"      "value_json.setpoint_C"   setpoint
                 (( _bHasRain )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RainMM"  "value_json.rain_mm" rain_mm
+                (( _bHasWindAvgKmh )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindAvgKmh"  "value_json.wind_avg_km_h" wind_avg_km_h
+                (( _bHasWindDirDeg )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindDirDeg"  "value_json.wind_dir_deg" wind_dir_deg
                 [[ $vPressure_kPa  ]] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
                 (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery"   "value_json.battery_ok"    battery
                 (( _bHasBatteryV  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Voltage"   "value_json.battery_V"    voltage
@@ -1346,7 +1393,7 @@ do
         fi
         # cPidDelta 4TH
 
-        if (( _nSecDelta > nMinSeconds )) || [[ $_IsDiff || $_bAnnounceReady == 1 || $fReplayfile ]] ; then # rcvd data different from previous reading(s) or some time elapsed
+        if (( _nSecDelta > nMinSeconds )) || [[ $_IsDiff || $_bAnnounceReady == 1 || ( $fReplayfile && ! $fReplayfile =~ MQTT: )  ]] ; then # rcvd data different from previous reading(s) or some time elapsed
             : "now final rewriting and then publish the reading"
             aPrevReadings[$model_ident]="$data"
 
@@ -1422,7 +1469,7 @@ do
 done
 
 s=1 && ! [ -t 1 ] && s=30 && (( nLoops < 2 )) && s=180 # will sleep longer on failures or if not running on a terminal to reduce launch storms
-_msg="Read rc=$_rc from $(basename "${fReplayfile:-$rtl433_command}") ; $nLoops loop(s) at $(cDate) ; COPROC=:${COPROC_PID:; last data=$data;}: ; sleep=${s}s"
+_msg="Read rc=$_rc from $(basename "${fReplayfile:-$rtl433_command}") ; $nLoops loop(s) at $(cDate) ; COPROC=:${COPROC_PID:+; last data=$data;}: ; sleep=${s}s"
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*host*:*$sHostname*,*message*:*$_msg*}"
 dbg ENDING "$_msg"
