@@ -666,6 +666,7 @@ cRound() {
 [[ $* =~ '-R ++'    ]] && _moreopts="${_moreopts//-R -[0-9][0-9][0-9]}" && _moreopts="${_moreopts//-R -[0-9][0-9]}" # -R ++ on command line removes any protocol excludes
 [[ $* =~ '-v'      ]] && _moreopts="${_moreopts//-v}" # -v on command line restarts gathering -v options
 cLogMore "Gathered options: $_moreopts $*"
+[[ $* =~ -? ]] && _moreopts="" # any -? on the command line invalidates any other options from the config file"
 
 while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:OiI:B:w:c:as:S:W:t:T:29vx" opt $_moreopts "$@"
 do
@@ -898,7 +899,6 @@ trap '' INT TRAP USR2 VTALRM
 if [[ $fReplayfile =~ ^MQTT: ]] ; then
     echo MQTT: $fReplayfile 1>&2
     coproc COPROC (
-        set -x
         mosquitto_sub -h "$hMqttSource" -t "$sMqttTopic"
     )
 elif [[ $fReplayfile == /dev/stdin ]] ; then
@@ -942,7 +942,6 @@ elif [[ $fReplayfile ]] ; then
     # exec {COPROC[0]} </path/to/new/input/file
 
     sleep 2
-    set +x
 else
     if [[ $bVerbose || -t 1 ]] ; then
         cLogMore "rtl_433 ${rtl433_opts[*]}"
@@ -998,7 +997,7 @@ trap 'trap_int' INT
 trap_trap() {    # TRAP: toggle verbosity 
     bVerbose=$( ((bVerbose)) || echo 1 ) # toggle verbosity
     cMqttState
-    _msg="Signal TRAP: toggled verbosity to ${bVerbose:-none}, nHopSecs=$nHopSecs, sBand=$sBand"
+    _msg="Signal TRAP: toggled verbosity to ${bVerbose:-none}${fReplayfile:+, nHopSecs=$nHopSecs}, sBand=$sBand"
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*host*:*$sHostname*,*message*:*$_msg*}"
   }
