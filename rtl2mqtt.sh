@@ -38,12 +38,13 @@ basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
 rtl433_command=$( command -v $rtl433_command ) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 126 ; }
 rtl433_version="$( $rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' )" || exit 126
-declare -a rtl433_opts=( -M protocol -M noise:600 -M level -C si )  # generic options in all settings, e.g. -M level 
+declare -a rtl433_opts=( -M protocol -M noise:900 -M level -C si )  # generic options in all settings, e.g. -M level 
 # rtl433_opts+=( $( [ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
 sSuppressAttrs="mic" # attributes that will be always eliminated from JSON msg
 sSensorMatch=".*" # any sensor name to be considered will have to match this regex (to be used during debugging)
 sRoundTo=0.5 # temperatures will be rounded to this x and humidity to 4*x (but see option -w below)
 sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php" # This is stable for years
+sWhatsappBaseUrl="https://api.callmebot.com/whatsapp.php" # This is stable for years
 
 # xx=( one "*.log" ) && xx=( "${printf "%($*)T"nlaxx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;  exit 2
 
@@ -81,9 +82,10 @@ declare -i nRC
 declare -i nLoops=0
 declare -l bAnnounceHass=1 # default is yes for now
 declare -i bRetained="" # make the value publishing retained or not (-r flag passed to mosquitto_pub)
-declare -i bLogTempHumidity=1 # 1=log the values (default for now)
+declare -i bLogTempHumidity=0 # 1=log the values 
 declare -i _n # helper integer var
 declare -A aWuUrls
+declare -A aWhUrls
 declare -A aWuPos
 declare -A aDewpointsCalc
 declare -a hMqtt
@@ -155,6 +157,26 @@ log() {
         echo "$(cDate)" "$@" >> "$dLog.log"
     fi
   }
+
+urlencode() { # URL-encode a string
+    local string="$1"
+    local result=""
+    local length=${#string}
+    for ((i = 0; i < length; i++)); do
+    local char="${string:i:1}"
+    case "$char" in
+        [a-zA-Z0-9.~_-])
+        result+="$char"
+        ;;
+        *)
+        result+="%$(printf '%02X' "'$char")"
+        ;;
+    esac
+    done
+    echo "$result"
+  }
+  # url="https://www.example.com/some path with spaces/" ; urlencode "$url" ; exit 2
+
 
 cLogVal() { # log each value to a single file, args: device,sensor,value
     local - && set +x
@@ -480,7 +502,7 @@ cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data i
     # set -x ; data='{"event":"debug","message":{"center_frequency":433910000, "other":"zzzzz"}}' ; cDeleteSimpleJsonKey message ; cCheckExit
     # set -x ; data='{"event":"debug","message":{"center_frequency":433910000, "frequencies":[433910000, 868300000, 433910000, 868300000, 433910000, 915000000], "hop_times":[61]}}' ; cDeleteSimpleJsonKey hop_times ; cDeleteSimpleJsonKey frequencies ; cCheckExit
 
-cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata must be provided)
+cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata or $data, if empty)
     local - && set +x   
     # local _d=""
     local _r="${2:-$data}"  #    _r="${*:$#}"
@@ -775,14 +797,25 @@ do
         ;;
     s)  sSuggSampleRate="$( tr -c -d '[:alnum:]' <<< "$OPTARG" )"
         ;;
-    W)  command -v curl > /dev/null || { echo "$sName: curl not installed, but needed for uploading Wunderground data ..." 1>&2 ; exit 126 ; }
-        IFS=',' read -r _id _key _sensor _indoor <<< "$OPTARG"  # Syntax e.g.: -W <Station-ID>,<-Station-KEY>,Bresser-3CH_1m,{indoor|outdoor}
-        [[ $_indoor ]] || { echo "$sName: -W $OPTARG doesn't have three comma-separated values..." 1>&2 ; exit 2 ; }
-        aWuUrls[$_sensor]="$sWuBaseUrl?ID=$_id&PASSWORD=$_key&action=updateraw&dateutc=now"
-        [[ $_indoor = indoor ]] && aWuPos[$_sensor]="indoor" # add this prefix to temperature key id
-        _key=""
-        dbg "Will upload data for device $_sensor as station ID $_id to Weather Underground..." 
-        ((bVerbose)) && echo "Upload data for $_sensor as station $_id ..."
+    W)  command -v curl > /dev/null || { echo "$sName: curl not installed, but needed for uploading data ..." 1>&2 ; exit 126 ; }
+        IFS=',' read -r _company _id _key _sensor _indoor <<< "$OPTARG"  # Syntax e.g.: -W <Station-ID>,<-Station-KEY>,Bresser-3CH_1m,{indoor|outdoor}
+        [[ $_indoor ]] || { echo "$sName: -W $OPTARG doesn't have at least three comma-separated values..." 1>&2 ; exit 2 ; }
+        _company="${_company,,}" # lowercase the value
+        if [[ $_company == "wunderground" ]] ; then
+            dbg "Will upload data for device $_sensor as station ID $_id to Weather Underground..." 
+            aWuUrls[$_sensor]="$sWuBaseUrl?ID=$_id&PASSWORD=$_key&action=updateraw&dateutc=now"
+            [[ $_indoor = indoor ]] && aWuPos[$_sensor]="indoor" # add this prefix to temperature key id
+            _key=""
+            ((bVerbose)) && echo "Upload data for $_sensor as station $_id ..."
+        elif [[ $_company == "whatsapp" ]] ; then
+            # https://api.callmebot.com/whatsapp.php?phone=4917....&text=This+is+a+test&apikey=1234567
+            # _id=Whatsapp phone number, _key=apikey, _sensor=rtl-sensor, _indoor=ignored
+            dbg "Will call WhatsApp bot on phone $_id for device $_sensor ..."
+            aWhUrls[$_sensor]="phone=$_id&apikey=$_key"
+            ((bVerbose)) && echo "WhatsApp data for $_sensor for phone $_id ..."
+        else
+            echo "$sName: -W $OPTARG doesn't have a valid company name (WU)..." 1>&2 ; exit 2
+        fi
         ;;
     2)  bTryAlternate=1 # ease coding experiments (not to be used in production)
         ;;
@@ -1157,7 +1190,7 @@ do
     (( bPreferIdOverChannel )) && ident="${id:-$channel}" || ident="${channel:-$id}" # prefer "id" (if present) over "channel" as the identifier for the sensor instance.
     model_ident="${model}${ident:+_$ident}"
     model_ident="${model_ident//[^A-Za-z0-9_]}" # remove any special (e.g. arithmetic) characters from model_ident to prevent arbitrary command execution vulnerability in indexes for arrays
-    rssi="$(    cExtractJsonVal rssi)"
+    rssi="$( cExtractJsonVal rssi )"
     vTemperature="" && nTemperature10="" && nTemperature10Diff=""
     # set -x
     _val="$( cExtractJsonVal temperature_C || cExtractJsonVal temperature )" && _val="$(cIfJSONNumber "$_val")" && vTemperature="$_val" && _val="$(cMultiplyTen "$_val")" && 
@@ -1392,7 +1425,7 @@ do
                     dbg ENDING "$_msg"
                     exit 11 # possibly restarting the whole script, if systemd configuration allows it (=default)
                 fi
-            else # not a sensor we like, but something else
+            else # not a sensor we like, but something different, e.g. a ...
                 cMqttStarred log "{*event*:*debug*,*message*:*not announced for MQTT discovery (not a sensible sensor): $model_ident*}"
                 aAnnounced[$model_ident]=1 # 1 = dont reconsider for announcement
             fi
@@ -1408,12 +1441,17 @@ do
                 : "vDewptc=$vDewptc, vDewptf=$vDewptf" # were set as side effects
             fi
 
+            if (( bRewrite )) ; then # optimize (rewrite) JSON content
+                # FIXME: [[ $_IsDiff || $bVerbose ]] && cAddJsonKeyVal COMPARE "s=$_nSecDelta,$_IsDiff($(longest_common_prefix -s "$sReadPrev" "$data"))"
+                cAddJsonKeyVal -b BAND -n dewpoint "$vDewptc" # add dewpoint before BAND key
+            fi
+
             if [[ ${aWuUrls[$model_ident]} ]] ; then # perform any Wunderground upload
                 # wind_speed="10", # precipitation="0"
                 [[ $baromin ]] && baromin="$(( $(cMultiplyTen "$(cMultiplyTen "$(cMultiplyTen vPressure_kPa)" )" ) / 3386  ))" # 3.3863886666667
                 # https://blog.meteodrenthe.nl/2021/12/27/uploading-to-the-weather-underground-api/
                 # https://support.weather.com/s/article/PWS-Upload-Protocol
-                URL2="${aWuPos[$model_ident]}tempf=$temperatureF${vHumidity:+&${aWuPos[$model_ident]}humidity=$vHumidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}${vDewptf:+&${aWuPos[$model_ident]}dewptf=$vDewptf}"
+                URL2="${aWuPos[$model_ident]}tempf=$temperatureF${vHumidity:+&${aWuPos[$model_ident]}&humidity=$vHumidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}${vDewptf:+&${aWuPos[$model_ident]}dewptf=$vDewptf}"
                 retcurl="$( curl --silent "${aWuUrls[$model_ident]}&$URL2" 2>&1 )" && [[ $retcurl == success ]] && nUploads+=1
                 log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, device=$model_ident)"
                 (( bMoreVerbose )) && log "WUNDERGROUND2" "${aWuUrls[$model_ident]}&$URL2"
@@ -1421,14 +1459,24 @@ do
                 : "aWuUrls[$model_ident] is empty"
             fi
 
+            if [[ ${aWhUrls[$model_ident]} || ${aWhUrls["any"]} ]] && [[ $bVerbose || ! $vTemperature || $(( ${aCounts[$model_ident]} % 5 )) == 1 ]]; then 
+                # perform any Whatsapp upload. If with temperature: Only every 5th reading is uploaded, to avoid flooding the Whatsapp channel
+                URL2="text=$(urlencode "$model_ident: $( cDeleteJsonKeys "id freq rssi" "$data" )")"
+                [[ -z ${aWhUrls[$model_ident]} ]] && URL1="${aWhUrls["any"]}" || URL1="${aWhUrls[$model_ident]}"
+                retcurl="$( curl --silent "$sWhatsappBaseUrl?$URL1&$URL2" 2>&1 )"
+                log "WHATSAPP" "$URL2: $retcurl (device=$model_ident,#${aCounts[${model_ident:-any}]})"
+                [[ $retcurl =~ You\ will\ receive ]] || log "WHATSAPP2" "$sWhatsappBaseUrl?$URL1&$URL2"
+                # (( bMoreVerbose )) && log "WHATSAPP" "$URL1&$URL2"
+            else
+                : "Whatsapp upload for $model_ident skipped"
+            fi
+
             if (( bRewrite )) ; then # optimize (rewrite) JSON content
                 # cAddJsonKeyVal -n rssi "$rssi" # put rssi back in
                 # FIXME: [[ $_IsDiff || $bVerbose ]] && cAddJsonKeyVal COMPARE "s=$_nSecDelta,$_IsDiff($(longest_common_prefix -s "$sReadPrev" "$data"))"
-                cAddJsonKeyVal -b BAND -n dewpoint "$vDewptc" # add dewpoint before BAND key
                  (( bVerbose )) && [[ $vDewptc ]] && cAddJsonKeyVal -n DELTADEW "$vDeltaSimple"
                 ! [[ $_IsDiff2 ]] && dbg "2ND" "are same."
-                # (( bVerbose || ! bVerbose )) &&
-                 (( bVerbose )) && cAddJsonKeyVal -n NOTE "${_IsDiff:+1ST($_nSecDelta/$nMinSeconds) }${_IsDiff2:+2ND(c=${aCounts[$model_ident]},s=$_nSecDelta/$nMinSeconds,IsDiff3=$_IsDiff3)}" # accept extraneous space
+                (( bVerbose )) && cAddJsonKeyVal -n NOTE "${_IsDiff:+1ST($_nSecDelta/$nMinSeconds) }${_IsDiff2:+2ND(c=${aCounts[$model_ident]},s=$_nSecDelta/$nMinSeconds,IsDiff3=$_IsDiff3)}" # accept extraneous space
 
                 aSecondPrevReadings[$model_ident]="$sReadPrev"
                  (( bVerbose )) && cAddJsonKeyVal -n SDELTA "$sDelta"
