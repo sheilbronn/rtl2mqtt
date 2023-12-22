@@ -57,11 +57,11 @@ declare    sSuggSampleModel=auto # -Y auto|classic|minmax
 declare -i nLogMinutesPeriod=60 # once per hour
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
-# if no radio event has been received for more than x hours (108x*3600 seconds), the restart
+# if no radio event has been received for more than x hours (x*3600 seconds), then restart
 declare -i nRestartAfterSeconds=$(( 2 * 3600 ))
-declare -i nMinSecondsOther=5 # only at least every nn seconds, reducing flicker as from motion sensors....
-declare -i nMinSecondsWeather=310 # only at least every n*60+10 seconds for unchanged environment data (temperature, humidity)
-declare -i nTimeStamp=$(cDate %s)-$nLogMessagesPeriod # initiate with a large sensible assumption....
+declare -i nMinSecondsOther=5 # only at least every nn seconds, reducing flicker such as from motion sensors....
+declare -i nMinSecondsWeather=$(( 5 * 60 + 10 )) # only at least every n*60+10 seconds for unchanged environment data (temperature, humidity)
+declare -i nTimeStamp=$(cDate %s)-$nLogMessagesPeriod # initialize it with a large, sensible assumption....
 declare -i nTimeStampPrev
 declare -i nTimeMinDelta=300
 declare -i nPidDelta
@@ -71,6 +71,7 @@ declare -i nSecond=0
 declare -i nMqttLines=0     
 declare -i nReceivedCount=0
 declare -i nAnnouncedCount=0
+declare -i bPlannedTermination=0
 declare    sLastAnnounce
 declare -i nMinOccurences=3
 declare -i nTemperature10=999
@@ -158,20 +159,17 @@ log() {
     fi
   }
 
-urlencode() { # URL-encode a string
+urlencode() { # URL-encode a string $1
+    local - && set +x
     local string="$1"
     local result=""
     local length=${#string}
-    for ((i = 0; i < length; i++)); do
-    local char="${string:i:1}"
-    case "$char" in
-        [a-zA-Z0-9.~_-])
-        result+="$char"
-        ;;
-        *)
-        result+="%$(printf '%02X' "'$char")"
-        ;;
-    esac
+    for (( i = 0; i < length; i++)); do
+        local char="${string:i:1}"
+        case "$char" in
+            [a-zA-Z0-9.~_-])    result+="$char" ;;
+            *)                  result+="%$(printf '%02X' "'$char")" ;;
+        esac
     done
     echo "$result"
   }
@@ -456,8 +454,7 @@ cRemoveQuotesFromNumbers() { # removes double quotes from JSON numbers in $1 or 
     # set -x ; x='"AA":"+1.1.1","BB":"-2","CC":"+3.55","DD":"-0.44"' ; data="{$x}" ; cRemoveQuotesFromNumbers ; : exit ; echo $data ; cRemoveQuotesFromNumbers "{$x, \"EE\":\"-0.5\"}" ; exit
 
 perfCheck() {
-    for (( i=0; i<3; i++))
-    do
+    for (( i=0; i<3; i++)) ; do
         _start=$(cDate "%s%3N")
         r=100
         j=0 ; while (( j < r )) ; do x='"one":"1a","two": "-2","three":"3.5"' ; cRemoveQuotesFromNumbers "{$x}"; (( j++ )) ; done # > /dev/null 
@@ -691,7 +688,7 @@ cRound() {
 cLogMore "Gathered options: $_moreopts $*"
 [[ " $*" =~ " -?" ]] && _moreopts="" # any -? on the command line invalidates any other options from the config file"
 
-while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:OiI:B:w:c:as:S:W:t:T:29vx" opt $_moreopts "$@"
+while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:OiI:B:w:c:as:S:W:t:T:E:29vx" opt $_moreopts "$@"
 do
     case "$opt" in
     \?) { echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,device]"
@@ -790,7 +787,9 @@ do
         ;;
     c)  nMinOccurences="$OPTARG" # MQTT announcements only after at least $nMinOccurences occurences...
         ;;
-    T)  nMinSecondsOther="$OPTARG" # seconds before repeating the same (unchanged) reading
+    E)  nMinSecondsOther="$OPTARG" # seconds before repeating any same (=unchanged equal) reading
+        ;;    
+    T)  rtl433_opts+=( -T "$OPTARG" ) # ask rtl_433 to exit after given time (e.g. seconds)
         ;;
     a)  bAlways=1
         nMinOccurences=1
@@ -835,7 +834,7 @@ do
     esac
 done
 
-shift $((OPTIND-1))   # Discard the options processed by getopts, any remaining options will be passed to mosquitto_pub further down on
+shift $((OPTIND-1))  # Discard all the options previously processed by getopts, any remaining options will be passed to mosquitto_pub further down on
 
 rtl433_opts+=( ${nHopSecs:+-H $nHopSecs -v} ${nStatsSec:+-M stats:1:$nStatsSec} )
 sRoundTo="$( cMultiplyTen "$sRoundTo" )"
@@ -916,7 +915,7 @@ trap_exit() {   # stuff to do when exiting
     cLogMore "$sName exit trap at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will also log state..."
     (( bRemoveAnnouncements )) && cHassRemoveAnnounce
     [[ $_pidrtl ]] && _pmsg="$( ps -f "$_pidrtl" | tail -1 )"
-    (( COPROC_PID )) && _cppid="$COPROC_PID" && kill "$COPROC_PID" && { # avoid race condition after killing coproc
+    (( COPROC_PID )) && _cppid="$COPROC_PID" && kill "$COPROC_PID" && { # avoid race condition for value of COPROC_PID after killing coproc
         wait "$_cppid" # Cleanup, may fail on purpose
         dbg "Killed coproc PID $_cppid and awaited rc=$?"
     }
@@ -1146,7 +1145,11 @@ do
         basetopic="$sRtlPrefix/${sBand:-999}"
         # sLastTuneTime="$(cExtractJsonVal time)"
         cDeleteJsonKeys time
-        if  (( bVerbose )) ; then
+        _msg="$(cExtractJsonVal msg)"
+        if [[ $_msg == "Time expired, exiting!" ]] ; then
+            bPlannedTermination=1
+            cMqttStarred log "{*event*:*debug*,*message*:*${_msg}*,*BAND*:${sBand:-null}}"
+        elif (( bVerbose )) ; then
             data="${data/{ /{}" # remove first space after opening {
             cEchoIfNotDuplicate "INFOMSG: $data"
             if [[ "$data" == "$sLastTuneMessage" ]] && (( bRewrite )) ; then
@@ -1166,7 +1169,7 @@ do
     nReceivedCount+=1
 
     # EXPERIMENTAL: skip a message also if it occurs in the same second as the previous tune message
-    if [[ $nLastTuneMessage == "$(cDate %s)" ]] ; then
+    if [[ $nLastTuneMessage == "$(cDate %s)" ]] && ! cHasJsonKey frames ; then
         dbg TOOEARLY "$data"
         continue
     fi
@@ -1240,11 +1243,14 @@ do
         fi
         if [[ $vHumidity ]] ; then # 
             if (( bRewrite )) ; then
-                # _val="$(( ( $(cMultiplyTen $vHumidity) + sRoundTo*_hmult/2 ) / (sRoundTo*_hmult) * (sRoundTo*_hmult) ))" && _val="$(cDiv10 "$_val")"  # round to hmult * 0.x         
-                _val=$( cRound "$(cMultiplyTen "$vHumidity")" 4 ) # round to 4 * 0.x %
-                nHumidity="${_val/.[0-9]*}"
+                nHumidity="${vHumidity/.[0-9]*}"
+                if (( nHumidity < 98 )) ; then
+                   _val=$( cRound "$(cMultiplyTen "$vHumidity")" 4 ) # round to 4 * 0.x %
+                    nHumidity="${_val/.[0-9]*}"
+                fi
                 # FIXME: BREAKING change should have dedicated option when adding 0. in front of $nHumidity (i.e. divide by 100) - OpenHAB 4 likes a dimension-less percentage value to be in the range 0.0...1.0 :
-                cDeleteSimpleJsonKey humidity && cAddJsonKeyVal humidity "$( (( nHumidity == 100 )) && printf 1 || printf "0.%2.2d" "$nHumidity" )"
+                ### cDeleteSimpleJsonKey humidity && cAddJsonKeyVal humidity "$( (( nHumidity == 100 )) && printf 1 || printf "0.%2.2d" "$nHumidity" )"
+                cDeleteSimpleJsonKey humidity && cAddJsonKeyVal humidity "$nHumidity"
             fi
         fi
         vPressure_kPa="$(cExtractJsonVal pressure_kPa)"
@@ -1277,7 +1283,7 @@ do
             _k="$( cHasJsonKey "unknown.*" )" && [[ $(cExtractJsonVal "$_k") == 0 ]] && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
             bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize=skip non-plausible readings
         fi
-         (( bVerbose )) && ! cHasJsonKey BAND && cAddJsonKeyVal BAND "$sBand"  # add BAND here to ensure it also goes into the logfile for all data lines
+        (( bVerbose  )) && ! cHasJsonKey BAND && cAddJsonKeyVal BAND "$sBand"  # add BAND here to ensure it also goes into the logfile for all data lines
         (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are to be sent retained
         [[ $sDoLog == "dir" ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
     fi
@@ -1522,12 +1528,14 @@ do
     # dbg ATENDOFLOOP "nReadings=$nReadings, nMqttLines=$nMqttLines, nReceivedCount=$nReceivedCount, nAnnouncedCount=$nAnnouncedCount, nUploads=$nUploads"
 done
 
-s=1 && ! [ -t 1 ] && s=30 && (( nLoops < 2 )) && s=180 # will sleep longer on failures or if not running on a terminal to reduce launch storms
-_msg="Read rc=$_rc from $(basename "${fReplayfile:-$rtl433_command}") ; $nLoops loop(s) at $(cDate) ; COPROC=:${COPROC_PID:+; last data=$data;}: ; sleep=${s}s"
+s=1 && (( ! bPlannedTermination )) && ! [ -t 1 ] && s=30 && (( nLoops < 2 )) && s=180 # will sleep longer on failures or if not running on a terminal to reduce launch storms
+
+_msg="${bPlannedTermination:+Planned termination! }Read rc=$_rc from $(basename "${fReplayfile:-$rtl433_command}") ; $nLoops loops at $(cDate) ; COPROC=:${COPROC_PID:+; last data=$data;}: ; sleep=${s}s"
 log "$_msg" 
 cMqttStarred log "{*event*:*endloop*,*host*:*$sHostname*,*message*:*$_msg*}"
 dbg ENDING "$_msg"
-[[ $fReplayfile ]] && exit 0 # replaying finished
+[[ $fReplayfile ]] && exit 0 # replaying is finished or planned
+(( bPlannedTermination )) && sleep 1 && { [ -t 1 ] && exit 0 || exit 15 ; } # normal, planned termination of rtl_433
 sleep $s
 exit 14 # return 14 only for premature end of rtl_433 command 
 # now the exit trap function will be processed...
