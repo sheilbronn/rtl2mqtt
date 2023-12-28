@@ -72,7 +72,7 @@ declare -i nMqttLines=0
 declare -i nReceivedCount=0
 declare -i nAnnouncedCount=0
 declare -i bPlannedTermination=0
-declare    sLastAnnounce
+declare    sLastAnnounced
 declare -i nMinOccurences=3
 declare -i nTemperature10=999
 declare -i nHumidity=999
@@ -102,6 +102,9 @@ declare -Ai aEarlierTemperTime
 declare -Ai aEarlierHumidVals 
 declare -Ai aEarlierHumidTime
 declare -Ai aLastPub
+declare -Ai aLastReceived
+declare -Ai aPrevReceived
+declare -Ai aPrevId # distinguish between different sensors with different IDs on the same channel
 
 cEmptyArrays() { # reset the 11 arrays from above
     aPrevReadings=()
@@ -116,7 +119,11 @@ cEmptyArrays() { # reset the 11 arrays from above
     aEarlierHumidVals=()
     aEarlierHumidTime=()
     aLastPub=()
- }
+    aLastReceived=()
+    aPrevReceived=()
+    aPrevId=()
+    }
+
 
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" # increases security
@@ -262,7 +269,7 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
 
 cMqttState() {	# log the state of the rtl bridge
     _ssid="$(iwgetid -r)" # iwgetid might have been aliased to ":" if not available
-    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*lastannounced*:*$sLastAnnounce*,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*cacheddewpoints*:${#aDewpointsCalc[@]},${nUploads:+*wuuploads*:$nUploads,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*lastreception*:*$(date "+$sDateFormat" -d @$nTimeStamp)*,*currtime*:*$(cDate)*"
+    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*lastannounced*:*$sLastAnnounced*,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*cacheddewpoints*:${#aDewpointsCalc[@]},${nUploads:+*wuuploads*:$nUploads,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*lastreception*:*$(date "+$sDateFormat" -d @$nTimeStamp)*,*currtime*:*$(cDate)*"
     log "$_stats"
     cMqttStarred state "{$_stats${1:+,$1}}"
     }
@@ -985,7 +992,7 @@ else
     # -F "mqtt://$mqtthost:1883,events,devices"
 
     sleep 1 # wait for rtl_433 to start up...
-    _pidrtl="$( pidof "$rtl433_command" )" # hack to find the process of the rtl_433 command
+    _pidrtl="$( pidof "$rtl433_command" )" # hack to find the process of the - hopefully single - rtl_433 command
     # _pgrp="$(ps -o pgrp= ${COPROC_PID})"
     [[ $_pidrtl ]] && _ppid="$( ps -o ppid= "$_pidrtl" )" &&  _pgrp="$( ps -o pgrp= "$_pidrtl" )"
     # renice -n 15 "${COPROC_PID}" > /dev/null
@@ -1057,10 +1064,12 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
     dbg ARRAYS "$_msg"
     cMqttStarred arrays "[$_msg]"
 
-    # output ascending and sorted by count of readings, no security risk since keys are cleaned from any suspicious characters
+    declare -i _nowStamp=$(cDate %s)
+
+    # output ascending and sorted by count of readings, no security risk since keys were cleaned from any suspicious characters
     for KEY in $(for key in "${!aCounts[@]}"; do echo "${aCounts[$key]} $key" ; done | sort -n | cut -d" " -f2-) ; do
         _val="${aPrevReadings["$KEY"]/\{}" && _val="${_val/\}}" # remove leading and trailing curly braces
-        _msg="{*model_ident*:*$KEY*,${_val//\"/*} , *COUNT*:${aCounts["$KEY"]}}"
+        _msg="{*model_ident*:*$KEY*,${_val//\"/*} , *COUNT*:${aCounts["$KEY"]}, *TIMEPASSED*:$((_nowStamp-${aPrevReceived[$KEY]}))}"
         dbg READING "$KEY  $_msg"
         cMqttStarred reading "$_msg"
     done
@@ -1077,7 +1086,7 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
     cMqttState
-    declare -i _delta=$(cDate %s)-nTimeStamp
+    declare -i _delta=_nowStamp-nTimeStamp
     if (( _delta > nRestartAfterSeconds )) ; then # no radio event has been received for more than x hours, will restart...
         cMqttStarred log "{*event*:*exiting*,*message*:*no radio event received for $((_delta/60)) minutes, assuming fail*}"
         exit 12 # possibly restart whole script, if systemd allows it
@@ -1121,7 +1130,7 @@ do
         # convert older, former msg type "rtlsdr_set_center_freq 868300000 = 0" to "{"center_frequency":868300000}" (JSON) to be processed further down
         # data="{\"center_frequency\":${BASH_REMATCH[1]},\"BAND\":$(cMapFreqToBand "${BASH_REMATCH[1]}")}"
         data="{\"center_frequency\":${BASH_REMATCH[1]}}"
-    elif [[ $data =~ ^[^{] ]] ; then # transform any any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
+    elif [[ $data =~ ^[^{] ]] ; then # transform any non-JSON line (= JSON line starting with "{"), e.g. from rtl_433 debugging/error output
         data=${data#\*\*\* } # Remove any leading stars "*** "
         if [[ $bMoreVerbose && $data =~ ^"Allocating " ]] ; then # "Allocating 15 zero-copy buffers"
             cMqttStarred log "{*event*:*debug*,*message*:*${data//\*/+}*}" # convert it to a simple JSON msg
@@ -1290,6 +1299,9 @@ do
     # cPidDelta 3RD
 
     nTimeStamp=$(cDate %s)
+    aPrevReceived[${model_ident:-OTHER}]="${aLastReceived[${model_ident:-OTHER}]:-$nTimeStamp}" # remember time of previous reception, initialize if not yet set
+    aLastReceived[${model_ident:-OTHER}]=$nTimeStamp
+
     # Send message to MQTT or skip it ...
     if (( bSkipLine )) ; then
         dbg SKIPPING "$data"
@@ -1314,14 +1326,16 @@ do
         sDelta=""
         if [[ $vTemperature ]] ; then
             _diff=$(( nTemperature10 - ${aEarlierTemperVals10[$model_ident]:-0} ))
-            if ! (( ${aEarlierTemperTime[$model_ident]} )) ; then
+            if [[ -z ${aEarlierTemperVals10[$model_ident]} ]] ; then
                 sDelta=NEW
-                aEarlierTemperTime[$model_ident]=$nTimeStamp && aEarlierTemperVals10[$model_ident]=$nTemperature10
+                aEarlierTemperTime[$model_ident]=$nTimeStamp
+                aEarlierTemperVals10[$model_ident]=$nTemperature10
             elif (( nTimeStamp > ${aEarlierTemperTime[$model_ident]} + nTimeMinDelta && ( _diff > sRoundTo || _diff < -sRoundTo ) )) ; then
                 sDelta="$( (( _diff > 0 )) && printf "INCR(" || printf "DESC(" ; cDiv10 $_diff )"")"
-                aEarlierTemperTime[$model_ident]=$nTimeStamp && aEarlierTemperVals10[$model_ident]=$nTemperature10
+                aEarlierTemperTime[$model_ident]=$nTimeStamp
+                aEarlierTemperVals10[$model_ident]=$nTemperature10
             else
-                : "not enough change: aEarlierTemperVals10[$model_ident]=${aEarlierTemperVals10[$model_ident]}, nTimeStamp=$nTimeStamp (vs ${aEarlierTemperTime[$model_ident]})"
+                : "not enough value change: aEarlierTemperVals10[$model_ident]=${aEarlierTemperVals10[$model_ident]}, nTimeStamp=$nTimeStamp (vs ${aEarlierTemperTime[$model_ident]})"
                 sDelta=0
             fi
             [[ $bLogTempHumidity ]] && cLogVal "$model_ident" temperature "$vTemperature"
@@ -1416,10 +1430,10 @@ do
                 #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
                 if  cMqttStarred log "{*event*:*debug*,*message*:*announced MQTT discovery: $model_ident ($_name)*}" ; then
                     nAnnouncedCount+=1
-                    sLastAnnounce="$model_ident"
+                    sLastAnnounced="$model_ident"
                     cMqttState
-                    sleep 1 # give the MQTT readers an extra second to digest the announcement
-                    aAnnounced[$model_ident]=1 # 1=took place, therefor dont reconsider for announcement
+                    sleep 1 # give any MQTT readers an extra second to digest the announcement
+                    aAnnounced[$model_ident]=1 # 1=took place, therefor dont reconsider for another announcement
                 else
                     : announcement had failed, will be retried again next time
                 fi
@@ -1465,12 +1479,12 @@ do
                 : "aWuUrls[$model_ident] is empty"
             fi
 
-            if [[ ${aWhUrls[$model_ident]} || ${aWhUrls["any"]} ]] && [[ $bVerbose || ! $vTemperature || $(( ${aCounts[$model_ident]} % 5 )) == 1 ]]; then 
+            if [[ ${aWhUrls[$model_ident]} || ${aWhUrls["OTHER"]} ]] && [[ $bVerbose || ! $vTemperature || $(( ${aCounts[$model_ident]} % 5 )) == 1 ]]; then 
                 # perform any Whatsapp upload. If with temperature: Only every 5th reading is uploaded, to avoid flooding the Whatsapp channel
                 URL2="text=$(urlencode "$model_ident: $( cDeleteJsonKeys "id freq rssi" "$data" )")"
-                [[ -z ${aWhUrls[$model_ident]} ]] && URL1="${aWhUrls["any"]}" || URL1="${aWhUrls[$model_ident]}"
+                [[ -z ${aWhUrls[$model_ident]} ]] && URL1="${aWhUrls["OTHER"]}" || URL1="${aWhUrls[$model_ident]}"
                 retcurl="$( curl --silent "$sWhatsappBaseUrl?$URL1&$URL2" 2>&1 )"
-                log "WHATSAPP" "$URL2: $retcurl (device=$model_ident,#${aCounts[${model_ident:-any}]})"
+                log "WHATSAPP" "$URL2: $retcurl (device=$model_ident,#${aCounts[${model_ident:-OTHER}]})"
                 [[ $retcurl =~ You\ will\ receive ]] || log "WHATSAPP2" "$sWhatsappBaseUrl?$URL1&$URL2"
                 # (( bMoreVerbose )) && log "WHATSAPP" "$URL1&$URL2"
             else
