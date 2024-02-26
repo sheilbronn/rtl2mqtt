@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck shell=bash
 
 # rtl2mqtt reads events from a RTL433 SDR and forwards them to a MQTT broker as enhanced JSON messages 
 
@@ -86,6 +87,7 @@ declare -i bRetained="" # make the value publishing retained or not (-r flag pas
 declare -i bLogTempHumidity=0 # 1=log the values 
 declare -i _n # helper integer var
 declare -A aWuUrls
+declare -Ai aWuLastUploadTime
 declare -A aWhUrls
 declare -A aWuPos
 declare -A aDewpointsCalc
@@ -102,8 +104,8 @@ declare -Ai aEarlierTemperTime
 declare -Ai aEarlierHumidVals 
 declare -Ai aEarlierHumidTime
 declare -Ai aLastPub
-declare -Ai aLastReceived
-declare -Ai aPrevReceived
+declare -Ai aLastReceivedTime
+declare -Ai aPrevReceivedTime
 declare -Ai aPrevId # distinguish between different sensors with different IDs on the same channel
 
 cEmptyArrays() { # reset the 11 arrays from above
@@ -119,11 +121,11 @@ cEmptyArrays() { # reset the 11 arrays from above
     aEarlierHumidVals=()
     aEarlierHumidTime=()
     aLastPub=()
-    aLastReceived=()
-    aPrevReceived=()
+    aLastReceivedTime=()
+    aPrevReceivedTime=()
     aPrevId=()
+    aWuLastUploadTime=()
     }
-
 
 export LANG=C
 PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" # increases security
@@ -191,7 +193,7 @@ cLogVal() { # log each value to a single file, args: device,sensor,value
     fVal="$dSensor/$(cDate %s)" 
     [ -f $fVal ] || echo "$3" > $fVal
     # [ "$(find $dDevice -name .checked -mtime -1)" ] || { find "$dSensor" -xdev -type f -mtime +1 -exec rm '{}' ";" ; touch $dDevice/.checked ; }
-    [[ $fVal =~ 7$ ]] && { find $dSensor -xdev -type f -mtime +3 -exec rm '{}' ";" ; } && dbg "INFO" cleaning value log # only remove files older than 1 day when the seconds end in x7...
+    [[ $fVal =~ 7$ ]] && dbg "INFO" cleaning value log && { find $dSensor -xdev -type f -mtime +3 -exec rm '{}' ";" ; } # only remove files older than 1 day when the seconds end in x7...
     return 0
   }
 
@@ -252,7 +254,7 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
         _msg="$1"
     else
         _topic="$1"
-        [[ $1 =~ / ]] || _topic="$sRtlPrefix/bridge/$1" # add bridge prefix if no slash contained
+        [[ ! $1 =~ / || $1 =~ ^/ ]] &&  _topic="$sRtlPrefix/bridge/$1" # add bridge prefix if no slash contained or (NEW) no slash at beginning
         _msg="$2"
         [[ $1 == "log" ]] && cLogMore "MQTTLOG: $2"
     fi
@@ -642,8 +644,8 @@ cDewpoint() { # calculate a dewpoint from temp/humid/pressure and cache the resu
             aDewpointsCalc[$_temperature;$_rh]="$vDewptc;$vDewptf;1;$vDewSimple;delta=$vDeltaSimple;${bVerbose:+,$_dewpointcalc}" # cache the calculations (and maybe the rest for debugging)
         }
         dbg2 DEWPOINT "calculations: $_dewpointcalc, #aDewpointsCalc=${#aDewpointsCalc[@]}"
-        if (( ${#aDewpointsCalc[@]} > 2999 )) ; then # maybe an out-of-memory DoS attack from the RF environment
-            declare -p aDewpointsCalc | xargs -n1 | tail +3 > "/tmp/$sID.$USER.$( cDate %d )" # FIXME: for debugging
+        if (( ${#aDewpointsCalc[@]} > 4999 )) ; then # maybe an out-of-memory DoS attack from the RF environment
+            declare -p aDewpointsCalc | xargs -n1 | tail +3 > "/tmp/$sID.dewpoints.$USER.txt" # FIXME: for debugging
             aDewpointsCalc=() && log "DEWPOINT: RESTARTED dewpoint caching."
         fi
     fi
@@ -1066,12 +1068,15 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
 
     declare -i _nowStamp=$(cDate %s)
 
-    # output ascending and sorted by count of readings, no security risk since keys were cleaned from any suspicious characters
+    for key in "${!aCounts[@]}"; do dbg KEY "${aCounts[$key]} $key" ; done
+    # output ascending and sorted by count of readings, no security risk since keys had been cleaned from any suspicious characters
     for KEY in $(for key in "${!aCounts[@]}"; do echo "${aCounts[$key]} $key" ; done | sort -n | cut -d" " -f2-) ; do
-        _val="${aPrevReadings["$KEY"]/\{}" && _val="${_val/\}}" # remove leading and trailing curly braces
-        _msg="{*model_ident*:*$KEY*,${_val//\"/*} , *COUNT*:${aCounts["$KEY"]}, *TIMEPASSED*:$((_nowStamp-${aPrevReceived[$KEY]}))}"
+        # alternative form for easier processing on server side (e.g. Home Assitant/OpenHab)
+        _val="${aPrevReadings["$KEY"]/\{}" && _val="${_val/\}}" # remove the leading and trailing curly braces from the last reading
+        _wuval="${aWuLastUploadTime["$KEY"]:+$((_nowStamp-${aWuLastUploadTime[$KEY]}))}" # time since last upload to Weather Underground
+        _msg="{*COUNT*:${aCounts["$KEY"]},*TIMEPASSED*:$((_nowStamp-${aPrevReceivedTime[$KEY]})),*LASTWU*:${_wuval:-null},${_val//\"/*}}"
+        cMqttStarred readings/$KEY "$_msg"
         dbg READING "$KEY  $_msg"
-        cMqttStarred reading "$_msg"
     done
 
     if ((bVerbose)) && false ; then
@@ -1082,7 +1087,7 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
         done
     fi
 
-    _msg="Signal VTALRM: logged last MQTT messages from ${#aPrevReadings[@]} sensors and ${#aDewpointsCalc[@]} dewpoint calculations."
+    _msg="Signal VTALRM: logged last MQTT messages from ${#aPrevReadings[@]} sensors and ${#aDewpointsCalc[@]} dewpoint calcs."
     log "$sName $_msg"
     cMqttStarred log "{*event*:*debug*,*message*:*$_msg*}"
     cMqttState
@@ -1155,7 +1160,7 @@ do
         # sLastTuneTime="$(cExtractJsonVal time)"
         cDeleteJsonKeys time
         _msg="$(cExtractJsonVal msg)"
-        if [[ $_msg == "Time expired, exiting!" ]] ; then
+        if [[ $_msg == "Time expired, exiting!" ]] ; then # rtl_433 was configured to exit regularly, e.g. with option -T nnnnn
             bPlannedTermination=1
             cMqttStarred log "{*event*:*debug*,*message*:*${_msg}*,*BAND*:${sBand:-null}}"
         elif (( bVerbose )) ; then
@@ -1163,13 +1168,13 @@ do
             cEchoIfNotDuplicate "INFOMSG: $data"
             if [[ "$data" == "$sLastTuneMessage" ]] && (( bRewrite )) ; then
                 dbg DUPLICATETUNE "$data"
-                continue # ignore duplicate tune message
+                continue # ignore a duplicate tune message
             fi
             sLastTuneMessage="$data"
             _freqs="$(cExtractJsonVal frequencies)" && cDeleteSimpleJsonKey "frequencies" && : "${_freqs}"
             cMqttStarred log "{*event*:*debug*,*message*:${data//\"/*},*BAND*:${sBand:-null}}"
         fi
-        nLastTuneMessage="$(cDate %s)" # introduce a delay for avoiding race condition after freq hop (FIXME: not implemented yet)
+        nLastTuneMessage="$(cDate %s)" # introduce a delay from 0 to to 1 second for reducing race conditions after a freq hop
         continue
     fi
      (( bVerbose )) && [[ $datacopy != "$data" ]] && echo "==========================================" && datacopy="$data"
@@ -1198,10 +1203,19 @@ do
     channel="$( cExtractJsonVal channel)"
     id="$(      cExtractJsonVal id)"
     model="" && { cHasJsonKey model || cHasJsonKey since ; } && model="$(cExtractJsonVal model)"
-    [[ $model && ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
-    (( bPreferIdOverChannel )) && ident="${id:-$channel}" || ident="${channel:-$id}" # prefer "id" (if present) over "channel" as the identifier for the sensor instance.
-    model_ident="${model}${ident:+_$ident}"
-    model_ident="${model_ident//[^A-Za-z0-9_]}" # remove any special (e.g. arithmetic) characters from model_ident to prevent arbitrary command execution vulnerability in indexes for arrays
+    if [[ $model ]] ; then
+        [[ ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
+        (( bPreferIdOverChannel )) && ident="${id:-$channel}" || ident="${channel:-$id}"  # prefer "id" (or "address") over "channel" as the identifier for the sensor instance.
+        model_ident="${model}${ident:+_$ident}"
+        model_ident="${model_ident//[^A-Za-z0-9_]}" # remove any special (e.g. arithmetic) characters from model_ident to prevent arbitrary command execution vulnerability in indexes for arrays
+        if [[ ${aPrevId[$model_ident]} == "$id" ]] ; then # remove id from JSON  if it is the same as the previous ID for this model
+            _delkeys="$_delkeys id" 
+        else 
+            aPrevId[$model_ident]="$id" # save the new id for comparison the next time
+        fi
+    else
+        model_ident=""
+    fi
     rssi="$( cExtractJsonVal rssi )"
     vTemperature="" && nTemperature10="" && nTemperature10Diff=""
     # set -x
@@ -1299,8 +1313,8 @@ do
     # cPidDelta 3RD
 
     nTimeStamp=$(cDate %s)
-    aPrevReceived[${model_ident:-OTHER}]="${aLastReceived[${model_ident:-OTHER}]:-$nTimeStamp}" # remember time of previous reception, initialize if not yet set
-    aLastReceived[${model_ident:-OTHER}]=$nTimeStamp
+    aPrevReceivedTime[${model_ident:-OTHER}]="${aLastReceivedTime[${model_ident:-OTHER}]:-$nTimeStamp}" # remember time of previous reception, initialize if not yet set
+    aLastReceivedTime[${model_ident:-OTHER}]=$nTimeStamp
 
     # Send message to MQTT or skip it ...
     if (( bSkipLine )) ; then
@@ -1321,7 +1335,7 @@ do
         sReadPrev="${aPrevReadings[$model_ident]}"
         sReadPrevS="${aSecondPrevReadings[$model_ident]}"
         aPrevReadings[$model_ident]="$data" ; : "model_ident=$model_ident , now ${#aPrevReadings[@]} sensors"
-        aCounts[$model_ident]=$(( ${aCounts[$model_ident]} + 1 )) # ... += ... doesn't work numerically in assignments for array elements
+        (( aCounts[$model_ident]++ )) # ... += ... doesn't work numerically in assignments for array elements
 
         sDelta=""
         if [[ $vTemperature ]] ; then
@@ -1369,12 +1383,12 @@ do
         if (( _IsDiff || bMoreVerbose )) ; then
             if (( _IsDiff2 )) ; then
                 if (( _IsDiff3 )) ; then
-                    nMinSeconds=$(( nMinSeconds / 6 + 1 )) && : different from last and second last time, and these both diffrent, too.
+                    nMinSeconds=$(( nMinSeconds/6 + 1 )) && : different from last and second last time, and these both diffrent, too.
                 else
-                    nMinSeconds=$(( nMinSeconds / 4 + 1 )) && : different only from second last time
+                    nMinSeconds=$(( nMinSeconds/4 + 1 )) && : different only from second last time
                 fi
             else
-                nMinSeconds=$(( nMinSeconds / 2 + 1 )) && : different only from last time
+                nMinSeconds=$(( nMinSeconds/2 + 1 )) && : different only from last time
             fi
         fi
         _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident] != 1 && aCounts[$model_ident] >= nMinOccurences )) # sensor has appeared several times
@@ -1472,7 +1486,8 @@ do
                 # https://blog.meteodrenthe.nl/2021/12/27/uploading-to-the-weather-underground-api/
                 # https://support.weather.com/s/article/PWS-Upload-Protocol
                 URL2="${aWuPos[$model_ident]}tempf=$temperatureF${vHumidity:+&${aWuPos[$model_ident]}&humidity=$vHumidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}${vDewptf:+&${aWuPos[$model_ident]}dewptf=$vDewptf}"
-                retcurl="$( curl --silent "${aWuUrls[$model_ident]}&$URL2" 2>&1 )" && [[ $retcurl == success ]] && nUploads+=1
+                retcurl="$( curl --silent "${aWuUrls[$model_ident]}&$URL2" 2>&1 )" && [[ $retcurl == success ]] && nUploads+=1 && aWuLastUploadTime[$model_ident]=$nTimeStamp
+
                 log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, device=$model_ident)"
                 (( bMoreVerbose )) && log "WUNDERGROUND2" "${aWuUrls[$model_ident]}&$URL2"
             else
@@ -1532,7 +1547,7 @@ do
         log "$( cExpandStarredString "$_collection")" 
         cMqttState "*note*:*regular log*,*collected_sensors*:*${!aPrevReadings[*]}*, $_collection, *cacheddewpoints*:${#aDewpointsCalc[@]}"
         nLastStatusSeconds=nTimeStamp
-    elif (( ${#aPrevReadings[@]} > 1000 )) ; then # assume DoS attack from RF env when >1000 different readings
+    elif (( ${#aPrevReadings[@]} > 1000 )) ; then # assume malfunction or a DoS attack from RF env when >1000 different readings have been received
         cMqttState
         cMqttStarred log "{*event*:*debug*,*message*:*will reset saved values (nReadings=$nReadings,nMqttLines=$nMqttLines,nReceivedCount=$nReceivedCount)*}"
         cEmptyArrays
