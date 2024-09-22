@@ -71,6 +71,7 @@ declare -i nMinute=0
 declare -i nSecond=0
 declare -i nMqttLines=0     
 declare -i nReceivedCount=0
+declare -i nSuppressedCount=0
 declare -i nAnnouncedCount=0
 declare -i bPlannedTermination=0
 declare    sLastAnnounced
@@ -281,7 +282,7 @@ cMqttLog() {		# send a log message to the MQTT broker
 
 cMqttState() {	# log the state of the rtl bridge
     _ssid="$(iwgetid -r)" # iwgetid might have been aliased to ":" if not available
-    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*lastannounced*:*$sLastAnnounced*,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*cacheddewpoints*:${#aDewpointsCalc[@]},${nUploads:+*wuuploads*:$nUploads,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*lastreception*:*$(date "+$sDateFormat" -d @$nTimeStamp)*,*currtime*:*$(cDate)*"
+    _stats="*sensors*:$nReadings,*announceds*:$nAnnouncedCount,*lastannounced*:*$sLastAnnounced*,*mqttlines*:$nMqttLines,*receiveds*:$nReceivedCount,*suppressed*:$nSuppressedCount,*cacheddewpoints*:${#aDewpointsCalc[@]},${nUploads:+*wuuploads*:$nUploads,}*lastfreq*:$sBand,*host*:*$sHostname*,*ssid*:*$_ssid*,*startdate*:*$sStartDate*,*lastreception*:*$(date "+$sDateFormat" -d @$nTimeStamp)*,*currtime*:*$(cDate)*"
     log "$_stats"
     cMqttStarred state "{$_stats${1:+,$1}}"
     }
@@ -420,14 +421,13 @@ cHassRemoveAnnounce() { # removes ALL previous Home Assistant announcements
     return $?
  }
 
-cAddJsonKeyVal() {  # cAddJsonKeyVal "key" "val" "jsondata" (use $data if $3 is empty, no quoting of JSON value numbers)
+cAddJsonKeyVal() {  # cAddJsonKeyVal [ -b "beforekey" ] [ -n ] "key" "val" "jsondata" (use $data if $3 is empty, no quoting of JSON value numbers)
     local - && set +x
     local _bkey="" && [[ $1 == -b ]] && _bkey="$2" && shift 2
     local _nkey="" && [[ $1 == -n ]] && _nkey=1    && shift 1
     local _val="$2" ; _d="${3:-$data}"
     if [[ ! $_nkey || $_val ]] ; then # don't append the pair if value empty and -n option given !
         [[ $_val =~ ^[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?$ || $_val == null ]] || _val="\"$_val\"" # surround numeric _val by double quotes if not-a-number
-        # if [[ $_d =~ (.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*)(\"[^\"]\"|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)$ ]] ; then
         if [[ $_d =~ (.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*)(\"[^\"]*\"|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)(.*)$ ]] ; then
             : replace val # FIXME: replacing a val not yet fully implemented amd tested
             _d="${BASH_REMATCH[1]}$_val${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
@@ -446,6 +446,7 @@ cAddJsonKeyVal() {  # cAddJsonKeyVal "key" "val" "jsondata" (use $data if $3 is 
     # set -x ; cAddJsonKeyVal "floati" "5.5" '{"one":1}' ;    exit 2 # returns: '{"one":1,"floati":5.5}'
     # set -x ; cAddJsonKeyVal "one" "5.5" '{"one":1,"two":"xx"}' ; cAddJsonKeyVal "two" "nn" '{"one":1,"two":"xx"}' ;    exit 2 # returns: '{"one":1,"floati":5.5}'
     # set -x ; cAddJsonKeyVal -n notempty "" '{"one":1,"two":"xx"}' ; cAddJsonKeyVal empty "" '{"one":1,"two":"xx"}' ; exit 2 # returns '{"one":1,"two":"xx"}'
+    # set -x ; cAddJsonKeyVal -b one "one" null  '{"zero":0,"one":"(none)","two":2}'  ;  exit 2 # returns: '{"zero":0,"one":null}'
 
 cHasJsonKey() { # simplified check to check whether the JSON ${2:-$data} has key $1 (e.g. "temperat.*e")  (. is for [a-zA-Z0-9])
     local - && set +x
@@ -547,8 +548,8 @@ cExtractJsonVal() { # replacement for:  jq -r ".$1 // empty" <<< "${2:-$data}" ,
     local - && set +x
     [[ ${2:-$data} ]] || return 1
     if [[ ${2:-$data} ]] && cHasJsonKey "$1" ; then 
-        if [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*\"([^\"]*)\"[[:space:]]*[,}] ]] ||  # string
-                [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*([+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)[[:space:]]*[,}] ]] ; then # number 
+        if [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*\"([^\"]*)\"[[:space:]]*[,}] ]] ||  # string ...
+                [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*([+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)[[:space:]]*[,}] ]] ; then # ... or number 
             echo "${BASH_REMATCH[2]}"
         fi        
     else false ; fi # return error, e.g. if key not found
@@ -1019,7 +1020,7 @@ else
         cLogMore "start of $rtl433_command failed: $_msg"
         cMqttLog "{*event*:*startfailed*,*host*:*$sHostname*,*message*:*$rtl433_command ended fast: $_msg*}"
     else
-        renice -n 12 "$_pidrtl" > /dev/null 
+        renice -n 15 "$_pidrtl" > /dev/null 
         cMqttLog "{*event*:*debug*,*host*:*$sHostname*,*message*:*rtl_433 start: $_msg*}"
 
         if (( bAnnounceHass )) ; then
@@ -1197,6 +1198,7 @@ do
     # EXPERIMENTAL: skip a message also if it occurs in the same second as the previous tune message
     if [[ $nLastTuneMessage == "$(cDate %s)" ]] && ! cHasJsonKey frames ; then
         dbg TOOEARLY "$data"
+        nSuppressedCount+=1
         continue
     fi
 
@@ -1248,7 +1250,7 @@ do
     [[ $sBand ]] && basetopic="$sRtlPrefix/$sBand"
     log "$data"     
 
-    [[ ! $bVerbose && ! $model_ident =~ $sSensorMatch ]] && : not verbose, skipping early && continue # skip unwanted readings (regexp) early (if not verbose)
+    [[ ! $bVerbose && ! $model_ident =~ $sSensorMatch ]] && : not verbose, skipping early && nSuppressedCount+=1 && continue # skip unwanted readings (regexp) early (if not verbose)
     # cPidDelta 2ND
 
     if [[ $model_ident && ! $bRewrite ]] ; then
@@ -1294,7 +1296,7 @@ do
         _bHasRain="$(       [[ $(cExtractJsonVal rain_mm   ) =~ ^[1-9][0-9.]+$ ]] && echo 1 )" # formerly: cAssureJsonVal rain_mm ">0"
         _bHasWindAvgKmh="$( [[ $(cExtractJsonVal wind_avg_km_h ) =~ ^[1-9][0-9.]+$ ]] && echo 1 )" # not for value values starting with 0
         _bHasWindDirDeg="$( [[ $(cExtractJsonVal wind_dir_deg  ) =~ ^[1-9][0-9.]+$ ]] && echo 1 )" # not for value values starting with 0
-        _bHasBatteryOK="$(  [[ $(cExtractJsonVal battery_ok) =~ ^[01][0-9.]*$ ]] && echo 1 )" # 0,1 or some float between (0=LOW;1=FULL)
+        _bHasBatteryOK="$(  [[ $(cExtractJsonVal battery_ok) =~ ^[01][0-9.]*$ ]] && echo 1 )" # 0,1 or some float in between (0=LOW;1=FULL)
         _bHasBatteryV="$(  [[ $(cExtractJsonVal battery_V) =~ ^[0-9.]+$ ]] && echo 1 )" # voltage, also battery_mV
         _bHasZone="$(   cHasJsonKey -v zone)" #        {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasUnit="$(   cHasJsonKey -v unit)" #        {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
@@ -1327,10 +1329,10 @@ do
     aPrevReceivedTime[${model_ident:-OTHER}]="${aLastReceivedTime[${model_ident:-OTHER}]:-$nTimeStamp}" # remember time of previous reception, initialize if not yet set
     aLastReceivedTime[${model_ident:-OTHER}]=$nTimeStamp
 
-    # Send message to MQTT or skip it ...
-    if (( bSkipLine )) ; then
+    if (( bSkipLine )) ; then # skip line, e.g. if it is not plausible
         dbg SKIPPING "$data"
         bSkipLine=0
+        nSuppressedCount+=1
         continue
     elif ! [[ $model_ident ]] ; then # probably a stats message
         dbg "model_ident is empty"
@@ -1339,7 +1341,7 @@ do
         : "relevant, not super-recent change to previous signal - ignore freq+rssi changes, sRoundTo=$sRoundTo"
         if  (( bVerbose )) ; then
             (( bRewrite && bMoreVerbose && ! bQuiet )) && cEchoIfNotDuplicate "CLEANED: $model_ident=$( grep -E --color=yes '.*' <<< "$data")" # resulting message for MQTT
-            [[ $model_ident =~ $sSensorMatch ]] || continue # however, skip if no fit
+            ! [[ $model_ident =~ $sSensorMatch ]] && continue # however, skip if no fit
         fi
         sDataPrev="$data"
         nTimeStampPrev=$nTimeStamp # support ignoring any incoming duplicates within a few seconds
@@ -1537,8 +1539,12 @@ do
                 : "sending had failed: $?"
             fi
         else
-            dbg DUPLICATE "Suppressed a duplicate..." 
+            nSuppressedCount+=1
+            dbg DUPLICATE "Suppressed duplicate... (total: $nSuppressedCount)"
         fi
+    else
+        dbg2 DUPLICATE "Suppressed a duplicate... (total: $nSuppressedCount)"
+        nSuppressedCount+=1
     fi
     nReadings=${#aPrevReadings[@]}
     data="" # reset data to "" to cater for read return code <> 0 and an unchanged variable $data
