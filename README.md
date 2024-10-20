@@ -35,9 +35,9 @@ So the main areas of extended features are:
 * Dewpoint calculation if sensor doesn't provide it itself. -- Option:  `-L`
 * Temperature and humidity of the last 24 hours can be logged to the log directory.
 * Streamlined/removed mostly unnecessary content in the original JSON messages, e.g. no time stamp or checksum code.
-* Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time (few messages) frame are suppressed. -- Options: `-c` `-T`
-* MQTT topic contains and - configurably - the sensor's id. -- Option: `-i`
-* New sensors are not immediately auto-announced but only after some receptions -- Option: `-c`
+* Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time (few messages) frame are suppressed. -- Options: `-T`
+* MQTT topic contains channel and - configurably - the sensor's id. -- Option: `-i`
+* New sensors are not immediately auto-announced but only after several receptions -- Option: `-c`
 * Configurable upload of weather sensor data to [Weather Underground (WU)](https://www.wunderground.com) using the [PWS Upload Protocol](https://support.weather.com/s/article/PWS-Upload-Protocol).  -- Option: `-W id,key,sensor`, e.g. `-W IMUNIC999,abcDEF8,Bresser-3CH_1`
 * Enhanced logging and debugging into a device-specific subdirectory structure, easing later source device analysis. -- Options: `-v` `-v`
 * A MQTT state and a log channel for the bridge is provided giving regular statistics and on certain events of the bridge itself.

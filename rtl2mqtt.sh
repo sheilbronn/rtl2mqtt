@@ -708,7 +708,7 @@ cRound() {
 cLogMore "Gathered options: $_moreopts $*"
 [[ " $*" =~ " -?" ]] && _moreopts="" # any -? on the command line invalidates any other options from the config file"
 
-while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:OiI:N:B:w:c:as:S:W:t:T:E:29vx" opt $_moreopts "$@"
+while getopts "?qh:pPt:S:drLl:f:F:M:H:AR:Y:OiI:N:B:w:c:as:W:T:E:29vx" opt $_moreopts "$@"
 do
     case "$opt" in
     \?) { echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,device]"
@@ -894,8 +894,7 @@ else
 fi
 basetopic="$sRtlPrefix/$sBand" # intial setting for basetopic
 
-# Enumerate the supported protocols and their names, put them into array aProtocols:
-# Here a sample: 
+# Enumerate the supported protocols and their names, put them into array aProtocols, e.g. ....
 # ...
 # [215]  Altronics X7064 temperature and humidity device
 # [216]* ANT and ANT+ devices
@@ -910,10 +909,10 @@ cEchoIfNotDuplicate() {
         # (( bWasDuplicate )) && echo -e "\n" # echo a newline after some dots
         echo -e "$1${2:+\n$2}"
         gPrevData="$1..$2" # save the previous data
-        bWasDuplicate=""
+        # bWasDuplicate=""
     else
         printf "."
-        bWasDuplicate=1
+        # bWasDuplicate=1
     fi
  }
 
@@ -926,7 +925,8 @@ else               # probably non-terminal
     delayedStartSecs=3
     log "$sName starting in $delayedStartSecs secs from $(cDate)"
     sleep "$delayedStartSecs"
-    cMqttLog "{*event*:*starting*,$_info,*message*:*delayed by $delayedStartSecs secs*,*sw_version*=*$rtl433_version*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*}"
+    _id=${INVOCATION_ID:+*$INVOCATION_ID*} # when used in systemd
+    cMqttLog "{*event*:*starting*,$_info,*invocation_id*:${_id:-null},*message*:*delayed by $delayedStartSecs secs*,*sw_version*=*$rtl433_version*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*}"
 fi
 
 # Optionally remove any matching retained announcements
@@ -1120,6 +1120,15 @@ trap_other() {   # other signals: log appearance of other signals (see $aSignals
     cMqttLog "{*event*:*debug*,*message*:*$_msg*}"
   }
 trap 'trap_other' "${aSignalsOther[@]}" # STOP TSTP CONT HUP QUIT ABRT PIPE TERM
+
+trap_term() {   # TERM: log appearance of TERM signal (esp. when being stopped by systemd)
+    _msg="received SIGTERM (INVOCATION_ID=$INVOCATION_ID)..."
+    log "$sName $_msg"
+    [[ $NOTIFY_SOCKET ]] && systemd-notify --status="$_msg. Exiting." --pid=$$ --no-block # notify systemd about the shutdown
+    cMqttLog "{*event*:*debug*,*message*:*$_msg*}"
+    exit 0
+  }
+trap 'trap_term' "TERM" # TERM
 
 [[ "x$*" =~ ^y ]] && trap_exit && trap_int && trap_trap && trap_usr2 && trap_vtalrm && trap_other # fake call of all trap functions to avoid shellcheck warnings about non-reachable code
 
@@ -1317,7 +1326,7 @@ do
         if (( bRewriteMore )) ; then
             cDeleteJsonKeys "transmit test"
             _k="$( cHasJsonKey "unknown.*" )" && [[ $(cExtractJsonVal "$_k") == 0 ]] && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
-            bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-500 )) # sanitize=skip non-plausible readings
+            bSkipLine=$(( nHumidity>100 || nHumidity<0 || nTemperature10<-300 )) # sanitize=skip non-plausible readings
         fi
         (( bVerbose  )) && ! cHasJsonKey BAND && cAddJsonKeyVal BAND "$sBand"  # add BAND here to ensure it also goes into the logfile for all data lines
         (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append HOUR value explicitly if readings are to be sent retained
