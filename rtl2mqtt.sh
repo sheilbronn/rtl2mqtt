@@ -154,7 +154,10 @@ cIfJSONNumber() { local - ; set +x ; [[ $1 =~ ^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE]
 # set -x ; cIfJSONNumber 99 && echo ok ; cIfJSONNumber 10.4 && echo ok ; echo ${BASH_REMATCH[0]} ; cIfJSONNumber 10.4x && echo nok ; echo ${BASH_REMATCH[0]} ; exit
 cMult10() { local - ; set +x ; [[ $1 =~ ^([-]?)(0|[1-9][0-9]*)\.([0-9])([0-9]*)$ ]] && { echo "${BASH_REMATCH[1]}${BASH_REMATCH[2]#0}${BASH_REMATCH[3]}" ; } || echo $(( ${1/#./0.} * 10 )) || return 1 ; true ; }
 # set -x ; cMult10 -1.16 ; cMult10 -0.800 ; cMult10 1.234 || echo nok ; cMult10 -3.234 ; cMult10 66 ; cMult10 .900 ; echo $(( "$(cMult10 "$(cMult10 "$(cMult10 1012.55)" )" )" / 3386 )) ; exit
+# cMult100() { local - ; set +x ; [[ $1 =~ ^([-]?)(0|[1-9][0-9]*)\.([0-9]{0,1})([0-9]{0,1})([0-9]*)$ ]] && { echo "${BASH_REMATCH[1]}${BASH_REMATCH[2]:-0}${BASH_REMATCH[3]:-0}${BASH_REMATCH[4]:-0}" ; } || echo $(( ${1/#./0.} * 100 )) || return 1 ; true ; }
+# set -x ; cMult100 ${1:-1.2} ; cMult100 -1.16 ; cMult100 -0.800 ; cMult100 1.234 || echo nok ; cMult100 -3.234 ; cMult100 66 ; cMult100 .900 ; echo $(( "$(cMult100 "$(cMult100 "$(cMult100 1012.55)" )" )" / 3386 )) ; exit
 # exit
+
 cDiv10() { local - ; set +x ; [[ $1.0 =~ ^([+-]?)([0-9]*)([0-9])(\.[0-9]+)?$ ]] && { v="${BASH_REMATCH[1]}${BASH_REMATCH[2]:-0}.${BASH_REMATCH[3]}" ; echo "${v%.0}" ; } || echo 0 ; }
 # set -x ; cDiv10 -1.234 ; cDiv10 12.34 ; cDiv10 -32.34 ; cDiv10 -66 ; cDiv10 66 ; cDiv10 .900 ;  exit
 # cTestFalse() { echo aa ; false ; } ; x=$(cTestFalse) && echo 1$x || echo 2$x ; exit 1
@@ -264,7 +267,7 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
         [[ $1 == "log" ]] && cLogMore "MQTTLOG: $2"
     fi
     _topic="${_topic/#\//$basetopic}" # add the base topic, if not already there (= if _topic starts with a slash)
-    _arguments=( ${sMID:+-i $sMID} -t "$_topic" -m "$(cExpandStarredString "$_msg")" "${@:3:$#}" ) # ... append further arguments
+    _arguments=( ${sMID:+-i $sMID} ${sUserName:+-u "$sUserName"} ${sUserPass:+-P "$sUserPass"} -t "$_topic" -m "$(cExpandStarredString "$_msg")" "${@:3:$#}" ) # ... append further arguments
     [[ ${#hMqtt[@]} == 0 ]] && mosquitto_pub "${_arguments[@]}"
     for host in "${hMqtt[@]}" ; do
         mosquitto_pub ${host:+-h $host} "${_arguments[@]}"
@@ -411,7 +414,7 @@ cHassAnnounce() {
 cHassRemoveAnnounce() { # removes ALL previous Home Assistant announcements  
     declare -a _topics=( ".$sHassPrefix/sensor/+/+/config" ".$sHassPrefix/binary_sensor/+/+/config" )
     cLogMore "removing sensor announcements below each of ${_topics[*]/.} ..."
-    declare -a _arguments=( ${sMID:+-i "$sMID"} -W 1 ${_topics[@]/./-t } --remove-retained --retained-only )
+    declare -a _arguments=( ${sMID:+-i "$sMID"} -W 1 ${sUserName:+-u "$sUserName"} ${sUserPass:+-P "$sUserPass"} ${_topics[@]/./-t } --remove-retained --retained-only )
     [[ ${#hMqtt[@]} == 0 ]]  && mosquitto_sub "${_arguments[@]}"
     for host in "${hMqtt[@]}" ; do
         mosquitto_sub ${host:+-h $host} "${_arguments[@]}"
@@ -719,11 +722,17 @@ do
     q)  bQuiet=1
         ;;
     h)  # configure the broker host here or in $HOME/.config/mosquitto_sub
-        case "$OPTARG" in     #  http://www.steves-internet-guide.com/mqtt-hosting-brokers-and-servers/
+        # syntax: -h USERNAME:PASSWORD@brokerhost:port or -h brokerhost:port or -h brokerhost
+        set -x
+        sUserName="${OPTARG%%@*}" ; sUserPass="${sUserName#*:}"
+        [[ $sUserPass == "$sUserName" ]] && sUserPass=""
+        sUserName="${sUserName%:*}"
+        sBrokerHost="${OPTARG#*@}" ; sBrokerPort="${sBrokerHost#*:}" ; sBrokerHost="${sBrokerHost%:*}"
+        case "$sBrokerHost" in     #  http://www.steves-internet-guide.com/mqtt-hosting-brokers-and-servers/
 		test|mosquitto) mqtthost="test.mosquitto.org" ;; # abbreviation
 		eclipse)        mqtthost="mqtt.eclipseprojects.io"   ;; # abbreviation
         hivemq)         mqtthost="broker.hivemq.com"   ;;
-		*)              mqtthost="$(echo "$OPTARG" | tr -c -d '0-9a-z_.' )" ;; # clean up for sec purposes
+		*)              mqtthost="$(echo "$sBrokerHost" | tr -c -d '0-9a-z_.' )" ;; # clean up for sec purposes
 		esac
    		hMqtt+=( "$([[ ! "${hMqtt[*]}" == *"$mqtthost"*  ]] && echo "$mqtthost")" ) # gather them, but no duplicates
         # echo "${hMqtt[*]}"
@@ -931,7 +940,7 @@ fi
 
 # Optionally remove any matching retained announcements
 (( bRemoveAnnouncements )) && cHassRemoveAnnounce && cMqttState "*note*:*removeAnnouncements*" && 
-    mosquitto_sub ${sMID:+-i $sMID} -W 1 --retained-only --remove-retained -t "$sRtlPrefix/+" 
+    mosquitto_sub ${sMID:+-i $sMID} ${sUserName:+-u "$sUserName"} ${sUserPass:+-P "$sUserPass"} -W 1 --retained-only --remove-retained -t "$sRtlPrefix/+" 
 
 trap_exit() {   # stuff to do when exiting
     local exit_code=$? # must be first command in exit trap
@@ -956,7 +965,7 @@ trap '' INT TRAP USR2 VTALRM
 if [[ $fReplayfile =~ ^MQTT: ]] ; then
     echo "MQTT: $fReplayfile" 1>&2
     coproc COPROC (
-        mosquitto_sub -h "$hMqttSource" -t "$sMqttTopic"
+        mosquitto_sub -h "$hMqttSource" ${sUserName:+-u "$sUserName"} ${sUserPass:+-P "$sUserPass"} -t "$sMqttTopic"
     )
 elif [[ $fReplayfile == /dev/stdin ]] ; then
     exit 0 # doesn't work correctly, filtered out above at command line parsing
@@ -1247,6 +1256,14 @@ do
         : echo 2 "${aEarlierTemperVals10[$model_ident]}" &&
         nTemperature10Diff=$(( nTemperature10 - ${aEarlierTemperVals10[$model_ident]:-0} )) # used later
     vHumidity="$( cExtractJsonVal humidity )" && vHumidity="$( cIfJSONNumber "$vHumidity" )"
+    # if vHumidity begins with a zero or a dot, multiply it by 100
+    #    [[ $vHumidity ]] && vHumidity=1.0 # for debugging
+    # if vhumidity begins with a dot, add a zero in front of it
+    [[ $vHumidity =~ ^\.] ]] && vHumidity="0$vHumidity" 
+
+    bHumidityScaled=""
+    [[ $vHumidity =~ ^[0.] || $vHumidity == ^1\.{0,1}0*$ ]] && vHumidity="$(awk -v h="$vHumidity" 'BEGIN {printf "%.0f\n", h * 100}')" && 
+            bHumidityScaled=1 && dbg HUMIDITY "$vHumidity is multplied by 100"
     nHumidity="${vHumidity/.[0-9]*}"
     vSetPoint="$( cExtractJsonVal setpoint_C) || $( cExtractJsonVal setpoint_F)" && vSetPoint="$(cIfJSONNumber "$vSetPoint")"
     type="$( cExtractJsonVal type )" # typically type=TPMS if present
@@ -1294,8 +1311,13 @@ do
                     nHumidity="${_val/.[0-9]*}"
                 fi
                 # FIXME: BREAKING change should have dedicated option when adding 0. in front of $nHumidity (i.e. divide by 100) - OpenHAB 4 likes a dimension-less percentage value to be in the range 0.0...1.0 :
-                ### cDeleteSimpleJsonKey humidity && cAddJsonKeyVal humidity "$( (( nHumidity == 100 )) && printf 1 || printf "0.%2.2d" "$nHumidity" )"
-                cDeleteSimpleJsonKey humidity && cAddJsonKeyVal humidity "$nHumidity"
+                if cDeleteSimpleJsonKey humidity ; then
+                    if [[ $bHumidityScaled || $bRewriteMore ]] ; then
+                        cAddJsonKeyVal humidity "$( (( nHumidity == 100 )) && printf 1 || printf "0.%2.2d" "$nHumidity" )"
+                    else
+                        cAddJsonKeyVal humidity "$nHumidity"
+                    fi
+                fi
             fi
         fi
         vPressure_kPa="$(cExtractJsonVal pressure_kPa)"
