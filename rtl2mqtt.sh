@@ -723,7 +723,6 @@ do
         ;;
     h)  # configure the broker host here or in $HOME/.config/mosquitto_sub
         # syntax: -h USERNAME:PASSWORD@brokerhost:port or -h brokerhost:port or -h brokerhost
-        set -x
         sUserName="${OPTARG%%@*}" ; sUserPass="${sUserName#*:}"
         [[ $sUserPass == "$sUserName" ]] && sUserPass=""
         sUserName="${sUserName%:*}"
