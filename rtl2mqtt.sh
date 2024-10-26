@@ -561,8 +561,8 @@ cExtractJsonVal() { # replacement for:  jq -r ".$1 // empty" <<< "${2:-$data}" ,
 
 cAssureJsonVal() {
     cHasJsonKey "$1" &&  jq -er "if (.$1 ${2:+and .$1 $2} ) then 1 else empty end" <<< "${3:-$data}"
- }
-    # set -x ; data='{"action":"null","battery":100}' ; cAssureJsonVal battery ">999" ; cAssureJsonVal battery ">9" ;  exit
+  }
+  # set -x ; data='{"action":"null","battery":100}' ; cAssureJsonVal battery ">999" ; cAssureJsonVal battery ">9" ;  exit
 
 longest_common_prefix() { # variant of https://stackoverflow.com/a/6974992/18155847
   [[ $1 == "-s" ]] && shift 1 && set -- "${1// }" "${2// }" # remove all spaces before comparing
@@ -895,8 +895,8 @@ if [[ $fReplayfile ]]; then # for both file as well as MQTT...
 else
     _output="$( $rtl433_command "${rtl433_opts[@]}" -T 1 2>&1 )"
     # echo "$_output" ; exit
-    sdr_tuner="$(  awk -- '/^Found /   { print gensub("Found ", "",1, gensub(" tuner$", "",1,$0)) ; exit}' <<< "$_output" )" # matches "Found Fitipower FC0013 tuner"
-    sdr_freq="$(   awk -- '/^Tuned to/ { print gensub("MHz.", "",1,$3)                            ; exit}' <<< "$_output" )" # matches "Tuned to 433.900MHz."
+    sdr_tuner="$(awk '/^Found / { gsub(/^Found /, ""); gsub(/ tuner$/, ""); print; exit }' <<< "$_output")"  # matches "Found Fitipower FC0013 tuner"
+    sdr_freq="$(awk '/^.*Tuned to / { gsub(/.*Tuned to /, ""); gsub(/MHz\.$/, ""); print; exit }' <<< "$_output")" # matches "Tuned to 433.900MHz."
     conf_files="$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_output" | xargs ls -1 2>/dev/null )" # try to find an existing config file
     sBand="$( cMapFreqToBand "$(cExtractJsonVal sdr_freq)" )"
 fi
@@ -925,7 +925,7 @@ cEchoIfNotDuplicate() {
  }
 
 (( bAnnounceHass )) && cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/log  "LogMessage"  ""  none
-_info="*host*:*$sHostname*,*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsWeather*:$nMinSecondsWeather,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
+_info="*host*:*$sHostname*,*version*:*$rtl433_version*,*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsWeather*:$nMinSecondsWeather,*nMinSecondsOther*:$nMinSecondsOther,*sRoundTo*:$sRoundTo"
 if [ -t 1 ] ; then # probably running on a terminal
     log "$sName starting at $(cDate)"
     cMqttLog "{*event*:*starting*,$_info}"
@@ -1085,7 +1085,7 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
     done
 
     # output all arrays, filter associative arrays starting with lowercase a
-    _msg="$(declare -p | awk '$0~"^declare -A" && $3~"^a" { printf("%s*%s(%s)*:%d" , sep, gensub("=.*","",1,$3), gensub("-A","",1,$2), gsub("]=","") ) ; sep="," }' )"
+    _msg="$(declare -p | awk '$0~"^declare -A" && $3~"^a" { gsub("-A", "", $2); gsub("=.*", "", $3); printf("%s*%s(%s)*:%d" , sep, $3, $2, gsub("]=","") ) ; sep="," }' )"
     dbg ARRAYS "$_msg"
     cMqttStarred arrays "[$_msg]"
 
@@ -1103,7 +1103,7 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
     done
 
     if ((bVerbose)) && false ; then
-        for KEY in $( declare -p | awk '$0 ~ "^declare -A" && $3 ~ "^a" { print gensub("=.*","",1,$3) }' ) ; do
+        for KEY in $( declare -p | awk '$0 ~ "^declare -A" && $3 ~ "^a" { gsub(/=.*/, "", $3); print $3 }' ) ; do
             _val="$(declare -p "$KEY" | cut -d= -f2- | tr -c -d "=" | wc -c )"
             dbg ARRAY "$KEY($_val)"
             cMqttStarred array "$KEY($_val)"
