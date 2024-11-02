@@ -434,12 +434,15 @@ cAddJsonKeyVal() {  # cAddJsonKeyVal [ -b "beforekey" ] [ -n ] "key" "val" "json
         if [[ $_d =~ (.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*)(\"[^\"]*\"|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)(.*)$ ]] ; then
             : replace val # FIXME: replacing a val not yet fully implemented amd tested
             _d="${BASH_REMATCH[1]}$_val${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
-        elif [[ ! $_bkey ]] || ! [[ $_d =~ (.*[{,])([[:space:]]*\"$_bkey\"[[:space:]]*:.*)$ ]] ; then    #  cHasJsonKey $_bkey
-            : insert at end
-            _d="${_d/%\}/,\"$1\":$_val\}}"
-        else
+        elif [[ $_bkey == BEGINNING ]] ; then
+            : insert at beginning
+            _d="{\"$1\":$_val,${_d#\{}"
+        elif [[ $_bkey ]] && [[ $_d =~ (.*[{,])([[:space:]]*\"$_bkey\"[[:space:]]*:.*)$ ]] ; then    #  cHasJsonKey $_bkey
             : insert before key
             _d="${BASH_REMATCH[1]}\"$1\":$_val,${BASH_REMATCH[2]}" # FIXME: assuming the JSON wasn't empty
+        else
+            : insert at end
+            _d="${_d/%\}/,\"$1\":$_val\}}"
         fi
     fi
     [[ $3 ]] && echo "$_d" || data="$_d"
@@ -450,6 +453,8 @@ cAddJsonKeyVal() {  # cAddJsonKeyVal [ -b "beforekey" ] [ -n ] "key" "val" "json
     # set -x ; cAddJsonKeyVal "one" "5.5" '{"one":1,"two":"xx"}' ; cAddJsonKeyVal "two" "nn" '{"one":1,"two":"xx"}' ;    exit 2 # returns: '{"one":1,"floati":5.5}'
     # set -x ; cAddJsonKeyVal -n notempty "" '{"one":1,"two":"xx"}' ; cAddJsonKeyVal empty "" '{"one":1,"two":"xx"}' ; exit 2 # returns '{"one":1,"two":"xx"}'
     # set -x ; cAddJsonKeyVal -b one "one" null  '{"zero":0,"one":"(none)","two":2}'  ;  exit 2 # returns: '{"zero":0,"one":null}'
+    # set -x ; cAddJsonKeyVal -b BEGINNING "SOME" null  '{"zero":0,"one":"(none)","two":2}'  ;  exit 2 # returns: {"SOME":null,"zero":0,"one":"(none)","two":2}
+    # set -x ; cAddJsonKeyVal -b BEGINNING "two" "3"  '{"zero":0,"one":"(none)","two":2}'  ;  exit 2 # returns: {"zero":0,"one":"(none)","two":3} 
 
 cHasJsonKey() { # simplified check to check whether the JSON ${2:-$data} has key $1 (e.g. "temperat.*e")  (. is for [a-zA-Z0-9])
     local - && set +x
@@ -1495,13 +1500,13 @@ do
                 else
                     : announcement had failed, will be retried again next time
                 fi
-                if (( nAnnouncedCount > 1999 )) ; then # DENIAL OF SERVICE attack or malfunction from RF environment assumed
+                if (( nAnnouncedCount > 1999 )) ; then # could be Denial of Service (DoS) attack or malfunction from RF environment 
                     cHassRemoveAnnounce
-                    _msg="nAnnouncedCount=$nAnnouncedCount exploded, DENIAL OF SERVICE attack assumed!"
+                    _msg="nAnnouncedCount=$nAnnouncedCount exploded, possibly DENIAL OF SERVICE attack!"
                     log "$_msg" 
                     cMqttLog "{*event*:*exiting*,*message*:*$_msg*}"
                     dbg ENDING "$_msg"
-                    exit 11 # possibly restarting the whole script, if systemd configuration allows it (=default)
+                    exit 11 # will restart the script if systemd configuration allows it (=default for exit code>0 ?)
                 fi
             else # not a sensor we like, but something different, e.g. a ...
                 cMqttLog "{*event*:*debug*,*message*:*not announced for MQTT discovery (not a sensible sensor): $model_ident*}"
@@ -1565,6 +1570,13 @@ do
             if cMqttStarred "$basetopic/$topicext" "${data//\"/*}" ${bRetained:+ -r} ; then # ... finally: publish the values to broker
                 nMqttLines+=1
                 aLastPub[$model_ident]=$nTimeStamp
+                # if unnannounced publish to .../unannounced, too
+                if ! (( ${aAnnounced[$model_ident]} )) ; then
+                    cAddJsonKeyVal -b BEGINNING "SENSOR" "$model_ident"
+                    cMqttStarred unannounced "${data//\"/*}"
+                    # rtl/bridge/unannounced { "battery_ok":0,"temperature":10.5,"humidity":0.58,"dewpoint":2.5,"BAND":433,
+                    #    "DELTADEW":0.4,"ORIGTEMP":10.700,"NOTE":"1ST(79/52) 2ND(c=2,s=79/52,IsDiff3=1)","SDELTA":"0:0"}
+                fi
             else
                 : "sending had failed: $?"
             fi
