@@ -372,6 +372,7 @@ cHassAnnounce() {
         voltage)    _icon_str="FIXME"           ; _unit="V"     ; _state_class="measurement" ;;
         battery|batteryval)	_icon_str=""        ; _unit="#"	    ; _state_class="measurement" ;;
         battery_ok) _icon_str=""                ; _component=binary_sensor  ; _dev_class=switch ; _payload_on=1 ; _payload_off=0 ;;
+        cmd)        _icon_str="command"         ; _state_class="measurement" ;; # e.g. cmd=62
 		none)		_icon_str="" ; _unit="" ; _dev_class="" ;;
         *)          cLogMore "Notice: special icon and/or unit not defined for '$6'"
     esac
@@ -852,12 +853,15 @@ do
         ;;
     W)  command -v curl > /dev/null || { echo "$sName: curl not installed, but needed for uploading data ..." 1>&2 ; exit 126 ; }
         IFS=',' read -r _company _id _key _sensor _indoor _sensorid <<< "$OPTARG"  # Syntax e.g.: -W <Station-ID>,<-Station-KEY>,Bresser-3CH_1m,{indoor|outdoor}
+        (( bVerbose)) && echo WUNDERGROUD "_company=$_company, _id=$_id, _key=$_key, _sensor=$_sensor, _indoor=$_indoor, _sensorid=$_sensorid" 1>&2
         [[ $_indoor ]] || { echo "$sName: -W $OPTARG doesn't have at least three comma-separated values..." 1>&2 ; exit 2 ; }
         _company="${_company,,}" # lowercase the value
-        aMatchIDs[$_company$_sensor$_sensorid]="$_sensorid"
+        aMatchIDs[$_company.$_sensor.$_sensorid]="$_sensor.$_sensorid" # content doesn't matter, just any value
+
         if [[ $_company == "wunderground" ]] ; then
-            dbg "Will upload data for device $_sensor as station ID $_id to Weather Underground..." 
+            (( bVerbose)) && echo WUNDERGROUD "Will upload data for device $_sensor as station ID $_id to Weather Underground..." 1>&2
             aWuUrls[$_sensor]="$sWuBaseUrl?ID=$_id&PASSWORD=$_key&action=updateraw&dateutc=now"
+            dbg "aWuUrls[$_sensor]=${aWuUrls[$_sensor]}"
             [[ $_indoor = indoor ]] && aWuPos[$_sensor]="indoor" # add this prefix to temperature key id
             _key=""
             ((bVerbose)) && echo "Upload data for $_sensor as station $_id ..."
@@ -1454,7 +1458,7 @@ do
         if (( bMoreVerbose && ! bQuiet )) ; then
             _prefix="SAME:  "  &&  ! cEqualJson "${aPrevReadings[$model_ident]}" "$sReadPrev" "freq freq1 freq2 rssi" && _prefix="CHANGE(${#aPrevReadings[@]}):"
             # grep expressen was: '^[^/]*|/'
-            { echo "$_prefix $model_ident" ; echo "$sReadPrev" ; echo "${aPrevReadings[$model_ident]}" ; } | grep -E --color=auto '[ {].*'
+            { echo "$_prefix $model_ident" ; echo "$sReadPrev" ; echo "${aPrevReadings[$model_ident]}" ; } | GREPC '[ {].*'
         fi
         nMinSeconds=$(( ( (bAlways || ${#vTemperature} || ${#vHumidity} ) && (nMinSecondsWeather>nMinSecondsOther) ) ? nMinSecondsWeather : nMinSecondsOther ))
         _ignore_keys="freq freq1 freq2 rssi snr noise" # keys to ignore when comparing two readings
@@ -1569,7 +1573,9 @@ do
                 cAddJsonKeyVal -b BAND -n dewpoint "$vDewptc" # add dewpoint before BAND key
             fi
 
-            if [[ ${aWuUrls[$model_ident]} && ( ${aMatchIDs[wunderground$model_ident$id]} || ${aMatchIDs[wunderground$model_ident]} ) ]] ; then # perform any Weather Underground upload
+            dbg2 "CHECK WUPLOAD" "aWuUrls[$model_ident]=${aWuUrls[$model_ident]} , aMatchIDs[wunderground.$model_ident.$id]=${aMatchIDs[wunderground.$model_ident.$id]} , aMatchIDs[wunderground.$model_ident.]=${aMatchIDs[wunderground.$model_ident.]}"
+            # (( bVerbose )) && for key in "${!aMatchIDs[@]}"; do dbg2 UPLOAD "aMatchIDs[$key] = ${aMatchIDs[$key]}" ; done
+            if [[ ${aWuUrls[$model_ident]} && ( ${aMatchIDs[wunderground.$model_ident.$id]} || ${aMatchIDs[wunderground.$model_ident.]} ) ]] ; then # perform any Weather Underground upload
                 # wind_speed="10", # precipitation="0"
                 [[ $baromin ]] && baromin="$(( $(cMult10 "$(cMult10 "$(cMult10 vPressure_kPa)" )" ) / 3386  ))" # 3.3863886666667
                 # https://blog.meteodrenthe.nl/2021/12/27/uploading-to-the-weather-underground-api/
@@ -1583,7 +1589,7 @@ do
                 : "aWuUrls[$model_ident] is empty"
             fi
 
-            if [[ ${aWhUrls["OTHER"]} || ( ${aWhUrls[$model_ident]} && ( ${aMatchIDs[whatsapp$model_ident$id]} || ${aMatchIDs[whatsapp$model_ident]} ) ) ]] && 
+            if [[ ${aWhUrls["OTHER"]} || ( ${aWhUrls[$model_ident]} && ( ${aMatchIDs[whatsapp.$model_ident.$id]} || ${aMatchIDs[whatsapp.$model_ident]} ) ) ]] && 
                     [[ $bVerbose || ! $vTemperature || $(( ${aCounts[$model_ident]} % 10 )) == 1 ]]; then 
                 # perform any Whatsapp upload. If with temperature: Only every 10th reading is uploaded, to avoid flooding the Whatsapp channel
                 URL2="text=$(urlencode "$model_ident: $( cDeleteJsonKeys "id freq rssi" "$data" )")"
