@@ -1266,8 +1266,8 @@ do
     (( bMoreVerbose )) && cEchoIfNotDuplicate "PREPROCESSED: $data"
     # cPidDelta BBB
     protocol="$(cExtractJsonVal protocol)" ; protocol="${protocol//[^0-9]}" # Avoid arbitrary command execution vulnerability in indexes for arrays
-    channel="$( cExtractJsonVal channel)"
-    id="$(      cExtractJsonVal id)"
+    channel="$( ! cExtractJsonVal channel && [ "$fReplayfile" ] && echo "$channel" )" # when replaying preserve the channel as long as there is no channel in the JSON
+    id="$( ! cExtractJsonVal id && [ "$fReplayfile" ] && echo "$id" )" # when replaying preserve the id as long as there is no id in the JSON
     model="" && { cHasJsonKey model || cHasJsonKey since ; } && model="$(cExtractJsonVal model)"
     if [[ $model ]] ; then
         [[ ! $id ]] && id="$(cExtractJsonVal address)" # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
