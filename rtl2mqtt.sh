@@ -24,6 +24,7 @@ e1()  { echo 1 ; }
 
 alias cX="local - && set +x" # stop any verbosity locally
 alias sX="set -x"
+alias GREPC="grep -E --color=auto"
 sName="${0##*/}" && sName="${sName%.sh}"
 sMID="$(basename "${sName// }" .sh )"
 sID="$sMID"
@@ -174,6 +175,7 @@ log() {
         logfile="$dLog/$(cDate %H)"
         echo "$(cDate "%d %T")" "$*" >> "$logfile"
         [[ $bVerbose && $* =~ ^\{ ]] && { printf "%s" "$*" ; echo "" ; } >> "$logfile.JSON"
+        [ -t 2 ] && [[ $bMoreVerbose ]] && dbg LOG "$*"
     elif [[ $sDoLog ]] ; then
         echo "$(cDate)" "$@" >> "$dLog.log"
     fi
@@ -226,7 +228,7 @@ dbg() { # output args to stderr, if bVerbose is set
 	}
     # sX ; dbg ONE TWO || echo ok to fail... ; exit
     # sX ; bVerbose=1 ; dbg MANY MORE OF IT ; dbg "ALL TOGETHER" ; exit
-dbg2() { : ; }  # predefine it now to do nothing, but allow to redefine it later
+dbg2() { cX ; (( bMoreVerbose )) && dbg "$@" ; }  # predefine it now to do nothing, but allow to redefine it later
 
 cMapFreqToBand() {
     cX
@@ -318,7 +320,7 @@ cHassAnnounce() {
 	local _command_topic_str="$( [[ $3 != "$_topicpart" ]] && printf ",*cmd_t*:*~/set*" )"  # determined by suffix ".../set"
 
     local _dev_class="${6#none}" # dont wont "none" as string for dev_class
-	local _state_class
+	local _state_class="" # see https://developers.home-assistant.io/docs/core/entity/sensor/#available-state-classes
     local _component=sensor
     local _jsonpath="${5#value_json.}" # && _jsonpath="${_jsonpath//[ \/-]/}"
     local _jsonpath_red="$(echo "$_jsonpath" | tr -d "][ /_-")" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
@@ -389,7 +391,7 @@ cHassAnnounce() {
    	[[ $bVerbose ]] && (
         # 
         export GREP_COLORS="ms=01;33:mc=01;33:sl=:cx=:fn=35:ln=32:bn=32:se=36"
-        echo "$Yellow$_topic$Rst" "$_msg" | grep -E --color=auto '^[^ ]*'  # |\{[^}]*}
+        echo "$Yellow$_topic$Rst" "$_msg" | GREPC '^[^ ]*'  # |\{[^}]*}
     )
     cMqttStarred "$_topic" "{$_msg}" "-r"
     return $?
@@ -790,7 +792,7 @@ do
             nMinSecondsOther=0
             nMinOccurences=1
         fi
-        dbg2 INFO "fReplayfile: $fReplayfile"
+        dbg INFO "fReplayfile: $fReplayfile"
         ;;
     w)  sRoundTo="$OPTARG" # round temperature to this value and relative humidity to 4-times this value (_hMult)
         ;;
@@ -866,9 +868,9 @@ do
             aWhUrls[$_sensor]="phone=$_id&apikey=$_key"
             ((bVerbose)) && echo "WhatsApp data for $_sensor for phone $_id ..."
         else
-            echo "$sName: -W $OPTARG doesn't have a valid company name (WU)..." 1>&2 ; exit 2
+            echo "$sName: -W $OPTARG has invalid company name $_company (WU)..." 1>&2 ; exit 2
         fi
-        ;;
+     ;;
     2)  bTryAlternate=1 # ease coding experiments (not to be used in production)
         ;;
     9)  bEveryBroker=1 # send to every mentioned broker
@@ -891,6 +893,7 @@ shift $((OPTIND-1))  # Discard all the options previously processed by getopts, 
 
 rtl433_opts+=( ${nHopSecs:+-H $nHopSecs -v} ${nStatsSec:+-M stats:1:$nStatsSec} )
 sRoundTo="$( cMult10 "$sRoundTo" )"
+(( bMoreVerbose )) && for KEY in "${!aMatchIDs[@]}"; do dbg2 WUPLOAD "aMatchIDs[$KEY] = ${aMatchIDs[$KEY]}" ; done
 
 if [ -f "${dLog}.log" ] ; then  # want one logfile only
     sDoLog="file"
@@ -1236,7 +1239,7 @@ do
         continue
     fi
      (( bVerbose )) && [[ $datacopy != "$data" ]] && echo "==========================================" && datacopy="$data"
-    dbg RAW "$data"
+    ((bVerbose)) && GREPC '"[a-zA-Z0-9]*":' <<< "${data// : /:}"
     data="${data//\" : /\":}" # remove any space around (hopefully JSON-like) colons
     nReceivedCount+=1
 
@@ -1405,7 +1408,7 @@ do
     elif [[ $bAlways || $nTimeStamp -gt $((nTimeStampPrev+nMinSecondsOther)) ]] || ! cEqualJson "$data" "$sDataPrev" "freq rssi"; then
         : "relevant, not super-recent change to previous signal - ignore freq+rssi changes, sRoundTo=$sRoundTo"
         if  (( bVerbose )) ; then
-            (( bRewrite && bMoreVerbose && ! bQuiet )) && cEchoIfNotDuplicate "CLEANED: $model_ident=$( grep -E --color=yes '.*' <<< "$data")" # resulting message for MQTT
+            (( bRewrite && bMoreVerbose && ! bQuiet )) && cEchoIfNotDuplicate "CLEANED: $model_ident=$( GREPC '.*' <<< "$data")" # resulting message for MQTT
             ! [[ $model_ident =~ $sSensorMatch ]] && continue # however, skip if no fit
         fi
         sDataPrev="$data"
@@ -1478,7 +1481,7 @@ do
             echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasCommand=$_bHasCommand, hasValue=$_bHasValue, hasButton=$_bHasButton, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl, hasBatteryOK=$_bHasBatteryOK, hasBatteryOKVal=$_bHasBatteryOKVal, hasBatteryV=$_bHasBatteryV"
             echo "Counts=${aCounts[$model_ident]}, _nSecDelta=$_nSecDelta, #aDewpointsCalc=${#aDewpointsCalc[@]}"
             (( ! bMoreVerbose )) && 
-                echo "model_ident=$model_ident, READINGS=${aPrevReadings[$model_ident]}, Prev=$sReadPrev, Prev2=$sReadPrevS" | grep -E --color=auto 'model_ident=[^,]*|\{[^}]*}'
+                GREPC 'model_ident=[^, ]*|\{[^}]*}' <<< "model_ident=$model_ident  READ=${aPrevReadings[$model_ident]}  PREV=$sReadPrev  PREV2=$sReadPrevS"
         fi
         
         # construct the specific part of the MQTT topic:
@@ -1624,7 +1627,7 @@ do
             dbg DUPLICATE "Suppressed duplicate... (total: $nSuppressedCount)"
         fi
     else
-        dbg2 DUPLICATE "Suppressed a duplicate... (total: $nSuppressedCount)"
+        dbg2 DUPLICATE "Suppressed a duplicate.... (total: $nSuppressedCount)"
         nSuppressedCount+=1
     fi
     nReadings=${#aPrevReadings[@]}
