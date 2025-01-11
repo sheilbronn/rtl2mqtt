@@ -25,6 +25,7 @@ e1()  { echo 1 ; }
 alias cX="local - && set +x" # stop any verbosity locally
 alias sX="set -x"
 alias GREPC="grep -E --color=auto"
+alias ifVerbose="(( bVerbose ))"
 sName="${0##*/}" && sName="${sName%.sh}"
 sMID="$(basename "${sName// }" .sh )"
 sID="$sMID"
@@ -33,7 +34,7 @@ cDate() { cX ; a="$1" ; shift ; printf "%($a)T" "$@"; } # avoid a separate proce
 
 commandArgs="$*"
 dLog="/var/log/$sMID" # /var/log/rtl2mqtt is default, but will be changed to /tmp if not useable
-aSignalsOther=( URG XCPU XFSZ PROF WINCH PWR SYS USR1 ) # signals that will be logged, but ignored
+aSignalsOther=( URG XCPU XFSZ PROF WINCH PWR SYS USR1 ) # signals that will be logged, but ignored or treated
 sManufacturer="RTL"
 sHassPrefix="homeassistant"
 sRtlPrefix="rtl"                        # base topic
@@ -54,6 +55,10 @@ sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweather
 sWhatsappBaseUrl="https://api.callmebot.com/whatsapp.php" # This is stable for years
 
 # xx=( one "*.log" ) && xx=( "${printf "%($*)T"nlaxx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ;  exit 2
+
+# color definitions derived from from https://askubuntu.com/questions/1042234/modifying-the-color-of-grep :
+grey="mt=01;30"; red="mt=01;31"; green="mt=01;32"; yellow="mt=01;33"; iyellow="mt=01;93" ; 
+blue="mt=01;34" ; purple="mt=01;35" ; cyan="mt=01;36" ; white="mt=01;37"
 
 declare -i nHopSecs
 declare -i nStatsSec=900
@@ -224,7 +229,7 @@ cLogMore() { # log to syslog logging facility, too.
 
 dbg() { # output args to stderr, if bVerbose is set
 	cX
-     (( bVerbose )) && { [[ $2 ]] && echo "$1:" "${@:2:$#}" 1>&2 || echo "DEBUG: $1" ; } 1>&2
+     ifVerbose && { [[ $2 ]] && echo "$1:" "${@:2:$#}" 1>&2 || echo "DEBUG: $1" ; } 1>&2
 	}
     # sX ; dbg ONE TWO || echo ok to fail... ; exit
     # sX ; bVerbose=1 ; dbg MANY MORE OF IT ; dbg "ALL TOGETHER" ; exit
@@ -390,8 +395,8 @@ cHassAnnounce() {
           # _msg="$_msg,*json_attributes_topic*:*$_sensortopic*" # STILL TO DEBUG
 
    	[[ $bVerbose ]] && (
-        # 
-        export GREP_COLORS="ms=01;33:mc=01;33:sl=:cx=:fn=35:ln=32:bn=32:se=36"
+        # export GREP_COLORS="ms=01;33:mc=01;33:sl=:cx=:fn=35:ln=32:bn=32:se=36"
+        export GREP_COLOR="01;33"
         echo "$Yellow$_topic$Rst" "$_msg" | GREPC '^[^ ]*'  # |\{[^}]*}
     )
     cMqttStarred "$_topic" "{$_msg}" "-r"
@@ -513,33 +518,33 @@ perfCheck() {
     # perfCheck ; exit
 
 cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data if jsondata empty)
-    cX
+    # cX
     # shopt -s extglob
     local _d="${2:-$data}"
     local k
     local _f
     k="$(cHasJsonKey "$1" "$2")" && ! [[ $k ]] && k="$1" 
-    : debug3 "$k"
+    # : debug3 "$k"
     if [[ $k ]] ; then  #       replacing:  jq -r ".$1 // empty" <<< "$_d" :
-        if      [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*[0-9.eE+-]+[[:space:]]*)([,}])     ]] || # number: ^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$
-                [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\"[^\"]*\"[[:space:]]*)([,}])   ]] ||  # string
-                [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\[[^\]]*\][[:space:]]*)([,}])   ]] ||  # array
-                [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\{[^\}]*\}[[:space:]]*)([,}])   ]] ; then # curly braces, FIXME: max one level for now
-            if [[ ${BASH_REMATCH[3]} == "}" ]] ; then
-                _f="${BASH_REMATCH[1]/\{}${BASH_REMATCH[2]}" ; true
+        if    [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*[0-9.eE+-]+[[:space:]]*)([,}])([[:space:]]*) ]] ||  # number: ^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$
+              [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\"[^\"]*\"[[:space:]]*)([,}])([[:space:]]*)  ]] ||  # string
+              [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\[[^\]]*\][[:space:]]*)([,}])([[:space:]]*)  ]] ||  # array
+              [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\{[^\}]*\}[[:space:]]*)([,}])([[:space:]]*)  ]] ; then # curly braces, FIXME: max one level for now
+            if [[ ${BASH_REMATCH[3]} == "}" ]] ; then   
+                # key-value pair is alone or at end of string
+                _f="${BASH_REMATCH[1]/\{}${BASH_REMATCH[2]}" 
             else
-                _f="${BASH_REMATCH[2]}${BASH_REMATCH[3]}" ; false
+                _f="${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
             fi
-            _f=${_f/]/\\]} # escaping a closing square bracket in the found match
-            _d="${_d/$_f}"
-        else :
+            _f=${_f/]/\\]} # escape any closing "]" in the found match
+            _d="${_d/$_f}" # do the removal!
         fi        
     fi
     # cHasJsonKey "$@" && echo "$_d"
     [[ $2 ]] && echo "$_d" || data="$_d"
  } 
     # sX ; cDeleteSimpleJsonKey "freq" '{"protocol":73,"id":11,"channel": 1,"battery_ok": 1,"freq":433.903,"temperature": 8,"BAND":433,"NOTE2":"=2nd (#3,_bR=1,260s)"}' ; exit 2
-    # sX ; data='{"one":"a","beta":22.1}' ; cDeleteSimpleJsonKey "one" ; cDeleteSimpleJsonKey beta ; cDeleteSimpleJsonKey two '{"alpha":"a","two":"xx"}' ; exit 2
+    # sX ; data='{"one":"a", "beta":22.1 }' ; cDeleteSimpleJsonKey "one" ; echo "$data" ; exit ; cDeleteSimpleJsonKey beta ; echo "$data" ; cDeleteSimpleJsonKey two '{"alpha":"a","two":"xx"}' ; exit 2
     # sX ; cDeleteSimpleJsonKey three '{ "three":"xxx" }' ; exit 2
     # sX ; data='{"one" : 1,"beta":22}' ; cDeleteSimpleJsonKey one "$data" ; cDeleteSimpleJsonKey two '{"two":-2,"beta":22}' ; cDeleteSimpleJsonKey three '{"three":3.3,"beta":2}' ; exit 2
     # sX ; data='{"id":2,"channel":2,"battery_ok":0,"temperature_C":-12.5,"freq":433.902,"rssi":-11.295}' ; cDeleteSimpleJsonKey temperature_C ; cDeleteSimpleJsonKey freq ; exit
@@ -879,7 +884,7 @@ do
         ;;
     9)  bEveryBroker=1 # send to every mentioned broker
         ;;
-    v)  if  (( bVerbose )) ; then
+    v)  if  ifVerbose ; then
             bMoreVerbose=1 && rtl433_opts=( "-M noise:60" "${rtl433_opts[@]}" -v )
             dbg2() { cX ; (( bMoreVerbose)) && dbg "$@" ; }
         else
@@ -1022,6 +1027,7 @@ elif [[ $fReplayfile ]] ; then
                     IFS="_" read -r -a aTopic <<< "${fReplayfile##*/}" # .. try to determine from the filename, e.g. "433_IBIS-Beacon_5577"
                     sBand="${aTopic[0]}"
                     sModel="${aTopic[1]}"
+                    sChannelOrId="${aTopic[2]}"
                 fi
                 cAddJsonKeyVal model "${sModel:-UNKNOWN}"
                 cAddJsonKeyVal BAND "${sBand:-null}" 
@@ -1164,6 +1170,14 @@ trap_other() {   # other signals: log appearance of other signals (see $aSignals
   }
 trap 'trap_other' "${aSignalsOther[@]}" || trap_other # STOP TSTP CONT HUP QUIT ABRT PIPE TERM
 
+trap_usr1() {   # dont reduce the number of MQTT messages
+    bEveryMessage=$( ((bEveryMessage)) || e1 ) # toggle chatter
+    _msg="Signal USR1: toggled bEveryMessage to ${bEveryMessage:-no}"
+    log "$sName $_msg"
+    cMqttLog "{*event*:*debug*,*message*:*$_msg*}"
+  }
+trap 'trap_usr1' USR1 || trap_usr1 # USR1 signal
+
 trap_term() {   # TERM: log appearance of TERM signal (esp. when being stopped by systemd)
     _msg="received SIGTERM (INVOCATION_ID=$INVOCATION_ID)..."
     log "$sName $_msg"
@@ -1228,10 +1242,11 @@ do
         if [[ $_msg == "Time expired, exiting!" ]] ; then # rtl_433 was configured to exit regularly, e.g. with option -T nnnnn
             bPlannedTermination=y
             cMqttLog "{*event*:*debug*,*message*:*${_msg}*,*BAND*:${sBand:-null}}"
-        elif (( bVerbose )) ; then
-            data="${data/{ /{}" # remove first space after opening {
+        elif ifVerbose ; then
+            data="${data/#\{ \"/{}" # remove leading space immediately after the opening curly brace in JSON
             cEchoIfNotDuplicate "INFOMSG: $data"
-            if [[ "$data" == "$sLastTuneMessage" ]] && (( bRewrite )) ; then
+            if [[ "$data" == "$sLastTuneMessage" ]] && (( bRewrite && ! bEveryMessage )) ; then
+                # if (( bRewrite )) && ! (( bEveryMessage )) 
                 dbg DUPLICATETUNE "$data"
                 continue # ignore a duplicate tune message
             fi
@@ -1242,8 +1257,8 @@ do
         nLastTuneMessage="$(cDate %s)" # introduce a delay from 0 to to 1 second for reducing race conditions after a freq hop
         continue
     fi
-     (( bVerbose )) && [[ $datacopy != "$data" ]] && echo "==========================================" && datacopy="$data"
-    ((bVerbose)) && GREPC '"[a-zA-Z0-9]*":' <<< "${data// : /:}"
+    ifVerbose && [[ $datacopy != "$data" ]] && echo "==========================================" && datacopy="$data"
+    ((bVerbose)) && GREP_COLORS="$yellow" GREPC ':[^,}]*' <<< "${data// : /:}" # '"[a-zA-Z0-9_]*":'
     data="${data//\" : /\":}" # remove any space around (hopefully JSON-like) colons
     nReceivedCount+=1
 
@@ -1408,10 +1423,10 @@ do
         continue
     elif ! [[ $model_ident ]] ; then # probably a stats message
         dbg "model_ident is empty"
-         (( bVerbose )) && data="${data//\" : /\":}" && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
+         ifVerbose && data="${data//\" : /\":}" && cEchoIfNotDuplicate "STATS: $data" && cMqttStarred stats "${data//\"/*}" # ... publish stats values (from "-M stats" option)
     elif [[ $bAlways || $nTimeStamp -gt $((nTimeStampPrev+nMinSecondsOther)) ]] || ! cEqualJson "$data" "$sDataPrev" "freq rssi"; then
         : "relevant, not super-recent change to previous signal - ignore freq+rssi changes, sRoundTo=$sRoundTo"
-        if  (( bVerbose )) ; then
+        if  ifVerbose ; then
             (( bRewrite && bMoreVerbose && ! bQuiet )) && cEchoIfNotDuplicate "CLEANED: $model_ident=$( GREPC '.*' <<< "$data")" # resulting message for MQTT
             ! [[ $model_ident =~ $sSensorMatch ]] && continue # however, skip if no fit
         fi
@@ -1481,7 +1496,7 @@ do
         _bAnnounceReady=$(( bAnnounceHass && aAnnounced[$model_ident] != 1 && aCounts[$model_ident] >= nMinOccurences )) # sensor has already appeared several times
 
         _nSecDelta=$(( nTimeStamp - aLastPub[$model_ident] ))
-        if  (( bVerbose )) ; then
+        if  ifVerbose ; then
             echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasCommand=$_bHasCommand, hasValue=$_bHasValue, hasButton=$_bHasButton, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl, hasBatteryOK=$_bHasBatteryOK, hasBatteryOKVal=$_bHasBatteryOKVal, hasBatteryV=$_bHasBatteryV"
             echo "Counts=${aCounts[$model_ident]}, _nSecDelta=$_nSecDelta, #aDewpointsCalc=${#aDewpointsCalc[@]}"
             (( ! bMoreVerbose )) && 
@@ -1559,7 +1574,7 @@ do
         fi
         # cPidDelta 4TH
 
-        if (( _nSecDelta > nMinSeconds )) || [[ $_IsDiff || $_bAnnounceReady == 1 || ( $fReplayfile && ! $fReplayfile =~ MQTT: )  ]] ; then # rcvd data different from previous reading(s) or some time elapsed
+        if (( bEveryMessage || _nSecDelta > nMinSeconds )) || [[ $_IsDiff || $_bAnnounceReady == 1 || ( $fReplayfile && ! $fReplayfile =~ MQTT: )  ]] ; then # rcvd data different from previous reading(s) or some time elapsed
             : "now final rewriting and then publish the reading"
             aPrevReadings[$model_ident]="$data"
 
@@ -1570,11 +1585,11 @@ do
 
             if (( bRewrite )) ; then # optimize (rewrite) JSON content
                 # FIXME: [[ $_IsDiff || $bVerbose ]] && cAddJsonKeyVal COMPARE "s=$_nSecDelta,$_IsDiff($(longest_common_prefix -s "$sReadPrev" "$data"))"
-                cAddJsonKeyVal -b BAND -n dewpoint "$vDewptc" # add dewpoint before BAND key
+                cAddJsonKeyVal -b BAND -n dewpoint "$vDewptc" # add dewpoint in front of the BAND key
             fi
 
             dbg2 "CHECK WUPLOAD" "aWuUrls[$model_ident]=${aWuUrls[$model_ident]} , aMatchIDs[wunderground.$model_ident.$id]=${aMatchIDs[wunderground.$model_ident.$id]} , aMatchIDs[wunderground.$model_ident.]=${aMatchIDs[wunderground.$model_ident.]}"
-            # (( bVerbose )) && for key in "${!aMatchIDs[@]}"; do dbg2 UPLOAD "aMatchIDs[$key] = ${aMatchIDs[$key]}" ; done
+            # ifVerbose && for key in "${!aMatchIDs[@]}"; do dbg2 UPLOAD "aMatchIDs[$key] = ${aMatchIDs[$key]}" ; done
             if [[ ${aWuUrls[$model_ident]} && ( ${aMatchIDs[wunderground.$model_ident.$id]} || ${aMatchIDs[wunderground.$model_ident.]} ) ]] ; then # perform any Weather Underground upload
                 # wind_speed="10", # precipitation="0"
                 [[ $baromin ]] && baromin="$(( $(cMult10 "$(cMult10 "$(cMult10 vPressure_kPa)" )" ) / 3386  ))" # 3.3863886666667
@@ -1602,16 +1617,16 @@ do
                 : "Whatsapp upload for $model_ident skipped"
             fi
 
-            if (( bRewrite )) ; then # optimize (enrich) the JSON content
+            if (( bRewrite )) ; then # optimize (rewrite) the JSON content
                 # cAddJsonKeyVal -n rssi "$rssi" # put rssi back in
                 # FIXME: [[ $_IsDiff || $bVerbose ]] && cAddJsonKeyVal COMPARE "s=$_nSecDelta,$_IsDiff($(longest_common_prefix -s "$sReadPrev" "$data"))"
-                 (( bVerbose )) && [[ $vDewptc ]] && cAddJsonKeyVal -n DELTADEW "$vDeltaSimple"
+                ifVerbose && [[ $vDewptc ]] && cAddJsonKeyVal -n DELTADEW "$vDeltaSimple"
                 ! [[ $_IsDiff2 ]] && dbg "2ND" "are same."
-                (( bVerbose )) && cAddJsonKeyVal -n ORIGTEMP "$vTemperature" && 
+                ifVerbose && cAddJsonKeyVal -n ORIGTEMP "$vTemperature" && 
                     cAddJsonKeyVal -n NOTE "${_IsDiff:+1ST($_nSecDelta/$nMinSeconds) }${_IsDiff2:+2ND(c=${aCounts[$model_ident]},s=$_nSecDelta/$nMinSeconds,IsDiff3=$_IsDiff3)}" # accept extraneous space
 
                 aSecondPrevReadings[$model_ident]="$sReadPrev"
-                (( bVerbose )) && cAddJsonKeyVal -n SDELTA "$sDelta"
+                ifVerbose && cAddJsonKeyVal -n SDELTA "$sDelta"
             fi
 
             if cMqttStarred "$basetopic/$topicext" "${data//\"/*}" ${bRetained:+ -r} ; then 
