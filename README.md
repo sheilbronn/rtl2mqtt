@@ -31,19 +31,20 @@ So the main areas of extended features are:
 
 * Suppression of repeated (duplicate) messages. This is a configurable, very helpful feature! -- Options: `-r` `-r` (multiple)
 * Support for Home Assistant MQTT auto-discovery announcements for new sensors (also works with the sometimes picky [OpenHab MQTT Binding](https://www.openhab.org/addons/bindings/mqtt.homeassistant)) -- Options: `-h` `-p` `-t`
+* Sensor readings are auto-announced with their correct units (supported and tested with OpenHAB 4.3.1)
 * Temperature output is transformed to SI units (=Celsius) and rounded to 0.5°C (configurable) for less flicker. -- Option: `-w`
-* Dewpoint calculation if sensor doesn't provide it itself. -- Option:  `-L`
+* Dewpoint calculation if the sensor doesn't provide it itself. -- Option:  `-L`
 * Temperature and humidity of the last 24 hours can be logged to the log directory.
 * Streamlined/removed mostly unnecessary content in the original JSON messages, e.g. no time stamp or checksum code.
-* Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time (few messages) frame are suppressed. -- Options: `-T`
+* Frequent unchanged MQTT messages from temperature or humidity sensors within a certain time frame (few messages) are suppressed. -- Options: `-T`
 * MQTT topic contains channel and - configurably - the sensor's id. -- Option: `-i`
 * New sensors are not immediately auto-announced but only after several receptions -- Option: `-c`
 * Configurable upload of weather sensor data to [Weather Underground (WU)](https://www.wunderground.com) using the [PWS Upload Protocol](https://support.weather.com/s/article/PWS-Upload-Protocol).  -- Option: `-W id,key,sensor`, e.g. `-W IMUNIC999,abcDEF8,Bresser-3CH_1`
 * Enhanced logging and debugging into a device-specific subdirectory structure, easing later source device analysis. -- Options: `-v` `-v`
-* A MQTT state and a log channel for the bridge is provided giving regular statistics and on certain events of the bridge itself.
+* A MQTT state and a log channel for the bridge is provided giving regular statistics and on certain events about the bridge itself.
 * Many command line options allowing for flexibility in the configuration (See source code for usage)
 * Command line options to be used in every invocation can be put into `~/.config/rtl2mqtt` (Start comments there with an `#`)
-* Log files may be replayed for debugging in your home automation environment -- Option: `-f`
+* Log files may be replayed for debugging the sensor setup in your smart home automation environment -- Option: `-f`
 * Signalling INT to rtl2mqtt will emit a state message to MQTT and log all previeous sensor readings.
 * Signalling TRAP to rtl2mqtt will toggle the verbosity for debugging to syslog and MQTT. (This was USR1 before)
 * Signalling VTALRM to rtl2mqtt will log all dewpoint calculations and last sensor readings .
