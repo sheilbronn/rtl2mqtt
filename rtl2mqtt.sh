@@ -68,7 +68,7 @@ declare    sSuggSampleRate=250k # default for rtl_433 is 250k
 # declare    sSuggSampleRate=1000k # default for rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
 # declare    sSuggSampleRate=1500k # default for rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
 declare    sSuggSampleModel=auto # -Y auto|classic|minmax
-declare -i nLogMinutesPeriod=60 # once per hour
+declare -i nLogMinutesPeriod=60 # 30 = once every half hour
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
 # if no radio event has been received for more than x hours (x*3600 seconds), then restart
@@ -267,7 +267,7 @@ cRotateLogdirSometimes() {           # check for logfile rotation only with prob
   }
 
 cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquittoOptions )
-    # cX
+    cX
     if (( $# == 1 )) ; then
         _topic="/bridge/state"
         _msg=$1
@@ -520,7 +520,7 @@ perfCheck() {
     # perfCheck ; exit
 
 cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data if jsondata empty)
-    # cX
+    cX
     # shopt -s extglob
     local _d=${2:-$data}
     local k
@@ -1459,7 +1459,7 @@ do
         _bHasWindMaxMs=$(  [[ $(cExtractJsonVal -n wind_max_m_s  ) =~ ^[0-9][0-9.]+$ ]] && e1 ) # not for value values starting with 0
         _bHasWindDirDeg=$( [[ $(cExtractJsonVal -n wind_dir_deg  ) =~ ^[1-9][0-9.]+$ ]] && e1 ) # not for value values starting with 0
         _batt=$(cExtractJsonVal battery_ok)
-        _bHasBatteryOK=$(  [[ $_batt =~ 0|1 ]] && e1 ) # 0=LOW;1=FULL
+        _bHasBatteryOK=$(  [[ $_batt =~ 0|1 ]] && e1 ) # 0=LOW;1=FULL from https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
         _bHasBatteryOKVal=$( [[ $_batt =~ ^[01].[0-9]+$ ]] && e1 ) # or some float in between
         _bHasBatteryV=$(   [[ $(cExtractJsonVal -n battery_V) =~ ^[0-9.]+$ ]] && e1 ) # voltage, also battery_mV
         _bHasZone=$(   cHasJsonKey -v zone)    #   {"id":256,"control":"Limit (0)","channel":0,"zone":1}
@@ -1606,7 +1606,7 @@ do
                 (( _bHasWindMaxMs  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindMaxMs"  "value_json.wind_max_m_s"  wind_max_m_s
                 (( _bHasWindDirDeg )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindDirDeg"  "value_json.wind_dir_deg" wind_dir_deg
                 [[ $vPressure_kPa  ]] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
-                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }BatteryOK"   "value_json.battery_ok"    battery_ok
+                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }BatteryOK"   "value_json.battery_ok"    battery_ok # https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
                 (( _bHasBatteryOKVal )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Percentage"   "value_json.battery_ok"    batteryval
                 (( _bHasBatteryV   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Voltage"   "value_json.battery_V"    voltage
                 (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       "value_json.cmd"       cmd
@@ -1736,7 +1736,7 @@ do
     vDewptc="" ; vDewptf=""
     _bAddIdToTopic="" # reset the flag
 
-    if (( nReadings > nPrevMax )) ; then   # a new max implies that we had a new sensor
+    if (( nReadings > nPrevMax )) ; then   # a new max implies that we have a new sensor
         nPrevMax=nReadings
         _sensors="${vTemperature:+*temperature*,}${vHumidity:+*humidity*,}${vPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery_ok*,}${_bHasBatteryOKVal:+*battery_ok_VAL*,}${_bHasRain:+*rain*,}"
         cMqttLog "{*event*:*sensor added*,*model*:*$model*,*protocol*:*$protocol*,*id*:$id,*channel*:*$channel*,*description*:*${protocol:+${aProtocols[$protocol]}}*, *sensors*:[${_sensors%,}]}"
