@@ -1458,9 +1458,9 @@ do
         _bHasWindAvgMs=$(  [[ $(cExtractJsonVal -n wind_avg_m_s  ) =~ ^[0-9][0-9.]+$ ]] && e1 ) # not for value values starting with 0
         _bHasWindMaxMs=$(  [[ $(cExtractJsonVal -n wind_max_m_s  ) =~ ^[0-9][0-9.]+$ ]] && e1 ) # not for value values starting with 0
         _bHasWindDirDeg=$( [[ $(cExtractJsonVal -n wind_dir_deg  ) =~ ^[1-9][0-9.]+$ ]] && e1 ) # not for value values starting with 0
-        _batt=$(cExtractJsonVal battery_ok)
-        _bHasBatteryOK=$(  [[ $_batt =~ 0|1 ]] && e1 ) # 0=LOW;1=FULL from https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
-        _bHasBatteryOKVal=$( [[ $_batt =~ ^[01].[0-9]+$ ]] && e1 ) # or some float in between
+        _battok=$(cExtractJsonVal battery_ok)
+        _bHasBatteryOK=$(  [[ $_battok =~ ^[01]$ ]] && e1 ) # 0=LOW;1=FULL from https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
+        _bHasBatteryOKVal=$( [[ $_battok =~ ^[01].[0-9]+$ ]] && e1 ) # or some float in between
         _bHasBatteryV=$(   [[ $(cExtractJsonVal -n battery_V) =~ ^[0-9.]+$ ]] && e1 ) # voltage, also battery_mV
         _bHasZone=$(   cHasJsonKey -v zone)    #   {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasUnit=$(   cHasJsonKey -v unit)    #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
