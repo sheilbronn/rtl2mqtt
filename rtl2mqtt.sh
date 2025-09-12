@@ -68,7 +68,7 @@ declare    sSuggSampleRate=250k # default for rtl_433 is 250k
 # declare    sSuggSampleRate=1000k # default for rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
 # declare    sSuggSampleRate=1500k # default for rtl_433 is 250k, FIXME: check 1000k seems to be necessary for 868 MHz....
 declare    sSuggSampleModel=auto # -Y auto|classic|minmax
-declare -i nLogMinutesPeriod=60 # 30 = once every half hour
+declare -i nLogMinutesPeriod=20 # about every NN minutes (after an reception): log the current status
 declare -i nLogMessagesPeriod=1000
 declare -i nLastStatusSeconds=90
 # if no radio event has been received for more than x hours (x*3600 seconds), then restart
@@ -86,6 +86,7 @@ declare -i nMqttLines=0
 declare -i nReceivedCount=0
 declare -i nSuppressedCount=0
 declare -i nAnnouncedCount=0
+declare -i nLastUnannouncedCheck=$(cDate %s) # time stamp of last unannounced check
 declare    bPlannedTermination=""
 declare    sLastAnnounced
 declare -i nMinOccurences=3
@@ -119,10 +120,11 @@ declare -Ai aEarlierTemperTime
 declare -Ai aEarlierHumidVals 
 declare -Ai aEarlierHumidTime
 declare -Ai aLastPub
-declare -Ai aLastReceivedTime
-declare -Ai aPrevReceivedTime
+declare -Ai aLastReceivedTime # time stamp of last reception
+declare -Ai aPrevReceivedTime # time stamp of second last reception
 declare -A  aPrevId # distinguish between different sensors with different IDs on the same channel
 declare -Ai aSensorToAddIds # add a sensor to the list of sensors where ids are to be added to the MQTT topics
+declare -Ai aSensorWithoutIdToo # 
 
 cEmptyArrays() { # reset the 11 arrays from above
     aPrevReadings=()
@@ -211,7 +213,7 @@ cLogVal() { # log each value to a single file, args: device,sensor,$3=value
     fDat="$dSensor/$(cDate %s)" 
     [ -f $fDat ] || echo "$_v" > $fDat
     # remove files older than 2 days when the seconds randomly end in some digit:
-    [[ $fDat =~ [9-9]$ ]] && find $dLog -mindepth 3 -xdev -type f -mtime +2 -print | xargs -r rm -v && 
+    [[ $fDat =~ [9-9]$ ]] && find $dLog -mindepth 3 -xdev -type f -mtime +2 -print0 | xargs -0 -r rm -v && 
         dbg INFO "Cleaned value log $dSensor."
     return 0
   }
@@ -275,7 +277,7 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
         _topic=$1
         [[ ! $1 =~ / || $1 =~ ^/ ]] &&  _topic="$sRtlPrefix/bridge/${1#/}" # add the bridge prefix, if no slash contained or no slash at beginning
         _msg=$2
-        [[ $1 == log ]] && cLogMore "MQTTLOG: $2"
+        [[ $1 == log ]] && cLogMore "MQTTLOG: $1  $2"
     fi
     _topic=${_topic/#\//$basetopic} # add the base topic, if not already there (= if _topic starts with a slash)
     _arguments=( ${sMID:+-i $sMID} ${sUserName:+-u "$sUserName"} ${sUserPass:+-P "$sUserPass"} -t "$_topic" -m "$(cExpandStarredString "$_msg")" "${@:3:$#}" ) # ... append further arguments
@@ -302,6 +304,8 @@ cMqttState() {	# log the state of the rtl bridge
     }
 
 # Parameters for cHassAnnounce: (Home Assistant auto-discovery)
+# OpenHab: https://www.openhab.org/addons/bindings/mqtt.homeassistant
+# Home Assistant: https://www.home-assistant.io/docs/mqtt/discovery
 # $1: MQTT "base topic" for states of all the sensors(s), e.g. "rtl/433" or "ffmuc"
 # $2: Generic sensor model, e.g. a certain temperature sensor model 
 # $3: MQTT "subtopic" for the specific sensor instance,  e.g. ${model}/${ident}. ("..../set" indicates writeability)
@@ -1066,7 +1070,7 @@ elif [[ $fReplayfile ]] ; then
                 : ! cHasJsonKey BAND && cAddJsonKeyVal BAND "${sBand:-null}"
             fi
             echo "$data" # ; echo "EMITTING: $data" 1>&2
-            sleep 1
+            sleep 2
         done < "$fReplayfile"
         dbg INFO "Replay file ended, last rc=$_rc."
         sleep 3 ; # echo "COPROC EXITING." 1>&2
@@ -1169,8 +1173,8 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
         _val=${aPrevReadings["$KEY"]/\{} && _val=${_val/\}} # remove the leading and trailing curly braces from the last reading
         _wuval=${aWuLastUploadTime["$KEY"]:+$((nNowTime-${aWuLastUploadTime[$KEY]}))} # time since last upload to Weather Underground
         _wuval=${_wuval:+,*LASTWU*:$_wuval}
-        _msg="{*COUNT*:${aCounts["$KEY"]},*TIMEPASSED*:$((nNowTime-${aPrevReceivedTime[$KEY]})),*BAND*:${aBands["$KEY"]}$_wuval,${_val//\"/*}}"
-        cMqttStarred readings/$KEY "$_msg"
+        _msg="{*COUNT*:${aCounts["$KEY"]},*TIMEPASSED*:$((nNowTime-${aLastReceivedTime[$KEY]})),*TIMEPREV*:$((nNowTime-${aPrevReceivedTime[$KEY]})),*BAND*:${aBands["$KEY"]}$_wuval,${_val//\"/*}}"
+        cMqttStarred /readings/$KEY "$_msg"
         dbg READING "$KEY  $_msg"
     done
 
@@ -1351,7 +1355,7 @@ do
                         # in an ideal radio environment the id should be unique for each sensor and channel, but in reality it might not be the case
                         # so keep the id in the JSON if this is discovered
                         # alternative: use option -j
-                        dbg ADDID "Found new $id for $model_ident"
+                        dbg ADDID "Found new id $id for $model_ident"
                         [[ ${aPrevId[$model_ident]} ]] && cMqttLog "{*event*:*duplicateid*,*message*:* NEW=$id  previous=${aPrevId[$model_ident]}*}"
                         aPrevId[$model_ident]="${aPrevId[$model_ident]}$id,"
                     else
@@ -1380,13 +1384,13 @@ do
     [[ $vHumidity =~ ^\.] ]] && vHumidity="0$vHumidity" 
 
     bHumidityScaled=""
-    [[ $vHumidity =~ ^[0.] || $vHumidity =~ ^(1|1\.0*)$ ]] && vHumidity=$(awk -v h="$vHumidity" 'BEGIN {printf "%.0f\n", h * 100}') && 
-            bHumidityScaled=1 && dbg HUMIDITY "$vHumidity was multiplied by 100"
+    [[ $vHumidity =~ ^(0|0\.[0-9]*|1|1\.0*)$ ]] && vHumidity=$(cMult10 $(cMult10 "$vHumidity")) && 
+            bHumidityScaled=1 && dbg HUMIDITY "$vHumidity was scaled to 0 to 100"
     nHumidity=${vHumidity/.[0-9]*}
     vSetPoint="$( cExtractJsonVal -n setpoint_C) || $( cExtractJsonVal -n setpoint_F)"
     type=$( cExtractJsonVal type ) # typically type=TPMS if present
     if cHasJsonKey freq ; then 
-        sBand=$( cMapFreqToBand "$(cExtractJsonVal freq)" )
+        sBand=$( cMapFreqToBand "$(cExtractJsonVal -n freq)" )
     else
         cHasJsonKey BAND && sBand=$(cExtractJsonVal BAND)
     fi
@@ -1426,13 +1430,14 @@ do
                 if (( bRewrite )) ; then
                     nHumidity=${vHumidity/.[0-9]*}
                     if (( nHumidity < 98 )) ; then
-                    _val=$( cRound "$(cMult10 "$vHumidity")" 4 ) # round to 4 * 0.x %
+                        _val=$( cRound "$(cMult10 "$vHumidity")" 4 ) # round to 4 * 0.x %
                         nHumidity=${_val/.[0-9]*}
                     fi
                     # FIXME: BREAKING change should have dedicated option when adding 0. in front of $nHumidity (i.e. divide by 100) - OpenHAB 4 likes a dimension-less percentage value to be in the range 0.0...1.0 :
                     if cDeleteSimpleJsonKey humidity ; then
                         if [[ $bHumidityScaled || $bRewriteMore ]] ; then
-                            cAddJsonKeyVal humidity "$( (( nHumidity == 100 )) && printf 1 || printf "0.%2.2d" "$nHumidity" )"
+                            # FIXME: removed temporrarly cAddJsonKeyVal humidity "$( (( nHumidity == 100 )) && printf 1 || printf "0.%2.2d" "$nHumidity" )"
+                            cAddJsonKeyVal humidity "$nHumidity"
                         else
                             cAddJsonKeyVal humidity "$nHumidity"
                         fi
@@ -1670,6 +1675,7 @@ do
 
             dbg2 "CHECK WUPLOAD" "aWuUrls[$model_ident]=${aWuUrls[$model_ident]} , aMatchIDs[wunderground.$model_ident.$id]=${aMatchIDs[wunderground.$model_ident.$id]} , aMatchIDs[wunderground.$model_ident.]=${aMatchIDs[wunderground.$model_ident.]}"
             # ifVerbose && for key in "${!aMatchIDs[@]}"; do dbg2 UPLOAD "aMatchIDs[$key] = ${aMatchIDs[$key]}" ; done
+            # ifVerbose && for key in "${!aWuUrls[@]}"  ; do dbg2 UPLOAD   "aWuUrls[$key] = ${aWuUrls[$key]}"   ; done
             if [[ ${aWuUrls[$model_ident]} && ( ${aMatchIDs[wunderground.$model_ident.$id]} || ${aMatchIDs[wunderground.$model_ident.]} ) ]] ; then # perform any Weather Underground upload
                 # wind_speed="10", # precipitation="0"
                 [[ $baromin ]] && baromin=$(( $(cMult10 "$(cMult10 "$(cMult10 vPressure_kPa)" )" ) / 3386  )) # 3.3863886666667
@@ -1681,7 +1687,7 @@ do
                 log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, device=$model_ident)"
                 (( bMoreVerbose )) && log "WUNDERGROUND2" "${aWuUrls[$model_ident]}&$URL2"
             else
-                : "aWuUrls[$model_ident] is empty"
+                : "aWuUrls[$model_ident] or aMatchIDs[wunderground.$model_ident.$id] | aMatchIDs[wunderground.$model_ident.] are empty"
             fi
 
             # if [[ ${aWhUrls["OTHER"]} || ( ${aWhUrls[$model_ident]} && ( ${aMatchIDs[whatsapp.$model_ident.$id]} || ${aMatchIDs[whatsapp.$model_ident]} ) ) ]] && 

@@ -91,7 +91,9 @@ RestartSec=30
 WantedBy=multi-user.target
 ```
 
-Don't forget to adapt the variables to your local installation. Run ```systemctl status rtl2mqtt.service´´´ to see debugging output.
+Don't forget to adapt the variables to your local installation.
+Then run ```systemctl start rtl2mqtt.service´´´.
+Run ```systemctl status rtl2mqtt.service´´´ to see debugging output.
 
 ## Hardware
 
