@@ -1523,8 +1523,11 @@ do
     # cPidDelta 3RD
 
     nTimeStamp=$(cDate %s)
-    aPrevReceivedTime[${model_ident:-OTHER}]="${aLastReceivedTime[${model_ident:-OTHER}]:-$nTimeStamp}" # remember time of previous reception, initialize if not yet set
-    aLastReceivedTime[${model_ident:-OTHER}]=$nTimeStamp
+    _prev="${aPrevReceivedTime[${model_ident:-OTHER}]}"
+    if (( _prev < nTimeStamp )) ; then # only update if the current timestamp is newer than the previous one
+        aPrevReceivedTime[${model_ident:-OTHER}]="${_prev:-$nTimeStamp}" # remember time of previous reception, initialize if not yet set
+        aLastReceivedTime[${model_ident:-OTHER}]=$nTimeStamp
+    fi
 
     if (( bSkipLine )) ; then # skip line, e.g. if it is not plausible
         dbg SKIPPING "$data"
@@ -1785,6 +1788,20 @@ do
         _sensors="${vTemperature:+*temperature*,}${vHumidity:+*humidity*,}${vPressureKPa:+*pressure_kPa*,}${_bHasBatteryOK:+*battery_ok*,}${_bHasBatteryOKVal:+*battery_ok_VAL*,}${_bHasRain:+*rain*,}"
         cMqttLog "{*event*:*sensor added*,*model*:*$model*,*protocol*:*$protocol*,*id*:$id,*channel*:*$channel*,*description*:*${protocol:+${aProtocols[$protocol]}}*, *sensors*:[${_sensors%,}]}"
         cMqttState
+    elif (( nTimeStamp > nLastUnannouncedCheck + 15 )) ; then
+        # iterate over all announced sensors and unannounce the ones that haven't had a reception in the last 3 hours
+        dbg "Checking for unannounced sensors at $nTimeStamp, after $((nTimeStamp - nLastUnannouncedCheck)) seconds, nAnnouncedCount=$nAnnouncedCount"
+        for KEY in "${!aAnnounced[@]}"; do
+            _diff=$(( nTimeStamp - aLastReceivedTime[$KEY] ))
+            if (( _diff > 60*60 )) ; then # 1 hour(s)
+                : FIXME: cHassRemoveAnnounce "$basetopic" "$KEY" §_diff 
+                cMqttLog "{*event*:*unannounce*,*model*:*$KEY*,*message*:*unannounced sensor after $_diff seconds*}"
+                unset aAnnounced[$KEY] # remove from the list of announced sensors
+                nAnnouncedCount=$(( nAnnouncedCount - 1 ))
+                dbg "Unannounced $KEY, now nAnnouncedCount=$nAnnouncedCount"
+            fi
+        done
+        nLastUnannouncedCheck=nTimeStamp
     elif (( nTimeStamp > nLastStatusSeconds+nLogMinutesPeriod*60 || (nMqttLines % nLogMessagesPeriod)==0 )) ; then  # log the status once in a while, good heuristic in a generalized neighbourhood
         _collection="*sensorreadings*:[$(  _comma=""
             for KEY in "${!aPrevReadings[@]}"; do
