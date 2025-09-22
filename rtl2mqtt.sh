@@ -314,12 +314,12 @@ cMqttState() {	# log the state of the rtl bridge
 # $6: sensor "class" (e.g. none, temperature, humidity, battery), 
 #     used in the announcement topic, in the unique id, in the (channel) name, and FOR the icon and the sensor class 
 # Examples:
-# cHassAnnounce "$basetopic" "Rtl433 Bridge" "bridge/state"  "(0) SensorCount"   "value_json.sensorcount"   "none"
-# cHassAnnounce "$basetopic" "Rtl433 Bridge" "bridge/state"  "(0) MqttLineCount" "value_json.mqttlinecount" "none"
-# cHassAnnounce "$basetopic" "${model}" "${model}/${ident}" "(${ident}) Battery" "value_json.battery_ok" "battery"
-# cHassAnnounce "$basetopic" "${model}" "${model}/${ident}" "(${ident}) Temp"  "value_json.temperature_C" "temperature"
-# cHassAnnounce "$basetopic" "${model}" "${model}/${ident}" "(${ident}) Humid"  "value_json.humidity"       "humidity" 
-# cHassAnnounce "ffmuc" "$ad_devname"  "$node/publi../localcl.." "Readable Name"  "value_json.count"   "$icontype"
+# cHassAnnounce "$basetopic" "Rtl433 Bridge" "bridge/state"  "(0) SensorCount"   ".sensorcount"   "none"
+# cHassAnnounce "$basetopic" "Rtl433 Bridge" "bridge/state"  "(0) MqttLineCount" ".mqttlinecount" "none"
+# cHassAnnounce "$basetopic" "${model}" "${model}/${ident}" "(${ident}) Battery" ".battery_ok" "battery"
+# cHassAnnounce "$basetopic" "${model}" "${model}/${ident}" "(${ident}) Temp"  ".temperature_C" "temperature"
+# cHassAnnounce "$basetopic" "${model}" "${model}/${ident}" "(${ident}) Humid"  ".humidity"       "humidity" 
+# cHassAnnounce "ffmuc" "$ad_devname"  "$node/publi../localcl.." "Readable Name"  ".count"   "$icontype"
 
 cHassAnnounce() {
 	local -
@@ -330,8 +330,8 @@ cHassAnnounce() {
     local _dev_class=${6#none} # dont wont "none" as string for dev_class
 	local _state_class="" # see https://developers.home-assistant.io/docs/core/entity/sensor/#available-state-classes
     local _component=sensor
-    local _jsonpath=${5#value_json.} # && _jsonpath="${_jsonpath//[ \/-]/}"
-    local _jsonpath_red=$(echo "$_jsonpath" | tr -d "|][ /_-") # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
+    local _jsonpath="$5"
+    local _jsonpath_red=$(echo "${_jsonpath//value_json.}" | tr -d -c "a-zA-Z0-9") # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
     local _devname="$2 ${_devid^}"
     local _icon_str  # mdi icons: https://pictogrammers.github.io/@mdi/font/6.5.95/
 
@@ -345,8 +345,26 @@ cHassAnnounce() {
     local _unit="" # the presence of some "unit_of_measurement" makes it a Number in OpenHab
 
     # From https://www.home-assistant.io/docs/configuration/templating :
-    local _value_template_str="${5:+,*value_template*:*{{ $5 \}\}*}" #   generated something like: ... "value_template":"{{ value_json.battery_ok }}" ...
+    # if $5 is not empty and only a word then prepend "value_json." to it
+    local _value_template_str=""
+    [[ $_jsonpath =~ ^\.[a-zA-Z_][a-zA-Z0-9_]*$ ]] && _jsonpath="value_json$5"
+    _value_template_str="${_jsonpath:+,*value_template*:*{{ $_jsonpath \}\}*}" #   generated something like: ... "value_template":"{{ value_json.battery_ok }}" ...
     # other syntax for non-JSON is: local _value_template_str="${5:+,*value_template*:*{{ value|float|round(1) \}\}*}"
+
+    # Openhab discovery only allow for these device_class'es:
+    # battery, battery_charging, carbon_monoxide, cold, connectivity, door, garage_door, gas, heat, light, lock, moisture, motion, 
+    # moving, occupancy, opening, plug, power, presence, problem, running, safety, smoke, sound, tamper, update, vibration, window
+
+    # FIXME: 2025-09-21 13:34:36.623 [WARN ]  HomeAssistant discover error: invalid configuration of thing rtlbridgestatestartdate component sensor: 
+    # Failed to process discovery config for sensor: MultipleInvalid: expected SensorDeviceClass or one of 
+    # 'date', 'enum', 'timestamp', 'apparent_power', 'aqi', 'area', 'atmospheric_pressure', 'battery', 'blood_glucose_concentration', 
+    # 'carbon_monoxide', 'carbon_dioxide', 'conductivity', 'current', 'data_rate', 'data_size', 'distance', 'duration', 'energy', 
+    # 'energy_distance', 'energy_storage', 'frequency', 'gas', 'humidity', 'illuminance', 'irradiance', 'moisture', 'monetary', 'nitrogen_dioxide', 
+    # 'nitrogen_monoxide', 'nitrous_oxide', 'ozone', 'ph', 'pm1', 'pm10', 'pm25', 'power_factor', 'power', 'precipitation', 'precipitation_intensity',
+    # 'pressure', 'reactive_power', 'signal_strength', 'sound_pressure', 'speed', 'sulphur_dioxide', 'temperature', 'volatile_organic_compounds', 
+    # 'volatile_organic_compounds_parts', 'voltage', 'volume', 'volume_storage', 'volume_flow_rate', 'water', 'weight', 'wind_direction', 
+    # 'wind_speed' for dictionary value @ data['device_class']
+
 
     _dev_class=$6 ; _payload_on="" ; _payload_off="" ;
     case "$_dev_class" in
@@ -359,18 +377,19 @@ cHassAnnounce() {
         wind_avg_m_s) _icon_str="weather-windy" ; _unit="m_s"	    ; _state_class="measurement" ;;
         wind_max_m_s) _icon_str="weather-windy" ; _unit="m_s"	    ; _state_class="measurement" ;;
         wind_dir_deg) _icon_str="weather-windy" ; _unit="°"	        ; _state_class="measurement" ;;
+        uvi)        _icon_str="weather-sunny"   ; _unit="#"         ; _state_class="measurement" ;;
         pressure_kPa) _icon_str="airballoon-outline" ; _unit="kPa"	; _state_class="measurement" ;;
-        pressure_hPa) _icon_str="airballoon-outline" ; _unit="hPa"	; _state_class="measurement" ;;
+        pressure_hPa) _icon_str="airballoon-outline" ; _unit="hPa"  ; _state_class="measurement" ;;
         ppm)	    _icon_str="smoke"           ; _unit="ppm"	    ; _state_class="measurement" ;;
         density*)	_icon_str="smoke"           ; _unit="ug_m3"	    ; _state_class="measurement" ;;
-        counter)	_icon_str="counter"         ; _unit="#"	        ; _state_class="total_increasing" ;;
-		clock)	    _icon_str="clock-outline"   ;;
+        counter)	_icon_str="counter"         ; _unit="#"	        ; _state_class="total_increasing" ; _dev_class="" ;;
+		clock)	    _icon_str="clock-outline"   ; _dev_class="timestamp" ;;
 		signal_strength)	_icon_str="signal"  ; _unit="dB"	    ; _state_class="measurement" ;;
         switch)     _icon_str="toggle-switch*"  ; _component=binary_sensor ; _dev_class=switch ;;
         motion)     _icon_str="motion-sensor"   ; _component=binary_sensor ;;
         button01)   _icon_str="gesture-tap"     ; _component=binary_sensor ; _dev_class="button" ; _payload_on=1 ; _payload_off=0 ;;
-        buttonN )   _icon_str="keyboard"        ; _component=sensor        ; _dev_class="" ; _unit="#"	;;
         button)     _icon_str="gesture-tap-button" ; _component=binary_sensor ;;
+        buttonN )   _icon_str="keyboard"        ; _unit="#"      ; _dev_class="" 	;;
         dipswitch)  _icon_str="dip-switch" ;;
         code)       _icon_str="lock" ;;
         newbattery) _icon_str="battery-check"   ; _unit="#" ;;
@@ -378,10 +397,10 @@ cHassAnnounce() {
         zone)       _icon_str="vector-intersection" ; _unit="#" ; _state_class="measurement" ;;
         unit)       _icon_str="group"           ; _unit="#"     ; _state_class="measurement" ;;
         learn)      _icon_str="plus"            ; _unit="#"     ; _state_class="total_increasing" ;;
-        channel)    _icon_str="format-list-numbered" ; _unit="#" ; _state_class="measurement" ;;
+        channel)    _icon_str="format-list-numbered" ; _unit="#" ; _state_class="measurement" ; _dev_class="" ;; # or _unit=""
         voltage)    _icon_str="FIXME"           ; _unit="V"     ; _state_class="measurement" ;;
-        battery|batteryval)	_icon_str=""        ; _unit="#"	    ; _state_class="measurement" ;;
-        battery_ok) _icon_str=""                ; _component=binary_sensor ; _dev_class=switch ; _payload_on=1 ; _payload_off=0 ;;
+        battery|batteryVal)	_icon_str=""        ; _unit="#"	    ; _state_class="measurement" ; _dev_class=battery ;;
+        battery_ok) _icon_str=""                ; _component=binary_sensor ; _dev_class=battery ; _payload_on=0 ; _payload_off=1 ;;
         cmd)        _icon_str="hammer"         ; _component=sensor        ; _dev_class="" ; _unit="#" ;; # e.g. cmd=62
     #   cmd)        _icon_str="command"         ; _state_class="measurement" ;; # e.g. cmd=62
 		none)		_icon_str="" ; _unit="" ; _dev_class="" ;;
@@ -759,9 +778,9 @@ do
         grep "trap_[a-z12]*(.*:" "$0" | sed 's/.*# //' ; } 1>&2 # e.g. VTALRM: re-emit all dewpoint calcs and recorded sensor readings (e.g. for debugging purposes)
         exit 1
         ;;
-    q)  bQuiet=1
+    q)  bQuiet=1 # quiet mode, no output except errors
         ;;
-    h)  # configure the broker host here or in $HOME/.config/mosquitto_sub
+    h)  # configure the MQTT broker host here or in $HOME/.config/mosquitto_sub
         # syntax: -h USERNAME:PASSWORD@brokerhost:port or -h brokerhost:port or -h brokerhost
         sUserName=${OPTARG%%@*} ; sUserPass=${sUserName#*:}
         [[ $sUserPass == $sUserName ]] && sUserPass=""
@@ -776,7 +795,7 @@ do
    		hMqtt+=( "$([[ ! "${hMqtt[*]}" == *"$mqtthost"*  ]] && echo "$mqtthost")" ) # gather them, but no duplicates
         # echo "${hMqtt[*]}"
         ;;
-    P)  bRetained=1
+    P)  bRetained=1 # makes the publishes retained by the broker
         ;;
     t)  basetopic=$OPTARG # choose another base topic for MQTT
         ;;
@@ -784,15 +803,15 @@ do
         ;;
     d)  bRemoveAnnouncements=1 # delete (remove) all retained MQTT auto-discovery announcements (before starting), needs a newer mosquitto_sub
         ;;
-    r)  (( bRewrite )) && bRewriteMore=1 && dbg "Rewriting even more ..."
+    r)  (( bRewrite )) && bRewriteMore=1 && dbg "Rewriting output even more ..."
         bRewrite=1  # rewrite and simplify output
         ;;
     L)  bLogTempHumidity=1  # 
         ;;
-    l)  dLog=$OPTARG 
+    l)  dLog=$OPTARG # set log file or log dir resp.
         ;;
     f)  if [[ $OPTARG == "-" || $OPTARG == /dev/stdin ]] ; then
-            echo "ERROR: reading stdin currently not supported" 1>&2
+            echo "ERROR: reading input from stdin currently not supported" 1>&2
             exit 1
         elif [[ $OPTARG == MQTT || $OPTARG =~ MQTT: ]] ; then # syntax: -f MQTT:brokerhost:topicprefixforlistening
             fReplayfile=MQTT:
@@ -1107,13 +1126,13 @@ else
         cMqttLog "{*event*:*debug*,*host*:*$sHostname*,*message*:*rtl_433 start: $_msg*}"
 
         if (( bAnnounceHass )) ; then
-            ## cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "TestVal" "value_json.mcheck" "mcheck"
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount" "value_json.announceds" counter &&
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "Last Announced Sensor" "value_json.lastannounced" none &&
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "SensorCount"    "value_json.sensors"    counter   &&
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "MqttLineCount"  "value_json.mqttlines"  counter  &&
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "ReadingsCount"  "value_json.receiveds"  counter  &&
-            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "Start date"     "value_json.startdate"  clock    &&
+            ## cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "TestVal" .mcheck mcheck
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "AnnouncedCount" .announceds counter &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "Last Announced Sensor" .lastannounced none &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "SensorCount"    .sensors    counter   &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "MqttLineCount"  .mqttlines  counter  &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "ReadingsCount"  .receiveds  counter  &&
+            cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/state "Start date"     .startdate  clock    &&
             nRC=$?
             (( nRC != 0 )) && echo "ERROR: HASS Announcements failed with rc=$nRC" 1>&2
             sleep 1
@@ -1462,10 +1481,11 @@ do
         _bHasWindAvgKmh=$( [[ $(cExtractJsonVal -n wind_avg_km_h ) =~ ^[0-9][0-9.]+$ ]] && e1 ) # not for value values starting with 0
         _bHasWindAvgMs=$(  [[ $(cExtractJsonVal -n wind_avg_m_s  ) =~ ^[0-9][0-9.]+$ ]] && e1 ) # not for value values starting with 0
         _bHasWindMaxMs=$(  [[ $(cExtractJsonVal -n wind_max_m_s  ) =~ ^[0-9][0-9.]+$ ]] && e1 ) # not for value values starting with 0
-        _bHasWindDirDeg=$( [[ $(cExtractJsonVal -n wind_dir_deg  ) =~ ^[1-9][0-9.]+$ ]] && e1 ) # not for value values starting with 0
+        _bHasWindDirDeg=$( [[ $(cExtractJsonVal -n wind_dir_deg  ) =~ ^[0-9][0-9.]{0,4}$ ]] && e1 ) # not for value values starting with 0
+        _bHasUVi=$(        [[ $(cExtractJsonVal -n uvi           ) =~ ^[0-9]{1,2}(\.[0-9]+)?$ ]] && e1 ) 
         _battok=$(cExtractJsonVal battery_ok)
-        _bHasBatteryOK=$(  [[ $_battok =~ ^[01]$ ]] && e1 ) # 0=LOW;1=FULL from https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
-        _bHasBatteryOKVal=$( [[ $_battok =~ ^[01].[0-9]+$ ]] && e1 ) # or some float in between
+        _bHasBatteryOK=$(  [[ $_battok =~ ^[01]$ ]] && e1 ) # 0=LOW;1=HIGH from https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
+        _bHasBatteryOKVal=$( [[ $_battok =~ ^[01].[0-9]+$ ]] && e1 ) # or some value in between
         _bHasBatteryV=$(   [[ $(cExtractJsonVal -n battery_V) =~ ^[0-9.]+$ ]] && e1 ) # voltage, also battery_mV
         _bHasZone=$(   cHasJsonKey -v zone)    #   {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasUnit=$(   cHasJsonKey -v unit)    #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
@@ -1597,44 +1617,45 @@ do
                 [[ $protocol    ]] && _name=${aProtocols["$protocol"]:-$model} || _name=$model # fallback
                 # if the sensor has anyone of the above attributes, announce all the attributes it has ...:
                 # see also https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
-                [[ $vTemperature ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"      "value_json.temperature"   temperature # "value_json.temperature|float|round(1)"
+                [[ $vTemperature ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"  ".temperature"   temperature # ".temperature|float|round(1)"
                 [[ $vHumidity    ]]  && {
-                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Humid"     "value_json.humidity"  humidity
+                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Humid"  ".humidity"  humidity
                 }
                 if [[ $vTemperature  && $vHumidity && $bRewrite ]] || cHasJsonKey "dewpoint" ; then # announce (possibly calculated) dewpoint, too
-                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Dewpoint"  "value_json.dewpoint"   dewpoint
+                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Dewpoint"  ".dewpoint"   dewpoint
                 fi
-                cHasJsonKey setpoint_C && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }TempTarget"      "value_json.setpoint_C"   setpoint
-                (( _bHasRain       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RainMM"  "value_json.rain_mm" rain_mm
-                (( _bHasWindAvgKmh )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindAvgKmh" "value_json.wind_avg_km_h" wind_avg_km_h
-                (( _bHasWindAvgMs  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindAvgMs"  "value_json.wind_avg_m_s"  wind_avg_m_s
-                (( _bHasWindMaxMs  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindMaxMs"  "value_json.wind_max_m_s"  wind_max_m_s
-                (( _bHasWindDirDeg )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindDirDeg"  "value_json.wind_dir_deg" wind_dir_deg
-                [[ $vPressure_kPa  ]] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }PressureKPa"  "value_json.pressure_kPa" pressure_kPa
-                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }BatteryOK"   "value_json.battery_ok"    battery_ok # https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
-                (( _bHasBatteryOKVal )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Percentage"   "value_json.battery_ok"    batteryval
-                (( _bHasBatteryV   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Voltage"   "value_json.battery_V"    voltage
-                (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       "value_json.cmd"       cmd
-                (( _bHasCommand    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Command"       "value_json.command"       command
-                (( _bHasValue      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Value"       "value_json.value"       value
-                (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Data"       "value_json.data"     data
-                (( _bHasRssi && bMoreVerbose )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RSSI"       "value_json.rssi"   signal_strength # "value_json.rssi|float|round(2)"
-                (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Counter"   "value_json.counter"   counter
-                (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Fine Parts"  "value_json.pm2_5_ug_m3" density25
-                (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Estim Course Parts"  "value_json.estimated_pm10_0_ug_m3" density10
-                (( _bHasCode       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Code"       "value_json.code"     code
-                (( _bHasButton     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Button"     "value_json.button"   button
-                (( _bHasButton01   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Button01"   "value_json.button" button01
+                cHasJsonKey setpoint_C && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }TempTarget" .setpoint_C   setpoint
+                (( _bHasRain       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RainMM"      .rain_mm      rain_mm
+                (( _bHasWindAvgKmh )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindAvgKmh"  .wind_avg_km_h wind_avg_km_h
+                (( _bHasWindAvgMs  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindAvgMs"   .wind_avg_m_s wind_avg_m_s
+                (( _bHasWindMaxMs  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindMaxMs"   .wind_max_m_s wind_max_m_s
+                (( _bHasWindDirDeg )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindDirDeg"  .wind_dir_deg wind_dir_deg
+                (( _bHasUVi        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }UV Index"    .uvi          uvi
+                [[ $vPressure_kPa  ]] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }PressureKPa" .pressure_kPa pressure_kPa
+                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }BatteryOK"   .battery_ok   battery_ok # https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
+                (( _bHasBatteryOKVal )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Percentage"   .battery_ok    batteryVal
+                (( _bHasBatteryV   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Voltage"   .battery_V    voltage
+                (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       .cmd      cmd
+                (( _bHasCommand    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Command"   .command  command
+                (( _bHasValue      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Value"     .value    value
+                (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Data"      .data     data
+                (( _bHasRssi && bMoreVerbose )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RSSI"       .rssi   signal_strength # "value_json.rssi|float|round(2)"
+                (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Counter"   .counter   counter
+                (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Fine Parts"  .pm2_5_ug_m3 density25
+                (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Course Parts"  .estimated_pm10_0_ug_m3 density10
+                (( _bHasCode       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Code"       .code     code
+                (( _bHasButton     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Button"     .button   button
+                (( _bHasButton01   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Button01"   .button   button01
                 (( _bHasButtonN    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonN"    "value_json.button | int" buttonN
-                (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonR"    "value_json.buttonr"  button
-                (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }DipSwitch"  "value_json.dipswitch"    dipswitch
-                (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }NewBatttery"  "value_json.newbattery" newbattery
-                (( _bHasZone       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Zone"       "value_json.zone"     zone
-                (( _bHasUnit       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Unit"       "value_json.unit"     unit
-                (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Learn"       "value_json.learn"   learn
-                (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Channel"    "value_json.channel"  channel
-                (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Control"    "value_json.control"  control
-                #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Freq"     "value_json.FREQ" frequency
+                (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonR"    .buttonr  button
+                (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }DipSwitch"  .dipswitch   dipswitch
+                (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }NewBatttery" .newbattery newbattery
+                (( _bHasZone       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Zone"       .zone    zone
+                (( _bHasUnit       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Unit"       .unit    unit
+                (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Learn"      .learn   learn
+                (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Channel"    .channel channel
+                (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Control"    .control control
+                #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Freq"     ".FREQ" frequency
                 if  cMqttLog "{*event*:*debug*,*message*:*announced MQTT discovery: $model_ident ($_name)*}" ; then
                     nAnnouncedCount+=1
                     sLastAnnounced=$model_ident
