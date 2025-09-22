@@ -879,8 +879,11 @@ do
     J)  bAddIdToTopicIfNecessary=1
         ;;
     j)  # add id to topic for certain model_idents, e.g. if two sensors share a channel
-        aSensorToAddIds["$OPTARG"]=1
-        dbg "INFO" "Will always add id to MQTT topic for model_ident $OPTARG: aSensorToAddIds["$OPTARG"]=1"
+        # NB: if the name begins with a plus "+" then additionally send topic without the id (TOBEIMPLEMENTED)
+        sensor="${OPTARG#+}" # remove leading plus sign, if any
+        aSensorToAddIds["$sensor"]=1
+        [ "$OPTARG" == "$sensor" ] && aSensorWithoutIdToo["$sensor"]=1 # remember that we also want to send the topic without id
+        dbg "INFO" "Will always add id to MQTT topic for model_ident $OPTARG: aSensorToAddIds["$sensor"]=1"
         ;;
     I)  sSuppressAttrs+=" $OPTARG" # suppress attribute from the output
         ;;
@@ -1358,14 +1361,17 @@ do
         if (( bPreferIdOverChannel )) ; then
             ident=${id:-$channel} # prefer "id" (or "address") over "channel" as the identifier for the sensor instance.
             model_ident=${model}${ident:+_$ident}
+            model_ident_base="$model_ident"
+            dbg HELLO helo "Identified $model_ident with id=$id and channel=$channel, model_ident_base=$model_ident_base"
         elif [[ $channel ]] ; then
             ident=${channel}
             model_ident=${model}${ident:+_$ident}
+            model_ident_base="$model_ident" 
             
             if (( ${aSensorToAddIds[$model_ident]} )) ; then
                 _bAddIdToTopic=1
-                : dbg ADDID "Always adding $id to MQTT topic as in $model_ident_$id"
                 model_ident=${model_ident}${id:+_$id}
+                : dbg ADDID "Also added $id to MQTT topic as in $model_ident"
             else
                 if [[ ${aPrevId[$model_ident]} == "$id," ]] ; then # remove the id from the JSON only if it is the same as the previous ID for this model and no other id appeared yet
                     _delkeys+=" id" 
@@ -1387,6 +1393,7 @@ do
             ident=${id}
             _delkeys+=" id" # but remove the id from the JSON
             model_ident=${model}${id:+_$id}
+            model_ident_base="$model_ident"
         fi
     fi
     rssi=$( cExtractJsonVal -n rssi )
@@ -1601,15 +1608,22 @@ do
         _nSecDelta=$(( nTimeStamp - aLastPub[$model_ident] ))
         if  ifVerbose ; then
             echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasCommand=$_bHasCommand, hasValue=$_bHasValue, hasButton=$_bHasButton, hasButton01=$_bHasButton01, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl, hasBatteryOK=$_bHasBatteryOK, hasBatteryOKVal=$_bHasBatteryOKVal, hasBatteryV=$_bHasBatteryV"
-            echo "Counts=${aCounts[$model_ident]}, _nSecDelta=$_nSecDelta, #aDewpointsCalc=${#aDewpointsCalc[@]}"
+            echo "Counts=${aCounts[$model_ident]} _nSecDelta=$_nSecDelta #aDewpointsCalc=${#aDewpointsCalc[@]}"
             (( ! bMoreVerbose )) && 
                 GREPC 'model_ident=[^, ]*|\{[^}]*}' <<< "model_ident=$model_ident  READ=${aPrevReadings[$model_ident]}  PREV=$sReadPrev  PREV2=$sReadPrevS"
         fi
         
-        # construct the specific part of the MQTT topic:
-        topicext="$model$([[ $type == TPMS ]] && echo "-$type" )${channel:+/$channel}$( [[ -z $channel || $bAddIdToTopicAlways || $_bAddIdToTopic ]] && echo "${id:+/$id}" )"
+        # begin to construct the MQTT topic (or two)
+        model="$model$([[ $type == TPMS ]] && echo "-$type" )"
+        if (( bPreferIdOverChannel )) ; then
+            topicext2="$model/${id:-$channel}"
+            topicext="$topicext2"
+        else
+            topicext2="$model${channel:+/$channel}"
+            topicext="$topicext2$( [[ -z $channel || $bAddIdToTopicAlways || $_bAddIdToTopic ]] && echo "${id:+/$id}" )"
+        fi
 
-        if (( _bAnnounceReady )) ; then # deal with HASS annoucement need
+        if (( _bAnnounceReady )) ; then # deal with HASS announcement need
             : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButton,$_bHasButton01,$bHasButtonN,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10"
             if (( ${#vTemperature} || _bHasRain || _bHasWindMaxMs || _bHasWindAvgKmh || _bHasWindAvgMs || ${#vPressure_kPa} || 
                         _bHasCmd || _bHasCommand || _bHasValue || _bHasData ||_bHasCode || _bHasButton || _bHasButton01 || _bHasButtonN || _bHasButtonR || _bHasDipSwitch ||
@@ -1736,14 +1750,17 @@ do
                 ifVerbose && cAddJsonKeyVal -n SDELTA "$sDelta"
             fi
 
-            if cMqttStarred "$basetopic/$topicext" "${data//\"/*}" ${bRetained:+ -r} ; then 
-                # ... finally: publish the values to the MQTT broker
+            data="${data//\"/*}"
+            dbg IDTOO "aSensorWithoutIdToo[$model_ident_base]=${aSensorWithoutIdToo[$model_ident_base]}"
+            if cMqttStarred "$basetopic/$topicext" "$data" ${bRetained:+ -r} && 
+                        { ! (( ${aSensorWithoutIdToo[$model_ident_base]} )) || cMqttStarred "$basetopic/$topicext2" "$data" ; } ; then 
+                # ... finally: published the values to the MQTT broker
                 nMqttLines+=1
                 aLastPub[$model_ident]=$nTimeStamp
                 # if not yet nannounced publish to .../unannounced, too
                 if (( bAnnounceHass && ! aAnnounced[$model_ident] )) ; then
                     cAddJsonKeyVal -b BEGINNING "SENSOR" "$model_ident"
-                    cMqttStarred unannounced "${data//\"/*}"
+                    cMqttStarred unannounced "$data"
                     # rtl/bridge/unannounced { "battery_ok":0,"temperature":10.5,"humidity":0.58,"dewpoint":2.5,"BAND":433,
                     #    "DELTADEW":0.4,"ORIGTEMP":10.700,"NOTE":"1ST(79/52) 2ND(c=2,s=79/52,IsDiff3=1)","SDELTA":"0:0"}
                 fi
