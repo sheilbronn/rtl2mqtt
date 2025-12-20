@@ -10,12 +10,12 @@ set -o noglob     # file name globbing is neither needed nor wanted (for securit
 set -o noclobber  # also disable for security reasons
 # shopt -s lastpipe  # Enable lastpipe
 shopt -s assoc_expand_once # might lessen injection risks in bash 5.2+, FIXME: to be verified on bash 5.2
-shopt -s expand_aliases # expand aliases in non-interactice shells, too
+shopt -s expand_aliases # expand aliases in non-interactive shells, too
 busybox awk '{}' 1</dev/null 2>/dev/null && alias awk="busybox awk" # busybox awk is more efficient than other awk's (if available)
 e1()  { echo 1 ; }
 
 # When extending this script: keep in mind possible attacks from the RF enviroment, e.g. a denial of service :
-# a) DoS: Many signals per second > should fail graciously by not beeing able to process them all
+# a) DoS: Many signals per second > should fail gracefully by not being able to process them all
 # b) DoS: Many (fake) sensors introduced (protocols * possible IDs) > arrays will become huge || inboxes for HASS announcements overflows
 #    Simple fix: After 9999 HASS announcements recall all HASS announcements (FIXME), reset all arrays (FIXME'd for all arrays)
 # c) exploits for possible rtl_433 decoding errors, transmit out of band values: test all read values for boundary conditions and syntax (e.g. number)
@@ -583,10 +583,16 @@ cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data i
     # sX ; data='{"event":"debug","message":{"center_frequency":433910000, "frequencies":[433910000, 868300000, 433910000, 868300000, 433910000, 915000000], "hop_times":[61]}}' ; cDeleteSimpleJsonKey hop_times ; cDeleteSimpleJsonKey frequencies ; cCheckExit
 
 cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata or $data, if empty)
-    cX   
-    local _r=${2:-$data}  #    _r="${*:$#}"
+    cX
+    # last argument is the JSON data or $data if only one argument given
+    local _k="$1"
+    local _r="$data"
+    if (($#>1)) ; then
+        _r="${*:$#}"
+        _k="${*:1:($#-1)}"
+    fi
     # dbg "cDeleteJsonKeys $*"
-    for k in $1 ; do   #   "${@:1:($#-1)}" ; do
+    for k in $_k ; do   #   "${@:1:($#-1)}" ; do
         # k="${k//[^a-zA-Z0-9_ ]}" # only allow alnum chars for attr names for sec reasons
         # _d+=",  .${k// /, .}"  # options with a space are considered multiple options
         for k2 in $k ; do
@@ -594,12 +600,12 @@ cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata or $d
         done
     done
     # _r="$(jq -c "del (${_d#,  })" <<< "${@:$#}")"   # expands to: "del(.xxx, .yyy, ...)"
-    [[ $2 ]] && echo "$_r" || data=$_r
+    (($#>1)) && echo "$_r" || data=$_r
  }
     # sX ; cDeleteJsonKeys 'time mic' '{"time" : "2022-10-18 16:57:47", "protocol" : 19, "model" : "Nexus-TH", "id" : 240, "channel" : 1, "battery_ok" : 1, "temperature_C" : 21.600, "humidity" : 20}' ; exit 1
-    # sX ; cDeleteJsonKeys "one" "two" ".four five six" "*_special*" '{"one":"1", "two":2  ,"three":3,"four":"4", "five":5, "_special":"*?+","_special2":"aa*?+bb"}'  ;  exit 1
-    # results in: {"three":3,"_special2":"aa*?+bb"}
-
+    # sX ; cDeleteJsonKeys five "one" "two" ".four five six" "*_special*" '{"one":"1", "two":2  ,"three":3,"four":"4", "five":5, "_special":"*?+","_special2":"aa*?+bb"}' ;  exit 1
+    # sX ; cDeleteJsonKeys "eins" '{"eins":"1","zwei":2}'  ;  exit 1
+ 
 cComplexExtractJsonVal() {
     local - && : set -x
     cHasJsonKey "$1" && jq -r ".$1 // empty" <<< "${2:-$data}"
@@ -637,7 +643,7 @@ longest_common_prefix() { # variant of https://stackoverflow.com/a/6974992/18155
 
   ## Binary search for the first differing character, accumulating the common prefix
   while (( ${#1} > 1 )) ; do
-    n=$(( (${#1}+1)/2 ))
+    ((n = (${#1}+1)/2 ))
     if [[ ${1:0:$n} == ${2:0:$n} ]]; then
       prefix=$prefix${1:0:$n}
       set -- "${1:$n}" "${2:$n}"
@@ -859,7 +865,7 @@ do
         fi
         basetopic="$sRtlPrefix/$OPTARG"
         nHopSecs=${nHopSecs:-61} # (60/2)+11 or 60+1 or 60+21 or 7, i.e. should be a proper coprime to 60sec
-        nStatsSec="10*(nHopSecs-1)"
+        nStatsSec=$((10*(nHopSecs-1)))
         ;;
     M)  rtl433_opts+=( -M "$OPTARG" )
         ;;
@@ -1317,8 +1323,7 @@ do
         elif ifVerbose ; then
             data=${data/#\{ \"/{} # remove leading space immediately after the opening curly brace in JSON
             cEchoIfNotDuplicate "INFOMSG: $data"
-            if [[ $data == $sLastTuneMessage ]] && (( bRewrite && ! bEveryMessage )) ; then
-                # if (( bRewrite )) && ! (( bEveryMessage )) 
+            if [[ $data == "$sLastTuneMessage" ]] && (( bRewrite && ! bEveryMessage )) ; then
                 dbg DUPLICATETUNE "$data"
                 continue # ignore a duplicate tune message
             fi
@@ -1773,7 +1778,7 @@ do
                 nMqttLines+=1
                 aLastPub[$model_ident]=$nTimeStamp
                 # if not yet announced publish values to .../unannounced, too
-                if (( bAnnounceHass && !${#aAnnounced[$model_ident]} )); then
+                if (( bAnnounceHass && ! ${#aAnnounced[$model_ident]} )); then
                     cAddJsonKeyVal -b BEGINNING "SENSOR" "$model_ident"
                     cMqttStarred unannounced "$data"
                     # rtl/bridge/unannounced { "battery_ok":0,"temperature":10.5,"humidity":0.58,"dewpoint":2.5,"BAND":433,
@@ -1805,7 +1810,7 @@ do
         dbg "Checking for unannounced sensors at $nTimeStamp, after $((nTimeStamp - nLastUnannouncedCheck)) seconds, nAnnouncedCount=$nAnnouncedCount"
         for KEY in "${!aAnnounced[@]}"; do
             ((_diff= nTimeStamp - aLastReceivedTime[$KEY] ))
-            if (( _diff > nUnannouncePeriod && ${aLastReceivedTime[$KEY]:-0} != 0 && ${#aAnnounced[$KEY]} > 0 )); then
+            if (( _diff > nUnannouncePeriod && ${aLastReceivedTime[$KEY]:-0} && ${#aAnnounced[$KEY]} )); then
                 : FIXME: cHassRemoveAnnounce "$basetopic" "$KEY" §_diff
                 aAnnounced[$KEY]="" # set to empty to indicate that it was unannounced
                 aLastReceivedTime[$KEY]=0 # reset the last received time, so that if the sensor reappears, it will be announced again
