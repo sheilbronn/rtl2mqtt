@@ -97,7 +97,7 @@ declare -i nUploads=0 # number of uploads to Wunderground
 declare -i nRC
 declare -i nLoops=0
 declare -l bAnnounceHass=1 # default is yes for now
-declare -i bRetained="" # make the value publishing retained or not (-r flag passed to mosquitto_pub)
+declare -i bRetained=0 # 1=make the value publishing retained or not (-r flag passed to mosquitto_pub)
 declare -i bLogTempHumidity=0 # 1=log the values 
 declare -i _n # helper integer var
 declare -A aWuUrls
@@ -113,7 +113,8 @@ declare -A  aPrevReadings # approx. 11 arrays
 declare -A  aSecondPrevReadings 
 declare -Ai aCounts
 declare -Ai aBands
-declare -A  aAnnounced
+declare -Ai aAnnounced
+declare -A  aAnnouncedTopics
 declare -A  aEarlierTemperVals10 
 declare -Ai aEarlierTemperTime 
 declare -Ai aEarlierHumidVals 
@@ -426,6 +427,7 @@ cHassAnnounce() {
             _msg="$_msg,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
           # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
           # _msg="$_msg,*json_attributes_topic*:*$_sensortopic*" # STILL TO DEBUG
+    aAnnouncedTopics[$model_ident]="$_topic" # remember that we have announced this topic
 
    	ifVerbose && (
         export GREP_COLORS="mt=01;33;ms=01;33:mc=01;33:sl=:cx=:fn=35:ln=32:bn=32:se=36"
@@ -1025,7 +1027,7 @@ cEchoIfNotDuplicate() {
 
 if ((bAnnounceHass)) ; then
     cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/log  "LogMessage"  ""  none
-    cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/unannounced  "Unannounced"  ""  none
+    cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/notannounced  "NotAnnounced"  ""  none
 fi
 
 _info="*host*:*$sHostname*,*version*:*$rtl433_version*,*tuner*:*$sdr_tuner*,*freq*:$sdr_freq,*additional_rtl433_opts*:*${rtl433_opts[*]}*,*logto*:*$dLog ($sDoLog)*,*rewrite*:*${bRewrite:-no}${bRewriteMore:-no}*,*nMinOccurences*:$nMinOccurences,*nMinSecondsWeather*:$nMinSecondsWeather,*nMinSecondsOther*:$nMinSecondsOther,*sMeteoRoundTo*:$sMeteoRoundTo"
@@ -1567,7 +1569,7 @@ do
                 : "not enough value change: aEarlierTemperVals10[$model_ident]=${aEarlierTemperVals10[$model_ident]}, nTimeStamp=$nTimeStamp (vs ${aEarlierTemperTime[$model_ident]})"
                 sDelta=0
             fi
-            [[ $bLogTempHumidity ]] && cLogVal "$model_ident" temperature "$vTemperature"
+            (( bLogTempHumidity )) && cLogVal "$model_ident" temperature "$vTemperature"
         fi
         if [[ $vHumidity ]] ; then
             ((_diff = nHumidity - ${aEarlierHumidVals[$model_ident]:-0}))
@@ -1581,7 +1583,7 @@ do
                 : "not enough change, aEarlierHumidVals[$model_ident]=${aEarlierHumidVals[$model_ident]}, nTimeStamp=$nTimeStamp (vs ${aEarlierHumidTime[$model_ident]})"
                 sDelta="${sDelta:+$sDelta:}0"
             fi
-            [[ $bLogTempHumidity ]] && cLogVal "$model_ident" humidity "$vHumidity"
+            (( bLogTempHumidity )) && cLogVal "$model_ident" humidity "$vHumidity"
         fi
         dbg2 SDELTA "$sDelta"
 
@@ -1608,7 +1610,8 @@ do
                 (( nMinSeconds = nMinSeconds/2 + 1 )) && : different only from last time
             fi
         fi
-        ((_bAnnounceReady = bAnnounceHass && !${#aAnnounced[$model_ident]} && aCounts[$model_ident] >= nMinOccurences))
+
+        ((_bAnnounceReady = bAnnounceHass && ! ${aAnnounced["$model_ident"]:-0} && ${aCounts["$model_ident"]:-0} >= nMinOccurences))
 
         ((_nSecDelta = nTimeStamp - aLastPub[$model_ident] ))
         if ifVerbose ; then
@@ -1630,10 +1633,10 @@ do
         fi
 
         if (( _bAnnounceReady )) ; then # deal with HASS announcement need
-            : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButton,$_bHasButton01,$bHasButtonN,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10"
+            : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButton,$_bHasButton01,$bHasButtonN,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10,$_sHasPct"
             if (( ${#vTemperature} || _bHasRain || _bHasWindMaxMs || _bHasWindAvgKmh || _bHasWindAvgMs || ${#vPressure_kPa} || 
                         _bHasCmd || _bHasCommand || _bHasValue || _bHasData ||_bHasCode || _bHasButton || _bHasButton01 || _bHasButtonN || _bHasButtonR || _bHasDipSwitch ||
-                        _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 )) ; then
+                        _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 || ${#_sHasPct} )) ; then
                 [[ $protocol    ]] && _name=${aProtocols["$protocol"]:-$model} || _name=$model # fallback
                 # if the sensor has any one of the above attributes, announce all the attributes it has ...:
                 # see also https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
@@ -1677,12 +1680,12 @@ do
                 (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Control"    .control control
                 [[ $_sHasPct ]]       && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }${_sHasPct}" ".$_sHasPct" "$_sHasPct"
                 #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Freq"     ".FREQ" frequency
-                if  cMqttLog "{*event*:*debug*,*message*:*MQTT announce: $model_ident ($_name)*,*announced_count*:$((nAnnouncedCount+1))}" ; then
+                if cMqttLog "{*event*:*debug*,*message*:*MQTT announce: $model_ident ($_name)*,*announced_count*:$((nAnnouncedCount+1))}" ; then
                     nAnnouncedCount+=1
                     cLogFile "" "announced=$nAnnouncedCount: $model_ident ($_name)"
                     sLastAnnounced=$model_ident
                     cMqttState
-                    aAnnounced[$model_ident]=1 # 1=took place, therefor dont reconsider for another announcement
+                    aAnnounced[$model_ident]=nTimeStamp   # took place, therefor dont reconsider for another announcement
                     sleep 1 # give any MQTT readers an extra second to digest the announcement
                 else
                     : announcement had failed, will be retried again next time
@@ -1700,7 +1703,8 @@ do
                 fi
             else # not a sensor we like, but something different, e.g. a ...
                 cMqttLog "{*event*:*debug*,*message*:*not announced for MQTT discovery (not a sensible sensor): $model_ident*}"
-                aAnnounced[$model_ident]=1 # 1 = dont reconsider for announcement
+                cLogFile "" "ignored sensor: $model_ident ($_name)"
+                aAnnounced[$model_ident]=0 # 1 = dont reconsider for announcement
             fi
         fi
         # cPidDelta 4TH
@@ -1763,16 +1767,16 @@ do
 
             data="${data//\"/*}"
             # dbg IDTOO "aSensorWithoutIdToo[$model_ident_base]=${aSensorWithoutIdToo[$model_ident_base]}"
-            if cMqttStarred "$basetopic/$topicext" "$data" ${bRetained:+ -r} && 
+            if cMqttStarred "$basetopic/$topicext" "$data" $( (( bRetained )) && echo "-r" )  && 
                         { ! (( ${aSensorWithoutIdToo[$model_ident_base]} )) || cMqttStarred "$basetopic/$topicext2" "$data" ; } ; then 
                 # ... finally: published the values to the MQTT broker
                 nMqttLines+=1
                 aLastPub[$model_ident]=$nTimeStamp
-                # if not yet announced publish values to .../unannounced, too
-                if (( bAnnounceHass && ! ${#aAnnounced[$model_ident]} )); then
+                # if not yet announced, publish values also to .../notannounced,
+                if (( bAnnounceHass && ! aAnnounced[$model_ident] )); then
                     cAddJsonKeyVal -b BEGINNING "SENSOR" "$model_ident"
-                    cMqttStarred unannounced "$data"
-                    # rtl/bridge/unannounced { "battery_ok":0,"temperature":10.5,"humidity":0.58,"dewpoint":2.5,"BAND":433,
+                    cMqttStarred notannounced "$data"
+                    # rtl/bridge/notannounced { "battery_ok":0,"temperature":10.5,"humidity":0.58,"dewpoint":2.5,"BAND":433,
                     #    "DELTADEW":0.4,"ORIGTEMP":10.700,"NOTE":"1ST(79/52) 2ND(c=2,s=79/52,IsDiff3=1)","SDELTA":"0:0"}
                 fi
             else
@@ -1797,19 +1801,18 @@ do
         cMqttLog "{*event*:*sensor added*,*model*:*$model*,*protocol*:*$protocol*,*id*:$id,*channel*:*$channel*,*description*:*${protocol:+${aProtocols[$protocol]}}*, *sensors*:[${_sensors%,}]}"
         cMqttState
     elif (( nTimeStamp > nLastUnannouncedCheck + 60*5 )) ; then # check at most every 5 minutes
-        # iterate over all announced sensors and unannounce the ones that haven't had a reception in the last 3 hours
+        # iterate over all announced sensors, and unannounce the ones that haven't had a reception in the last 3 hours
         dbg "Checking for unannounced sensors at $nTimeStamp, after $((nTimeStamp - nLastUnannouncedCheck)) seconds, nAnnouncedCount=$nAnnouncedCount"
         for KEY in "${!aAnnounced[@]}"; do
             ((_diff= nTimeStamp - aLastReceivedTime[$KEY] ))
-            if (( _diff > nUnannouncePeriod && ${aLastReceivedTime[$KEY]:-0} && ${#aAnnounced[$KEY]} )); then
-                : FIXME: cHassRemoveAnnounce "$basetopic" "$KEY" §_diff
-                aAnnounced[$KEY]="" # set to empty to indicate that it was unannounced
+            if (( _diff > nUnannouncePeriod && ${aLastReceivedTime[$KEY]:-0} && ${aAnnounced[$KEY]} )); then
+                : FIXME: cHassRemoveAnnounce ${aAnnouncedTopics[$KEY]}
+                aAnnounced[$KEY]=0 # set to 0 to indicate that it was unannounced
                 aLastReceivedTime[$KEY]=0 # reset the last received time, so that if the sensor reappears, it will be announced again
-                # unset 'aAnnounced[$KEY]' # remove from the list of announced sensors
                 ((nAnnouncedCount--))
-                cMqttLog "{*event*:*unannounce*,*model*:*$KEY*,*message*:*unannounced sensor after $_diff seconds*,*announced_count*:$nAnnouncedCount}"
+                cMqttLog "{*event*:*unannounce*,*model*:*$KEY*,*message*:*would unannounce sensor after $_diff seconds*,*announced_count*:$nAnnouncedCount}"
                 cLogFile "" "announced=$nAnnouncedCount:  reduced: $KEY"
-                dbg "Unannounced $KEY, now nAnnouncedCount=$nAnnouncedCount"
+                dbg "Would Unannounce $KEY and ${aAnnouncedTopics[$KEY]}, now nAnnouncedCount=$nAnnouncedCount"
             fi
         done
         nLastUnannouncedCheck=nTimeStamp
