@@ -341,7 +341,7 @@ cHassAnnounce() {
     local _jsonpath="${5//value_json.}"
     local _jsonpath_red="${_jsonpath//[^a-zA-Z0-9]/}" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
     local _devname="$2 ${_devid^}"
-    local _icon_str  # mdi icons: https://pictogrammers.github.io/@mdi/font/6.5.95/
+    local _icon_str  # mdi icons: https://pictogrammers.github.io/@mdi/font/7.3.67
 
     if [[ $_dev_class ]] ; then
         local _channelname="$_devname ${_dev_class^}"
@@ -406,7 +406,9 @@ cHassAnnounce() {
         unit)       _icon_str="group"           ; _unit="#"     ; _state_class="measurement" ;;
         learn)      _icon_str="plus"            ; _unit="#"     ; _state_class="total_increasing" ;;
         channel)    _icon_str="format-list-numbered" ; _unit="#" ; _state_class="measurement" ; _dev_class="" ;; # or _unit=""
-        voltage)    _icon_str="FIXME"           ; _unit="V"     ; _state_class="measurement" ;;
+        voltage)    _icon_str="flash"           ; _unit="V"     ; _state_class="measurement" ;;
+        power)      _icon_str="power-socket"    ; _unit="W"     ; _state_class="measurement" ;;
+        energy)     _icon_str="counter"         ; _unit="kWh"   ; _state_class="total_increasing" ;;
         battery|batteryVal)	_icon_str=""        ; _unit="#"	    ; _state_class="measurement" ; _dev_class=battery ;;
         battery_ok) _icon_str=""                ; _component=binary_sensor ; _dev_class=battery ; _payload_on=0 ; _payload_off=1 ;;
         cmd)        _icon_str="hammer"          ; _component=sensor ; _unit="#"; _dev_class=""  ;; # e.g. cmd=62
@@ -1498,6 +1500,10 @@ do
         _bHasBatteryOK=$( [[ $_battok =~ ^[01]$ ]] && e1 ) # 0=LOW;1=HIGH from https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
         _bHasBatteryOKVal=$( [[ $_battok =~ ^[01].[0-9]+$ ]] && e1 ) # or some value in between
         _bHasBatteryV=$(  [[ $(cExtractJsonVal -n battery_V) =~ ^[0-9.]+$ ]] && e1 ) # voltage, also battery_mV
+        _bHasPower1=$(  [[ $(cExtractJsonVal -n power1_W) =~ ^[0-9.]+$ ]] && e1 ) # power in W, also power_mW
+        _bHasPower2=$(  [[ $(cExtractJsonVal -n power2_W) =~ ^[0-9.]+$ ]] && e1 ) # power in W, also power_mW
+        _bHasPower3=$(  [[ $(cExtractJsonVal -n power3_W) =~ ^[0-9.]+$ ]] && e1 ) # power in W, also power_mW
+        _bHasEnergy=$( [[ $(cExtractJsonVal -n energy_kWh) =~ ^[0-9.]+$ ]] && e1 ) # energy in Wh, also energy_kWh
         _bHasZone=$(   cHasJsonKey -v zone)    #   {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasUnit=$(   cHasJsonKey -v unit)    #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
         _bHasLearn=$(  cHasJsonKey -v learn)   #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
@@ -1636,6 +1642,7 @@ do
             : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButton,$_bHasButton01,$bHasButtonN,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10,$_sHasPct"
             if (( ${#vTemperature} || _bHasRain || _bHasWindMaxMs || _bHasWindAvgKmh || _bHasWindAvgMs || ${#vPressure_kPa} || 
                         _bHasCmd || _bHasCommand || _bHasValue || _bHasData ||_bHasCode || _bHasButton || _bHasButton01 || _bHasButtonN || _bHasButtonR || _bHasDipSwitch ||
+                        _bHasPower1 || _bHasPower2 || _bHasPower3 || _bHasEnergy ||
                         _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 || ${#_sHasPct} )) ; then
                 [[ $protocol    ]] && _name=${aProtocols["$protocol"]:-$model} || _name=$model # fallback
                 # if the sensor has any one of the above attributes, announce all the attributes it has ...:
@@ -1659,17 +1666,21 @@ do
                 ((_bHasBatteryOKVal)) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Percentage"   .battery_ok    batteryVal
                 (( _bHasBatteryV   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Voltage"   .battery_V    voltage
                 (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       .cmd      cmd
+                (( _bHasPower1     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Power1"    .power1_W  power
+                (( _bHasPower2     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Power2"    .power2_W  power
+                (( _bHasPower3     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Power3"    .power3_W  power
+                (( _bHasEnergy     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Energy"    .energy_kWh energy
                 (( _bHasCommand    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Command"   .command  command
                 (( _bHasValue      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Value"     .value    value
                 (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Data"      .data     data
-                (( _bHasRssi && bMoreVerbose)) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RSSI"       .rssi   signal_strength # "value_json.rssi|float|round(2)"
+                (( _bHasRssi && bMoreVerbose)) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RSSI"  .rssi   signal_strength # "value_json.rssi|float|round(2)"
                 (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Counter"   .counter   counter
                 (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Fine Parts"  .pm2_5_ug_m3 density25
                 (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Course Parts"  .estimated_pm10_0_ug_m3 density10
                 (( _bHasCode       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Code"       .code     code
                 (( _bHasButton     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Button"     .button   button
                 (( _bHasButton01   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Button01"   .button   button01
-                (( _bHasButtonN    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonN"    "value_json.button | int" buttonN
+                (( _bHasButtonN    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonN"    .buttonN  buttonN
                 (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonR"    .buttonr  button
                 (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }DipSwitch"  .dipswitch   dipswitch
                 (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }NewBatttery" .newbattery newbattery
