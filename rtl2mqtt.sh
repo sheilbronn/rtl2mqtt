@@ -147,7 +147,7 @@ cEmptyArrays() { # reset the 11 arrays from above
     }
 
 export LANG=C
-PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" # increases security
+PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" # non-inheritance increases security
 
 cJoin() { # join all arguments with a space, but remove any double spaces and any newlines
     cX
@@ -336,12 +336,12 @@ cHassAnnounce() {
 	local _command_topic_str="$( [[ $3 != $_topicpart ]] && printf ",*cmd_t*:*~/set*" )"  # determined by suffix ".../set"
 
     local _dev_class=${6#none} # dont wont "none" as string for dev_class
-	local _state_class="" # see https://developers.home-assistant.io/docs/core/entity/sensor/#available-state-classes
-    local _component=sensor
+	local _state_class=":" # see https://developers.home-assistant.io/docs/core/entity/sensor/#available-state-classes
+    local _component=sensor # default
     local _jsonpath="${5//value_json.}"
     local _jsonpath_red="${_jsonpath//[^a-zA-Z0-9]/}" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
     local _devname="$2 ${_devid^}"
-    local _icon_str  # mdi icons: https://pictogrammers.github.io/@mdi/font/7.3.67
+    local _icon=""  # mdi icons: https://pictogrammers.github.io/@mdi/font/7.3.67
 
     if [[ $_dev_class ]] ; then
         local _channelname="$_devname ${_dev_class^}"
@@ -375,49 +375,51 @@ cHassAnnounce() {
 
     _dev_class=$6 ; _payload_on="" ; _payload_off="" ;
     case "$_dev_class" in
-        temperature*) _icon_str="thermometer"   ; _unit="°C"   ; _state_class="measurement" ; _dev_class="temperature" ;; # _unit="\u00b0C"
-        dewpoint) _icon_str="thermometer"       ; _unit="\u00b0C"   ; _state_class="measurement" ; _dev_class="temperature" ;; 
-        setpoint*)	_icon_str="thermometer"     ; _unit="%"	        ; _state_class="measurement" ;;
-        humidity)	_icon_str="water-percent"   ; _unit="%"	        ; _state_class="measurement" ;;
-        rain_mm)	_icon_str="weather-rainy"   ; _unit="mm"	    ; _state_class="total_increasing" ;;
-        wind_avg_km_h) _icon_str="weather-windy" ; _unit="km_h"	    ; _state_class="measurement" ;;
-        wind_avg_m_s) _icon_str="weather-windy" ; _unit="m_s"	    ; _state_class="measurement" ;;
-        wind_max_m_s) _icon_str="weather-windy" ; _unit="m_s"	    ; _state_class="measurement" ;;
-        wind_dir_deg) _icon_str="weather-windy" ; _unit="°"	        ; _state_class="measurement" ;;
-        uvi)        _icon_str="weather-sunny"   ; _unit="#"         ; _state_class="measurement" ;;
-        pressure_kPa) _icon_str="airballoon-outline" ; _unit="kPa"	; _state_class="measurement" ;;
-        pressure_hPa) _icon_str="airballoon-outline" ; _unit="hPa"  ; _state_class="measurement" ;;
-        ppm)	    _icon_str="smoke"           ; _unit="ppm"	    ; _state_class="measurement" ;;
-        density*)	_icon_str="smoke"           ; _unit="ug_m3"	    ; _state_class="measurement" ;;
-        counter)	_icon_str="counter"         ; _unit="#"	        ; _state_class="total_increasing" ; _dev_class="" ;;
-		clock)	    _icon_str="clock-outline"   ; _dev_class="timestamp" ;;
-		signal_strength)	_icon_str="signal"  ; _unit="dB"	    ; _state_class="measurement" ;;
-        switch)     _icon_str="toggle-switch"  ; _component=binary_sensor ; _dev_class=switch ;;
-        motion)     _icon_str="motion-sensor"   ; _component=binary_sensor ;;
-        button01)   _icon_str="gesture-tap"     ; _component=binary_sensor ; _dev_class="button" ; _payload_on=1 ; _payload_off=0 ;;
-        button)     _icon_str="gesture-tap-button" ; _component=binary_sensor ;;
-        buttonN )   _icon_str="keyboard"        ; _unit="#"      ; _dev_class="" 	;;
-        dipswitch)  _icon_str="dip-switch" ;;
-        code)       _icon_str="lock" ;;
-        newbattery) _icon_str="battery-check"   ; _unit="#" ;;
+        temperature*) _icon="thermometer"   ; _unit="°C"    ; _dev_class="temperature" ;; # _unit="\u00b0C"
+        dewpoint) _icon="thermometer"       ; _unit="\u00b0C"   ; _dev_class="temperature" ;; 
+        setpoint*)	_icon="thermometer"     ; _unit="%"	        ;;
+        humidity)	_icon="water-percent"   ; _unit="%"	        ;;
+        rain_mm)	_icon="weather-rainy"   ; _unit="mm"	    ; _state_class="total" ;;
+        wind_avg_km_h) _icon="weather-windy" ; _unit="km_h"	    ;;
+        wind_avg_m_s) _icon="weather-windy" ; _unit="m_s"	    ;;
+        wind_max_m_s) _icon="weather-windy" ; _unit="m_s"	    ;;
+        wind_dir_deg) _icon="weather-windy" ; _unit="°"	        ;;
+        uvi)        _icon="weather-sunny"   ; _unit="#"         ;;
+        pressure_*Pa) _icon="gauge" ; _unit=${_dev_class#pressure_} ; _dev_class="pressure" 	;;
+        ppm)	    _icon="smoke"           ; _unit="ppm"	    ;;
+        density*)	_icon="smoke"           ; _unit="ug_m3"	    ;;
+        counter)	_icon="counter"         ; _unit="#"	        ; _state_class="total_increasing" ; _dev_class="" ;;
+		clock)	    _icon="clock-outline"   ; _dev_class="timestamp" ;;
+		signal_strength) _icon="signal"     ; _unit="dB"	    ;;
+        switch)     _icon="toggle-switch"   ; _component=binary_sensor ; _dev_class=switch ;;
+        motion)     _icon="motion-sensor"   ; _component=binary_sensor ;;
+        button01)   _icon="gesture-tap"     ; _component=binary_sensor ; _dev_class="button" ; _payload_on=1 ; _payload_off=0 ;;
+        button)     _icon="gesture-tap-button" ; _component=binary_sensor ;;
+        buttonN )   _icon="keyboard"        ; _unit="#"    ; _state_class=""  ; _dev_class="" 	;;
+        dipswitch)  _icon="dip-switch" ;;
+        code)       _icon="lock" ;;
+        newbattery) _icon="battery-check"   ; _unit="#"    ; _state_class=""  ;;
       # battery*)     _unit="B*" ;;  # 1 for "OK" and 0 for "LOW".
-        zone)       _icon_str="vector-intersection" ; _unit="#" ; _state_class="measurement" ; _dev_class="" ;;
-        control)    _icon_str="cog-outline"     ; _dev_class="" ;; # e.g. "Markisol 433Mhz (Markisol, E-Motion, BOFU, Rollerhouse, BF-30x, BF-415 curtain remote) (191)
-        unit)       _icon_str="group"           ; _unit="#"     ; _state_class="measurement" ;;
-        learn)      _icon_str="plus"            ; _unit="#"     ; _state_class="total_increasing" ;;
-        channel)    _icon_str="format-list-numbered" ; _unit="#" ; _state_class="measurement" ; _dev_class="" ;; # or _unit=""
-        voltage)    _icon_str="flash"           ; _unit="V"     ; _state_class="measurement" ;;
-        power)      _icon_str="power-socket"    ; _unit="W"     ; _state_class="measurement" ;;
-        energy)     _icon_str="counter"         ; _unit="kWh"   ; _state_class="total_increasing" ;;
-        battery|batteryVal)	_icon_str=""        ; _unit="#"	    ; _state_class="measurement" ; _dev_class=battery ;;
-        battery_ok) _icon_str=""                ; _component=binary_sensor ; _dev_class=battery ; _payload_on=0 ; _payload_off=1 ;;
-        cmd)        _icon_str="hammer"          ; _component=sensor ; _unit="#"; _dev_class=""  ;; # e.g. cmd=62
-      # cmd)        _icon_str="command"         ; _state_class="measurement" ;; # e.g. cmd=62
-		none)		_icon_str="" ; _unit="" ; _dev_class="" ;;
-        *_pct)      _icon_str="percent"        ; _unit="%"     ; _dev_class="" ; _state_class="measurement" ;;
+        zone)       _icon="vector-intersection" ; _unit="#" ; _dev_class="" ;;
+        control)    _icon="cog-outline"     ; _dev_class="" ;; # e.g. "Markisol 433Mhz (Markisol, E-Motion, BOFU, Rollerhouse, BF-30x, BF-415 curtain remote) (191)
+        unit)       _icon="group"           ; _unit="#"     ;;
+        learn)      _icon="plus"            ; _unit="#"     ; _state_class="total_increasing" ;;
+        channel)    _icon="format-list-numbered" ; _unit="#" ; _dev_class="" ;; # or _unit=""
+        voltage)    _icon="flash"           ; _unit="V"     ;;
+        power)      _icon="power-socket"    ; _unit="W"     ;;
+        energy)     _icon="counter"         ; _unit="kWh"   ; _state_class="total" ;;
+        battery|batteryVal)	_icon=""        ; _unit="#"	    ; _dev_class=battery ;;
+        battery_ok) _icon=""                ; _component=binary_sensor ; _dev_class=battery ; _payload_on=0 ; _payload_off=1 ;;
+        cmd)        _icon="hammer"          ; _component=sensor ; _unit="#"; _state_class="" ; _dev_class=""  ;; # e.g. cmd=62
+      # cmd)        _icon="command"         ; _state_class="" ;; # e.g. cmd=62
+        *_pct)      _icon="percent"        ; _unit="%"     ; _dev_class="" ;;
+		none)		_icon="" ; _dev_class="" ;;
         *)          cLogMore "Notice: special icon and/or unit not defined for '$6'"
     esac
-    _icon_str=${_icon_str:+,*icon*:*mdi:$_icon_str*}
+    _icon=${_icon:+,*icon*:*mdi:$_icon*}
+    if [[ $_state_class == : ]] ; then
+         [[ $_unit ]] && _state_class="measurement" || _state_class=""
+    fi
     _unit=${_unit:+,*unit_of_measurement*:*$_unit*}
     _dev_class=${_dev_class:+,*device_class*:*$_dev_class*}
 
@@ -426,11 +428,10 @@ cHassAnnounce() {
           _configtopicpart="${_configtopicpart^}" # ... capitalize first letter for readability
     local _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aProtocols[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
     local _msg="*name*:*$_channelname*,*state_topic*:*$_sensortopic*,$_device$_dev_class${_payload_on:+,*payload_on*:*$_payload_on*}${_payload_off:+,*payload_off*:*$_payload_off*}"
-            _msg="$_msg,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit}${_value_template_str}${_command_topic_str}$_icon_str${_state_class:+,*state_class*:*$_state_class*}"
+            _msg="$_msg,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit}${_value_template_str}${_command_topic_str}$_icon${_state_class:+,*state_class*:*$_state_class*}"
           # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
           # _msg="$_msg,*json_attributes_topic*:*$_sensortopic*" # STILL TO DEBUG
-    aAnnouncedTopics[$model_ident]="$_topic" # remember that we have announced this topic
-
+    aAnnouncedTopics[${model_ident:-OTHER}]="$_topic" # remember that we have announced this topic
    	ifVerbose && (
         export GREP_COLORS="mt=01;33;ms=01;33:mc=01;33:sl=:cx=:fn=35:ln=32:bn=32:se=36"
         # export GREP_COLOR="01;33" # FIXME: grep: warning: GREP_COLOR='01;33' is deprecated; use GREP_COLORS='mt=01;33'
@@ -490,23 +491,24 @@ cAddJsonKeyVal() {  # cAddJsonKeyVal [ -b "beforekey" ] [ -n ] "key" "val" "json
     local _bkey="" && [[ $1 == -b ]] && _bkey=$2 && shift 2
     local _nkey="" && [[ $1 == -n ]] && _nkey=1  && shift 1
     local _val=$2  _d=${3:-$data}
+    local S='"' && [[ $_d =~ \{[[:space:]]*\* ]] && S='*' # apostrophe is either * or "
     if [[ ! $_nkey || $_val ]] ; then # don't append the pair if value empty and -n option given !
-        [[ $_val =~ ^[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?$ || $_val == null ]] || _val="\"$_val\"" # surround numeric _val by double quotes if not-a-number
-        if [[ $_d =~ (.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*)(\"[^\"]*\"|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)(.*)$ ]] ; then
+        [[ $_val =~ ^[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?$ || $_val == null ]] || _val="$S$_val$S" # surround numeric _val by double quotes if not-a-number
+        if [[ $_d =~ (.*[{,][[:space:]]*$S$1$S[[:space:]]*:[[:space:]]*)($S[^\$S]*$S|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)(.*)$ ]] ; then
             : replace val # FIXME: replacing a val not yet fully implemented amd tested
             _d="${BASH_REMATCH[1]}$_val${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
         elif [[ $_bkey == BEGINNING ]] ; then
             : insert at beginning
-            _d="{\"$1\":$_val,${_d#\{}"
-        elif [[ $_bkey ]] && [[ $_d =~ (.*[{,])([[:space:]]*\"$_bkey\"[[:space:]]*:.*)$ ]] ; then    #  cHasJsonKey $_bkey
+            _d="{$S$1$S:$_val,${_d#\{}"
+        elif [[ $_bkey ]] && [[ $_d =~ (.*[{,])([[:space:]]*$S$_bkey$S[[:space:]]*:.*)$ ]] ; then    #  cHasJsonKey $_bkey
             : insert before key
-            _d="${BASH_REMATCH[1]}\"$1\":$_val,${BASH_REMATCH[2]}" # FIXME: assuming the JSON wasn't empty
+            _d="${BASH_REMATCH[1]}$S$1$S:$_val,${BASH_REMATCH[2]}" # FIXME: assuming the JSON wasn't empty
         else
             : insert at end
-            _d="${_d/%\}/,\"$1\":$_val\}}"
+            _d="${_d/%\}/,$S$1$S:$_val\}}"
         fi
     fi
-    [[ $3 ]] && echo "$_d" || data=$_d
+    [[ $3 ]] && echo "$_d" || data="$_d"
  }
     # sX ; data='{"one":1}' ; cAddJsonKeyVal "x" "2x" ; echo $data ; cAddJsonKeyVal "n" "2.3" "$data" ; cAddJsonKeyVal "m" "-" "$data" ; exit 2 # returns: '{one:1,"x":"2"}'
     # sX ; cAddJsonKeyVal "donot"  ""  '{"one":1}'  ; cAddJsonKeyVal -b one "donot"  ""  '{"zero":0,"one":1}'  ;  exit 2 # returns: '{"one":1,"donot":""}' 
@@ -515,13 +517,15 @@ cAddJsonKeyVal() {  # cAddJsonKeyVal [ -b "beforekey" ] [ -n ] "key" "val" "json
     # sX ; cAddJsonKeyVal -n notempty "" '{"one":1,"two":"xx"}' ; cAddJsonKeyVal empty "" '{"one":1,"two":"xx"}' ; exit 2 # returns '{"one":1,"two":"xx"}'
     # sX ; cAddJsonKeyVal -b one "one" null  '{"zero":0,"one":"(none)","two":2}'  ;  exit 2 # returns: '{"zero":0,"one":null}'
     # sX ; cAddJsonKeyVal -b BEGINNING "SOME" null  '{"zero":0,"one":"(none)","two":2}'  ;  exit 2 # returns: {"SOME":null,"zero":0,"one":"(none)","two":2}
+    # sX ; cAddJsonKeyVal -b BEGINNING "SOME" null  '{*zero*:0}'  ;  exit 2 # returns: {"SOME":null,"zero":0,"one":"(none)","two":2}
     # sX ; cAddJsonKeyVal -b BEGINNING "two" "3"  '{"zero":0,"one":"(none)","two":2}'  ;  exit 2 # returns: {"zero":0,"one":"(none)","two":3} 
 
 cHasJsonKey() { # cHasJsonKey([-v] key [jsonstring]): simplified check to check whether the JSON ${2:-$data} has key $1 (e.g. "temperat.*e")  (. is for [a-zA-Z0-9]) #
     cX
     local _key     && [[ $1 == -k ]] && _key=1     && shift 1
     local _verbose && [[ $1 == -v ]] && _verbose=1 && shift 1
-    [[ ${2:-$data} =~ [{,][[:space:]]*\"(${1//\./[a-zA-Z0-9]})\"[[:space:]]*: ]] || return 1 # return early if key not found
+    local S='"' && [[ ${2:-$data} =~ \{[[:space:]]*\* ]] && S='*' # apostrophe is either * or "
+    [[ ${2:-$data} =~ [{,][[:space:]]*$S(${1//\./[a-zA-Z0-9]})$S[[:space:]]*: ]] || return 1 # return early if key not found
     local _k=${BASH_REMATCH[1]}
     [[ $1 =~ \*|\[   ]] && echo "$_k" && return 0   # output the first found key only if multiple fits potentially possible
     [[ $_key     ]] && echo "$_k"
@@ -547,16 +551,17 @@ cRemoveQuotesFromNumbers() { # removes double quotes from JSON numbers in $1 or 
 cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data if jsondata empty)
     cX
     # shopt -s extglob
-    local _d=${2:-$data}
+    local _d="${2:-$data}"
     local k
     local _f
+    local S='"' && [[ $_d =~ \{[[:space:]]*\* ]] && S='*' # apostrophe is either * or "
     k=$(cHasJsonKey "$1" "$2")  && ! [[ $k ]] && k=$1
     # : debug3 "$k"
     if [[ $k ]] ; then  #       replacing:  jq -r ".$1 // empty" <<< "$_d" :
-        if    [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*[0-9.eE+-]+[[:space:]]*)([,}])([[:space:]]*) ]] ||  # number: ^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$
-              [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\"[^\"]*\"[[:space:]]*)([,}])([[:space:]]*)  ]] ||  # string
-              [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\[[^\]]*\][[:space:]]*)([,}])([[:space:]]*)  ]] ||  # array
-              [[ $_d =~ ([,{])([[:space:]]*\"$k\"[[:space:]]*:[[:space:]]*\{[^\}]*\}[[:space:]]*)([,}])([[:space:]]*)  ]] ; then # curly braces, FIXME: max one level for now
+        if    [[ $_d =~ ([,{])([[:space:]]*$S$k$S[[:space:]]*:[[:space:]]*[0-9.eE+-]+[[:space:]]*)([,}])([[:space:]]*) ]] ||  # number: ^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$
+              [[ $_d =~ ([,{])([[:space:]]*$S$k$S[[:space:]]*:[[:space:]]*$S[^$S]*$S[[:space:]]*)([,}])([[:space:]]*)  ]] ||  # string
+              [[ $_d =~ ([,{])([[:space:]]*$S$k$S[[:space:]]*:[[:space:]]*\[[^\]]*\][[:space:]]*)([,}])([[:space:]]*)  ]] ||  # array
+              [[ $_d =~ ([,{])([[:space:]]*$S$k$S[[:space:]]*:[[:space:]]*\{[^\}]*\}[[:space:]]*)([,}])([[:space:]]*)  ]] ; then # curly braces, FIXME: max one level for now
             if [[ ${BASH_REMATCH[3]} == "}" ]] ; then   
                 # key-value pair is alone or at end of string
                 _f="${BASH_REMATCH[1]/\{}${BASH_REMATCH[2]}" 
@@ -603,7 +608,7 @@ cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata or $d
     # sX ; cDeleteJsonKeys "eins" '{"eins":"1","zwei":2}'  ;  exit 1
  
 cComplexExtractJsonVal() {
-    local - && : set -x
+    local -
     cHasJsonKey "$1" && jq -r ".$1 // empty" <<< "${2:-$data}"
  }
     # sX ; data='{"action":"good","battery":100}' ; cComplexExtractJsonVal action && echo yes ; cComplexExtractJsonVal notthere || echo no ; exit
@@ -781,14 +786,17 @@ cLogMore "Gathered options: $_moreopts $*"
 while getopts "?qh:pPt:S:drLl:f:F:M:X:H:AR:Y:Oij:JI:N:B:w:c:as:W:T:E:29vx" opt $_moreopts "$@"
 do
     case "$opt" in
-    \?) { echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,device]"
+    \?) # HELP: help message    
+        { echo "Usage: $sName -h brokerhost -t basetopic -p -r -r -d -l -a -e [-F freq] [-f file] -q -v -x [-w n.m] [-W station,key,device]"
         echo "Special signals:"
         grep "trap_[a-z12]*(.*:" "$0" | sed 's/.*# //' ; } 1>&2 # e.g. VTALRM: re-emit all dewpoint calcs and recorded sensor readings (e.g. for debugging purposes)
         exit 1
         ;;
-    q)  bQuiet=1 # quiet mode, no output except errors
+    q)  # HELP: quiet mode, no output except errors
+        bQuiet=1 # quiet mode, no output except errors
         ;;
-    h)  # configure the MQTT broker host here or in $HOME/.config/mosquitto_sub
+    h)  # HELP: MQTT broker host, e.g. test.mosquitto.org or localhost 
+        # Configure the MQTT broker host here or in $HOME/.config/mosquitto_sub
         # syntax: -h USERNAME:PASSWORD@brokerhost:port or -h brokerhost:port or -h brokerhost
         sUserName=${OPTARG%%@*} ; sUserPass=${sUserName#*:}
         [[ $sUserPass == $sUserName ]] && sUserPass=""
@@ -1027,7 +1035,7 @@ cEchoIfNotDuplicate() {
     fi
  }
 
-if ((bAnnounceHass)) ; then
+if ((bAnnounceHass && bMoreVerbose)) ; then
     cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/log  "LogMessage"  ""  none
     cHassAnnounce "$sRtlPrefix" "Rtl433 Bridge" bridge/notannounced  "NotAnnounced"  ""  none
 fi
@@ -1037,11 +1045,11 @@ if [[ -t 1 ]] ; then # probably running on a terminal
     log "$sName starting at $(cDate)"
     cMqttLog "{*event*:*starting*,$_info}"
 else               # probably non-terminal
-    delayedStartSecs=3
-    log "$sName starting in $delayedStartSecs secs from $(cDate)"
-    sleep "$delayedStartSecs"
+    declare _delay=3
+    log "$sName starting in $_delay secs from $(cDate)"
+    sleep $_delay
     _id=${INVOCATION_ID:+*$INVOCATION_ID*} # when used in systemd
-    cMqttLog "{*event*:*starting*,$_info,*invocation_id*:${_id:-null},*message*:*delayed by $delayedStartSecs secs*,*sw_version*=*$rtl433_version*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*}"
+    cMqttLog "{*event*:*starting*,$_info,*invocation_id*:${_id:-null},*message*:*delayed by $_delay secs*,*sw_version*=*$rtl433_version*,*user*:*$( id -nu )*,*cmdargs*:*$commandArgs*}"
 fi
 
 # Optionally remove any matching retained announcements
@@ -1049,7 +1057,7 @@ fi
     mosquitto_sub ${sMID:+-i $sMID} ${sUserName:+-u "$sUserName"} ${sUserPass:+-P "$sUserPass"} -W 1 --retained-only --remove-retained -t "$sRtlPrefix/+" 
 
 trap_exit() {   # stuff to do when exiting
-    local exit_code=$? # must be first command in exit trap
+    local -i _rc=$? # must be first command in exit trap
     cX;
     cLogMore "$sName exit trap at $(cDate): removeAnnouncements=$bRemoveAnnouncements. Will also log state..."
     ((bRemoveAnnouncements)) && cHassRemoveAnnounce
@@ -1059,8 +1067,8 @@ trap_exit() {   # stuff to do when exiting
         dbg "Killed coproc PID $_cppid and awaited rc=$?"
     }
     nReadings=${#aPrevReadings[@]}
-    cMqttState "*note*:*trap exit*,*exit_code*:$exit_code, *collected_sensors*:*${!aPrevReadings[*]}*"
-    cMqttLog "{*event*:*$( [[ $fReplayfile ]] && echo info || echo warning )*, *host*:*$sHostname*, *exit_code*:$exit_code, *message*:*Exiting${fReplayfile:+ after reading from $fReplayfile}...*}${_pidrtl:+ procinfo=$_pmsg}"
+    cMqttState "*note*:*trap exit*,*exit_code*:$_rc, *collected_sensors*:*${!aPrevReadings[*]}*"
+    cMqttLog "{*event*:*$( [[ $fReplayfile ]] && echo info || echo warning )*, *host*:*$sHostname*, *exit_code*:$_rc, *message*:*Exiting${fReplayfile:+ after reading from $fReplayfile}...*}${_pidrtl:+ procinfo=$_pmsg}"
     # logger -p daemon.err -t "$sID" -- "Exiting trap_exit."
     # rm -f "$conf_file" # remove a created pseudo-conf file if any
  }
@@ -1150,7 +1158,6 @@ else
             (( nRC != 0 )) && echo "ERROR: HASS Announcements failed with rc=$nRC" 1>&2
             sleep 1
         fi
-
     fi
 fi 
 
@@ -1424,7 +1431,7 @@ do
     else
         cHasJsonKey BAND && sBand=$(cExtractJsonVal BAND)
     fi
-    aBands[${model_ident:-NONE}]=$sBand
+    aBands[${model_ident:-OTHER}]=$sBand
     [[ $sBand ]] && basetopic="$sRtlPrefix/$sBand"
     log "$data"     
 
