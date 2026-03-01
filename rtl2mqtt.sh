@@ -411,7 +411,8 @@ cHassAnnounce() {
         battery|batteryVal)	_icon=""        ; _unit="#"	    ; _dev_class=battery ;;
         battery_ok) _icon=""                ; _component=binary_sensor ; _dev_class=battery ; _payload_on=0 ; _payload_off=1 ;;
         cmd)        _icon="hammer"          ; _component=sensor ; _unit="#"; _state_class="" ; _dev_class=""  ;; # e.g. cmd=62
-      # cmd)        _icon="command"         ; _state_class="" ;; # e.g. cmd=62
+        # cmd)        _icon="command"         ; _state_class="" ;; # e.g. cmd=62
+        raw)        _icon="sensor"          ; _dev_class=""  ;;
         *_pct)      _icon="percent"        ; _unit="%"     ; _dev_class="" ;;
 		none)		_icon="" ; _dev_class="" ;;
         *)          cLogMore "Notice: special icon and/or unit not defined for '$6'"
@@ -1519,6 +1520,7 @@ do
         _bHasControl=$(cHasJsonKey -v control) #   {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasCmd=$(    cHasJsonKey -v cmd)
         _bHasCommand=$(cHasJsonKey -v command)
+        _bHasRaw=$(    cHasJsonKey -v raw)
         _bHasValue=$(  cHasJsonKey -v value)
         _bHasData=$(   cHasJsonKey -v data)
         _bHasCounter=$(cHasJsonKey -v counter ) #  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
@@ -1629,7 +1631,7 @@ do
 
         ((_nSecDelta = nTimeStamp - aLastPub[$model_ident] ))
         if ifVerbose ; then
-            echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasCommand=$_bHasCommand, hasValue=$_bHasValue, hasButton=$_bHasButton, hasButton01=$_bHasButton01, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl, hasBatteryOK=$_bHasBatteryOK, hasBatteryOKVal=$_bHasBatteryOKVal, hasBatteryV=$_bHasBatteryV"
+            echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_bHasRain, hasCmd=$_bHasCmd, hasCommand=$_bHasCommand, _bHasRaw=$_bHasRaw, hasValue=$_bHasValue, hasButton=$_bHasButton, hasButton01=$_bHasButton01, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl, hasBatteryOK=$_bHasBatteryOK, hasBatteryOKVal=$_bHasBatteryOKVal, hasBatteryV=$_bHasBatteryV"
             echo "Counts=${aCounts[$model_ident]} _nSecDelta=$_nSecDelta #aDewpointsCalc=${#aDewpointsCalc[@]}"
             (( !bMoreVerbose )) && 
                 GREPC 'model_ident=[^, ]*|\{[^}]*}' <<< "model_ident=$model_ident  READ=${aPrevReadings[$model_ident]}
@@ -1647,9 +1649,9 @@ do
         fi
 
         if (( _bAnnounceReady )) ; then # deal with HASS announcement need
-            : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasData,$_bHasCode,$_bHasButton,$_bHasButton01,$bHasButtonN,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10,$_sHasPct"
+            : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_bHasRain,$vPressure_kPa,$_bHasCmd,$_bHasRaw,$_bHasData,$_bHasCode,$_bHasButton,$_bHasButton01,$bHasButtonN,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10,$_sHasPct"
             if (( ${#vTemperature} || _bHasRain || _bHasWindMaxMs || _bHasWindAvgKmh || _bHasWindAvgMs || ${#vPressure_kPa} || 
-                        _bHasCmd || _bHasCommand || _bHasValue || _bHasData ||_bHasCode || _bHasButton || _bHasButton01 || _bHasButtonN || _bHasButtonR || _bHasDipSwitch ||
+                        _bHasCmd || _bHasCommand || _bHasRaw || _bHasValue || _bHasData ||_bHasCode || _bHasButton || _bHasButton01 || _bHasButtonN || _bHasButtonR || _bHasDipSwitch ||
                         _bHasPower1 || _bHasPower2 || _bHasPower3 || _bHasEnergy ||
                         _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 || ${#_sHasPct} )) ; then
                 [[ $protocol    ]] && _name=${aProtocols["$protocol"]:-$model} || _name=$model # fallback
@@ -1674,6 +1676,7 @@ do
                 ((_bHasBatteryOKVal)) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Percentage"   .battery_ok    batteryVal
                 (( _bHasBatteryV   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Voltage"   .battery_V    voltage
                 (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       .cmd      cmd
+                (( _bHasRaw        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Raw"       .raw      raw
                 (( _bHasPower1     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Power1"    .power1_W  power
                 (( _bHasPower2     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Power2"    .power2_W  power
                 (( _bHasPower3     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Power3"    .power3_W  power
