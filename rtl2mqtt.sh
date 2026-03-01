@@ -373,7 +373,7 @@ cHassAnnounce() {
     # 'volatile_organic_compounds_parts', 'voltage', 'volume', 'volume_storage', 'volume_flow_rate', 'water', 'weight', 'wind_direction', 
     # 'wind_speed' for dictionary value @ data['device_class']
 
-    _dev_class=$6 ; _payload_on="" ; _payload_off="" ;
+    _dev_class=$6 ; _payload_on="" ; _payload_off="" ; _off_delay=""
     case "$_dev_class" in
         temperature*) _icon="thermometer"   ; _unit="°C"    ; _dev_class="temperature" ;; # _unit="\u00b0C"
         dewpoint) _icon="thermometer"       ; _unit="\u00b0C"   ; _dev_class="temperature" ;; 
@@ -393,7 +393,7 @@ cHassAnnounce() {
 		signal_strength) _icon="signal"     ; _unit="dB"	    ;;
         switch)     _icon="toggle-switch"   ; _component=binary_sensor ; _dev_class=switch ;;
         motion)     _icon="motion-sensor"   ; _component=binary_sensor ;;
-        button01)   _icon="gesture-tap"     ; _component=binary_sensor ; _dev_class="" ; _payload_on=1 ; _payload_off=0 ;;
+        button01)   _icon="gesture-tap"     ; _component=binary_sensor ; _dev_class="" ; _payload_on=1 ; _payload_off=0 ; _off_delay=3 ;;
         button)     _icon="gesture-tap-button" ; _component=binary_sensor ;;
         buttonN )   _icon="keyboard"        ; _unit="#"    ; _state_class=""  ; _dev_class="" 	;;
         dipswitch)  _icon="dip-switch" ;;
@@ -427,7 +427,8 @@ cHassAnnounce() {
     local _topic="${sHassPrefix}/$_component/${1///}${_configtopicpart}$_jsonpath_red$_payload_off$_payload_on/config"  # e.g. homeassistant/sensor/rtl433bresser3ch109/{temperature,humidity}/config
           _configtopicpart="${_configtopicpart^}" # ... capitalize first letter for readability
     local _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aProtocols[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
-    local _msg="*name*:*$_channelname*,*state_topic*:*$_sensortopic*,$_device$_dev_class${_payload_on:+,*payload_on*:$_payload_on}${_payload_off:+,*payload_off*:$_payload_off}"
+    local _msg="*name*:*$_channelname*,*state_topic*:*$_sensortopic*,$_device$_dev_class"
+            _msg="$_msg${_payload_on:+,*payload_on*:$_payload_on}${_payload_off:+,*payload_off*:$_payload_off}${_off_delay:+,*off_delay*:$_off_delay}"
             _msg="$_msg,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit}${_value_template_str}${_command_topic_str}$_icon${_state_class:+,*state_class*:*$_state_class*}"
           # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
           # _msg="$_msg,*json_attributes_topic*:*$_sensortopic*" # STILL TO DEBUG
