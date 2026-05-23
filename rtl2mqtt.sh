@@ -1,7 +1,7 @@
 #!/bin/bash
 # shellcheck shell=bash
 
-# rtl2mqtt reads events from a RTL433 SDR and forwards them to a MQTT broker as enhanced JSON messages 
+# rtl2mqtt reads events from a RTL433 SDR and forwards them to a MQTT broker as enhanced JSON messages
 
 # Enhanced and revamped for many new features, verboseness and flexibility by "sheilbronn"
 # (inspired by work from "IT-Berater" and M. Verleun)
@@ -11,10 +11,10 @@ set -o noglob     # file name globbing is neither wanted nor needed (for securit
 set -o noclobber  # also disabled for security reasons
 shopt -s assoc_expand_once # might lessen injection risks in bash 5.2+, FIXME: to be verified on bash 5.2
 shopt -s expand_aliases    # expand aliases in non-interactive shells, too
-busybox awk '{}' 1</dev/null 2>/dev/null && alias awk="busybox awk" # busybox awk is more efficient than other awk's (us if available)
+busybox awk '{}' 1</dev/null 2>/dev/null && alias awk="busybox awk" # busybox awk is more efficient than other awk's (use if available)
 e1()  { echo 1 ; }
 
-# When extending this script: keep in mind possible attacks from the RF enviroment, e.g. a denial of service :
+# When extending this script: keep in mind possible attacks from the RF environment, e.g. a denial of service :
 # a) DoS: Many signals per second > should fail gracefully by not being able to process them all
 # b) DoS: Many (fake) sensors introduced (protocols * possible IDs) > arrays will become huge || inboxes for HASS announcements overflows
 #    Simple fix: After 9999 HASS announcements recall all HASS announcements (FIXME), reset all arrays (FIXME'd for all arrays)
@@ -170,7 +170,7 @@ cJoin() { # join all arguments with a space, but remove any double spaces and an
 # cPid()  { set -x ; printf $BASHPID ; } # get a current PID, support debugging/counting/optimizing number of processes started in within the loop
 cPidDelta() { cX ; _n=$(printf %s "$BASHPID" ) ; (( _n=_n - ${_beginPid:=$_n} )) ; dbg PIDDELTA "$1: $_n ($_beginPid) "  ":$data:" ; _beginPid=$(( _beginPid + 1 )) ; nPidDelta=$_n ; }
 cPidDelta() { : ; }
-cIfJSONNumber() { cX ; [[ $1 =~ $sJsonNumPattern ]] && echo "$1" ; } # FIXME: superflous ?
+cIfJSONNumber() { cX ; [[ $1 =~ $sJsonNumPattern ]] && echo "$1" ; } # FIXME: superfluous ?
 # XPREP; cIfJSONNumber 99 && echo ok ; cIfJSONNumber 10.4 && echo ok ; echo "${BASH_REMATCH[0]}"" ; cIfJSONNumber 10.4x && echo nok ; echo ${BASH_REMATCH[0]} ; XEXIT
 cMult10() { cX ; local v=${1/#-./-0.} ; v=${v/#./0.} ; [[ ${v/#./0.} =~ ^([-]?)(0|[1-9][0-9]*)\.([0-9])([0-9]*)$ ]] && { echo "${BASH_REMATCH[1]}${BASH_REMATCH[2]#0}${BASH_REMATCH[3]}" ; } || echo $(( "$1" * 10 )) || return 1 ; true ; }
 # XPREP; cMult10 -1.16 ; cMult10 -0.800 ; cMult10 1.234 || echo nok ; cMult10 -3.234 ; cMult10 66 ; cMult10 .900 ; cMult10 -.3 ; echo $(( "$(cMult10 "$(cMult10 "$(cMult10 1012.55)" )" )" / 3386 )) ; XEXIT 
@@ -355,7 +355,7 @@ cHassAnnounce() {
  	local _devid=${_topicpart##*/} # "$( basename "$_topicpart" )"
 	local _command_topic_str="$( [[ $3 != $_topicpart ]] && printf ",*cmd_t*:*~/set*" )"  # determined by suffix ".../set"
 
-    local _dev_class=${6#none} # dont wont "none" as string for dev_class
+    local _dev_class=${6#none} # don't want "none" as string for dev_class
 	local _state_class=\: # see https://developers.home-assistant.io/docs/core/entity/sensor/#available-state-classes
     local _component=sensor # default
     local _jsonpath="${5//value_json.}"
@@ -373,7 +373,7 @@ cHassAnnounce() {
     if [[ $_dev_class ]] ; then
         local _channelname="$_devname ${_dev_class^}"
     else
-        local _channelname="$_devname $4" # take something meaningfull
+        local _channelname="$_devname $4" # take something meaningful
     fi
     local _sensortopic="${1:+$1/}$_topicpart"
 	# local *friendly_name*:*${2:+$2 }$4*,
@@ -534,7 +534,7 @@ cAddJsonKeyVal() {  # cAddJsonKeyVal [ -b "beforekey" ] [ -n ] "key" "val" "json
         [[ $_val =~ ^[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?$ || $_val == null ]] || _val="$S$_val$S" # surround numeric _val by double quotes if not-a-number
         PAIR="$S$_key$S:$_val" # the pair to insert, e.g. "temperature":25 or "temperature":"25"
         if [[ $_d =~ (.*[{,][[:space:]]*$S$_key$S[[:space:]]*:[[:space:]]*)($S[^\$S]*$S|[+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)(.*)$ ]] ; then
-            : replace val # FIXME: replacing a val not yet fully implemented amd tested
+            : replace val # FIXME: replacing a val not yet fully implemented and tested
             _d="${BASH_REMATCH[1]}$_val${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
         elif [[ $_d =~ ^\{[[:space:]]*\}$ ]] ; then
             : insert into empty object
@@ -1054,7 +1054,7 @@ if [[ $fReplayfile ]]; then # for both file as well as MQTT...
     sBand="999"
     _band=${fReplayfile##*/} ; _band=${_band%%_*} # if a numeric sBand is the first part of the filename, e.g. 433 in 433_BresserCH1_...
     [[ $_band =~ ^[0-9]+$ ]] && sBand=$_band
-    # build grep expression to exlude all protocols in aExcludes
+    # build grep expression to exclude all protocols in aExcludes
     for p in "${aExcludes[@]}" ; do sProtExcludes+="|$p" ; done
     sProtExcludes=${sProtExcludes#|} # remove leading pipe char
     dbg2 EXCLUDES "${sProtExcludes//|/,}"
@@ -1159,14 +1159,12 @@ elif [[ $fReplayfile ]] ; then
                     sModel=${aTopic[1]}
                     sChannelOrId=${aTopic[2]}
                 fi
-                if cHasJsonKey sensor_id ; then
-                    sModel="$(cExtractJsonVal sensor_id)"
-                fi
+                cHasJsonKey sensor_id && sModel="$(cExtractJsonVal sensor_id)"
                 cAddJsonKeyVal model "${sModel:-UNKNOWN}"
                 cAddJsonKeyVal BAND "${sBand:-null}" 
                 # dbg DATAF "$data"
             else
-                : ! cHasJsonKey BAND && cAddJsonKeyVal BAND "${sBand:-null}"
+                : ! cHasJsonKey BAND && : cAddJsonKeyVal BAND "${sBand:-null}"
             fi
             dbg DATACOFIN "$data"
             echo "$data" # ; echo "EMITTING: $data" 1>&2
@@ -1431,9 +1429,8 @@ do
         fi
         [[ ! $id ]] && id=$(cExtractJsonVal address) # address might be an unique alternative to id under some circumstances, still to TEST ! (FIXME)
         id=${id//[^A-Za-z0-9_]} # remove any special (e.g. arithmetic) characters to prevent arbitrary command execution vulnerability in indexes for arrays
-        channel=${channel//[^A-Za-z0-9_]} # sanitize too
+        channel=${channel//[^A-Za-z0-9_]} # sanitize channel too
         if (( bPreferIdOverChannel )) ; then
-
             ident=${id:-$channel} # prefer "id" (or "address") over "channel" as the identifier for the sensor instance.
             model_ident=${model}${ident:+_$ident}
             model_ident_base="$model_ident"
@@ -1570,7 +1567,7 @@ do
         _bHasUVI=$(       [[ $(cExtractJsonVal -p uvi          ) ]] && e1 ) 
         _battok=$(             cExtractJsonVal -p battery_ok)
         _bHasBatteryOK=$( [[ $_battok =~ ^[01]$ ]] && e1 ) # 0=LOW;1=HIGH from https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
-        _bHasBatteryOKVal=$( [[ $_battok =~ ^[01].[0-9]+$ ]] && e1 ) # or some value in between
+        _bHasBatteryOKVal=$( [[ $_battok =~ ^[01]\\.[0-9]+$ ]] && e1 ) # or some value in between
         _bHasBatteryV=$(  [[ $(cExtractJsonVal -n battery_V)  ]] && e1 ) # voltage, also battery_mV
         _bHasPower1=$(    [[ $(cExtractJsonVal -n power1_W)   ]] && e1 ) # power in W, also power_mW
         _bHasPower2=$(    [[ $(cExtractJsonVal -n power2_W)   ]] && e1 ) # power in W, also power_mW
@@ -1712,7 +1709,7 @@ do
         fi
 
         if (( _bAnnounceReady )) ; then # deal with HASS announcement need
-            : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_sHasRain,$vPressure_kPa,$_bHasCmd,$_bHasRaw,$_bHasData,$_bHasCode,$_bHasButton,$_bHasButton01,$bHasButtonN,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10,$_sHasPct"
+            : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_sHasRain,$vPressure_kPa,$_bHasCmd,$_bHasRaw,$_bHasData,$_bHasCode,$_bHasButton,$_bHasButton01,$_bHasButtonN,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10,$_sHasPct"
             if (( ${#vTemperature} || ${#_sHasRain} || _bHasWindMaxMs || _bHasWindAvgKmh || _bHasWindAvgMs || ${#vPressure_kPa} || 
                         _bHasCmd || _bHasCommand || _bHasRaw || _bHasValue || _bHasData ||_bHasCode || _bHasButton || _bHasButton01 || _bHasButtonN || _bHasButtonR || _bHasDipSwitch ||
                         _bHasPower1 || _bHasPower2 || _bHasPower3 || _bHasEnergy ||
