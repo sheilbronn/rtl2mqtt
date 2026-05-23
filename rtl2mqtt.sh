@@ -671,7 +671,7 @@ cExtractJsonVal() { # avoid spawning jq for performance reasons
         if [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*\"([^\"]*)\"[[:space:]]*[,}] ]] ||  # string ...
            [[ ${2:-$data} =~ [,{][[:space:]]*(\"$1\")[[:space:]]*:[[:space:]]*([+-]?(0|[1-9][0-9]*)(\.[0-9]+)?)[[:space:]]*[,}] ]] ; then # ... or number 
             _v=${BASH_REMATCH[2]}
-            if [[ $_v =~ $sJsonNumPattern || ! $_bNum ]] || [[ ! $_v =~ ^- || ! $_bPos ]] ; then
+            if [[ $_v =~ $sJsonNumPattern || ! $_bNum ]] && [[ ! $_v =~ ^- || ! $_bPos ]] ; then
                 echo "$_v"
             fi
             # will implicitly also return false since last command is the regex match, which will fail if the value is not a number or not positive when required
@@ -887,7 +887,7 @@ do
             hMqttSource=${OPTARG//:*}
             if [[ $hMqttSource == "-" ]] ; then
                 hMqttSource=localhost
-            elif [[ $hMqttSource ]] ; then
+            elif [[ ! $hMqttSource ]] ; then
                 hMqttSource=test.mosquitto.org
             fi            
             sMqttTopic=${OPTARG##"${hMqtt[0]}"}
@@ -1408,7 +1408,7 @@ do
 
     # cPidDelta 1ST
 
-    _time=(cExtractJsonVal time)  # ;  _time="2021-11-01 03:05:07"
+    _time=$(cExtractJsonVal time)  # ;  _time="2021-11-01 03:05:07"
     # declare +i n # avoid octal interpretation of any leading zeroes
     # cPidDelta AAA
     n=${_time:(-8):2} && nHour=${n#0} 
@@ -1461,10 +1461,18 @@ do
                     fi
                 fi
             fi
-        else # no channel, fallback to id if any
+        elif [[ $id ]] ; then # fallback to id if any
             ident=${id}
-            _delkeys+=" id" # but remove the id from the JSON
-            model_ident=${model}${id:+_$id}
+            model_ident=${model}${ident:+_$ident}
+            model_ident_base="$model_ident"
+            if ! [[ ${aPrevId[$model_ident]} =~ "$id," ]] ; then # newly discovered id
+                aPrevId[$model_ident]="${aPrevId[$model_ident]}$id,"
+            else
+                _delkeys+=" id" # remove the known id from the JSON
+            fi
+        else # no channel, no id
+            ident=""
+            model_ident=${model}${ident:+_$ident}
             model_ident_base="$model_ident"
         fi
     fi
@@ -1673,7 +1681,7 @@ do
         _IsDiff=$(  ! cEqualJson "$data" "$sReadPrev"  "$_ignore_keys" > /dev/null && e1 ) # determine whether any raw data has changed, ignoring non-important values
         _IsDiff2=$( ! cEqualJson "$data" "$sReadPrevS" "$_ignore_keys" > /dev/null && e1 ) # determine whether raw data has changed compared to second last readings
         _IsDiff3=$( (( _IsDiff && _IsDiff2 )) && 
-                    ! cEqualJson "$sReadPrev" "$sReadPrevS" "$_i_ignore_keys" > /dev/null && e1 ) # FIXME: This could be optimized by caching values
+                    ! cEqualJson "$sReadPrev" "$sReadPrevS" "$_ignore_keys" > /dev/null && e1 ) # FIXME: This could be optimized by caching values
         dbg ISDIFF "_IsDiff=$_IsDiff/$_IsDiff2/$_IsDiff2, PREV=$sReadPrev, DATA=$data"
         if (( _IsDiff || bMoreVerbose )) ; then
             if (( _IsDiff2 )) ; then
@@ -1717,57 +1725,58 @@ do
                 [[ $protocol    ]] && _name=${aProtocols["$protocol"]:-$model} || _name=$model # fallback
                 # if the sensor has any one of the above attributes, announce all the attributes it has ...:
                 # see also https://github.com/merbanan/rtl_433/blob/master/docs/DATA_FORMAT.md
-                [[ $vTemperature ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Temp"  ".temperature"   temperature # ".temperature|float|round(1)"
+                _modeln="${model:-GenericDevice} ${sBand}Mhz" # for the MQTT topic
+                [[ $vTemperature ]]  && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Temp"  ".temperature"   temperature # ".temperature|float|round(1)"
                 [[ $vHumidity    ]]  && {
-                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Humid"  ".humidity"  humidity
+                    cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Humid"  ".humidity"  humidity
                 }
                 if [[ $vTemperature  && $vHumidity && $bRewrite ]] || cHasJsonKey "dewpoint" ; then # announce (possibly calculated) dewpoint, too
-                    cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Dewpoint"  ".dewpoint"   dewpoint
+                    cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Dewpoint"  ".dewpoint"   dewpoint
                 fi
-                cHasJsonKey setpoint_C && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }TempTarget" .setpoint_C   setpoint
-                (( ${#_sHasRain} )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RainMM"        .$_sHasRain   $_sHasRain
-                (( _bHasWindAvgKmh )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindAvgKmh"  .wind_avg_km_h wind_avg_km_h
-                (( _bHasWindAvgMs  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindAvgMs"   .wind_avg_m_s wind_avg_m_s
-                (( _bHasWindMaxMs  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindMaxMs"   .wind_max_m_s wind_max_m_s
-                (( _bHasWindDirDeg )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }WindDirDeg"  .wind_dir_deg wind_dir_deg
-                (( _bHasUVI        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }UV Index"    .uvi          uvi
-                [[ $vPressure_kPa  ]] && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }PressureKPa" .pressure_kPa pressure_kPa
-                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }BatteryOK"   .battery_ok   battery_ok # https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
-                ((_bHasBatteryOKVal)) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Percentage"   .battery_ok    batteryVal
-                (( _bHasBatteryV   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Battery Voltage"   .battery_V    voltage
-                (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Cmd"       .cmd      cmd
-                (( _bHasRaw        )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Raw"       .raw      raw
-                (( _bHasPower1     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Power1"    .power1_W  power
-                (( _bHasPower2     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Power2"    .power2_W  power
-                (( _bHasPower3     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Power3"    .power3_W  power
-                (( _bHasEnergy     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Energy"    .energy_kWh energy
-                (( _bHasCommand    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Command"   .command  command
-                (( _bHasValue      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Value"     .value    value
-                (( _bHasData       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Data"      .data     data
-                (( _bHasRssi && bMoreVerbose)) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }RSSI"  .rssi   signal_strength # "value_json.rssi|float|round(2)"
-                (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Counter"   .counter   counter
-                (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Fine Parts"  .pm2_5_ug_m3 density25
-                (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Course Parts"  .estimated_pm10_0_ug_m3 density10
-                (( _bHasCode       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Code"       .code     code
-                (( _bHasButton     )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Button"     .button   button
-                (( _bHasButton01   )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Button01"   .button   button01
-                (( _bHasButtonN    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonN"    .buttonN  buttonN
-                (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }ButtonR"    .buttonr  button
-                (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }DipSwitch"  .dipswitch   dipswitch
-                (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }NewBatttery" .newbattery newbattery
-                (( _bHasZone       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Zone"       .zone    zone
-                (( _bHasUnit       )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Unit"       .unit    unit
-                (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Learn"      .learn   learn
-                (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Channel"    .channel channel
-                (( _bHasControl    )) && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Control"    .control control
-                [[ $_sHasPct ]]       && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }${_sHasPct}" ".$_sHasPct" "$_sHasPct"
-                #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${model:-GenericDevice} ${sBand}Mhz" "$topicext" "${ident:+($ident) }Freq"     ".FREQ" frequency
+                cHasJsonKey setpoint_C && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }TempTarget" .setpoint_C   setpoint
+                (( ${#_sHasRain} ))   && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }RainMM"        .$_sHasRain   $_sHasRain
+                (( _bHasWindAvgKmh )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }WindAvgKmh"  .wind_avg_km_h wind_avg_km_h
+                (( _bHasWindAvgMs  )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }WindAvgMs"   .wind_avg_m_s wind_avg_m_s
+                (( _bHasWindMaxMs  )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }WindMaxMs"   .wind_max_m_s wind_max_m_s
+                (( _bHasWindDirDeg )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }WindDirDeg"  .wind_dir_deg wind_dir_deg
+                (( _bHasUVI        )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }UV Index"    .uvi          uvi
+                [[ $vPressure_kPa  ]] && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }PressureKPa" .pressure_kPa pressure_kPa
+                (( _bHasBatteryOK  )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }BatteryOK"   .battery_ok   battery_ok # https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
+                ((_bHasBatteryOKVal)) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Battery Percentage"   .battery_ok    batteryVal
+                (( _bHasBatteryV   )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Battery Voltage"   .battery_V    voltage
+                (( _bHasCmd        )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Cmd"       .cmd      cmd
+                (( _bHasRaw        )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Raw"       .raw      raw
+                (( _bHasPower1     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Power1"    .power1_W  power
+                (( _bHasPower2     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Power2"    .power2_W  power
+                (( _bHasPower3     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Power3"    .power3_W  power
+                (( _bHasEnergy     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Energy"    .energy_kWh energy
+                (( _bHasCommand    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Command"   .command  command
+                (( _bHasValue      )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Value"     .value    value
+                (( _bHasData       )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Data"      .data     data
+                (( _bHasRssi && bMoreVerbose)) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }RSSI"  .rssi   signal_strength # "value_json.rssi|float|round(2)"
+                (( _bHasCounter    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Counter"   .counter   counter
+                (( _bHasParts25    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Fine Parts"  .pm2_5_ug_m3 density25
+                (( _bHasParts10    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Coarse Parts" .estimated_pm10_0_ug_m3 density10
+                (( _bHasCode       )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Code"       .code     code
+                (( _bHasButton     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Button"     .button   button
+                (( _bHasButton01   )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Button01"   .button   button01
+                (( _bHasButtonN    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }ButtonN"    .buttonN  buttonN
+                (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }ButtonR"    .buttonr  button
+                (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }DipSwitch"  .dipswitch   dipswitch
+                (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }NewBattery" .newbattery newbattery
+                (( _bHasZone       )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Zone"       .zone    zone
+                (( _bHasUnit       )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Unit"       .unit    unit
+                (( _bHasLearn      )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Learn"      .learn   learn
+                (( _bHasChannel    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Channel"    .channel channel
+                (( _bHasControl    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Control"    .control control
+                [[ $_sHasPct ]]       && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }${_sHasPct}" ".$_sHasPct" "$_sHasPct"
+                #   [[ $sBand ]]  && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Freq"     ".FREQ" frequency
                 if cMqttLog "{*event*:*debug*,*message*:*MQTT announce: $model_ident ($_name)*,*announced_count*:$((nAnnouncedCount+1))}" ; then
                     nAnnouncedCount+=1
                     cLogFile "" "announced=$nAnnouncedCount: $model_ident ($_name)"
                     sLastAnnounced=$model_ident
                     cMqttState
-                    aAnnounced[$model_ident]=nTimeStamp   # took place, therefor dont reconsider for another announcement
+                    aAnnounced[$model_ident]=nTimeStamp   # took place, therefore don't reconsider for another announcement
                     sleep 1 # give any MQTT readers an extra second to digest the announcement
                 else
                     : announcement had failed, will be retried again next time
