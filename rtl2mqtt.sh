@@ -25,7 +25,7 @@ e1()  { echo 1 ; }
 alias cX="local - && set +x" # stop any verbosity locally
 [[ $1 == "-x" ]] && alias cX='local - && set +x && echo == ${1:+1=$1}${2:+ 2=$2} === 1>&2' # used when debugging
 alias sX="set -x"
-XPREP() { data="$1" ; set -x ; }
+XPREP() { data="$1" ; echo DATA: "$data" 1>&2 ; set -x ; } # prepare the $data for debugging purposes, e.g. with the content of a JSON message, and output it to stderr
 alias XEXIT='set +x ; [[ "$data" ]] && echo DATA="$data" 1>&2 ; trap - EXIT ; exit' # stop verbosity and exit with the code given as argument, but first output the content of $data for debugging purposes
 # XPREP '{"one":1}' ; data="..." ; XEXIT 
 # XEXIT() { set +x ; [[ "$data" ]] && echo DATA="$data" 1>&2 ; exit $1 ; }
@@ -33,7 +33,7 @@ alias XEXIT='set +x ; [[ "$data" ]] && echo DATA="$data" 1>&2 ; trap - EXIT ; ex
 GREPC() { sed 's/^ *//' | grep -E --color=auto "$@" ; } # grep with color to stderr
 alias ifVerbose="((bVerbose))"
 sName=${0##*/} && sName=${sName%.sh}
-sMID=$(basename "${sName// }" .sh )
+sMID=$( basename "${sName// }" .sh )
 sID=$sMID
 rtl2mqtt_optfile="$([ -r "${XDG_CONFIG_HOME:=$HOME/.config}/$sName" ] && echo "$XDG_CONFIG_HOME/$sName" || echo "$HOME/.$sName" )" # ~/.config/rtl2mqtt or ~/.rtl2mqtt
 cDate() { cX ; a=$1 ; shift ; printf "%($a)T" "$@"; } # avoid a separate process to get the date
@@ -276,8 +276,8 @@ cMapFreqToBand() {
     }
     # XPREP; cMapFreqToBand 868300000 ; XEXIT
 
-cCheckExit() { # beautify $data and output it, then exit. For debugging purposes.
-    json_pp <<< "$data" # "${@:-$data}"
+cCheckExit() { # beautify $data and output it, then exit. Only for debugging purposes.
+    command -v jq && jq . <<< "$data" # "${@:-$data}"  1>&2 || echo "$data" 1>&2
     exit 0
   }
     # XPREP '{"one":1}' ; cCheckExit # '{"two":1}' 
@@ -304,7 +304,7 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
     if (( $# > 1)) ; then
         _topic=$1
         [[ ! $1 =~ / || $1 =~ ^/ ]] &&  _topic="$sRtlPrefix/bridge/${1#/}" # add the bridge prefix, if no slash contained or no slash at beginning
-        shift # reduce the arguments to the message only
+        shift # reduce the arguments to the MQTT message only
         [[ $1 == log ]] && cLogMore "MQTTLOG: $1 $2"
     fi
     _topic=${_topic/#\//$basetopic} # add the base topic, if not already there (= if _topic starts with a slash)
@@ -350,6 +350,7 @@ cMqttState() {	# log the state of the rtl bridge
 # cHassAnnounce "ffmuc" "$ad_devname"  "$node/publi../localcl.." "Readable Name"  ".count"   "$icontype"
 
 cHassAnnounce() {
+    dbg2 HASS "\$1=$1 \$2=$2 \$3=$3 \$4=$4 \$5=$5 \$6=$6"
 	local -
     local _topicpart=${3%/set} # if $3 ends in /set it is settable, but remove /set from state topic
  	local _devid=${_topicpart##*/} # "$( basename "$_topicpart" )"
@@ -360,7 +361,13 @@ cHassAnnounce() {
     local _component=sensor # default
     local _jsonpath="${5//value_json.}"
     local _jsonpath_red="${_jsonpath//[^a-zA-Z0-9]/}" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
-    local _devname="$2 ${_devid^}"
+    # if $2 doesnt start with $_devid, then append it to $2 for better readability, but only if $2 is not empty and not already containing $_devid
+    if [[ $2 && $2 == $_devid* ]] ; then
+        _devname="$2"
+    else
+        _devname="${2:+$2 }$_devid"
+    fi
+    # local _devname="$2 ${_devid^}"
     local _icon=""  # mdi icons: https://pictogrammers.github.io/@mdi/font/7.3.67
 
     [[ $4 == START ]] && aHassComponents=() && return 0 # reset them
@@ -390,20 +397,10 @@ cHassAnnounce() {
     # battery, battery_charging, carbon_monoxide, cold, connectivity, door, garage_door, gas, heat, light, lock, moisture, motion, 
     # moving, occupancy, opening, plug, power, presence, problem, running, safety, smoke, sound, tamper, update, vibration, window
 
-    # FIXME: 2025-09-21 13:34:36.623 [WARN ]  HomeAssistant discover error: invalid configuration of thing rtlbridgestatestartdate component sensor: 
-    # Failed to process discovery config for sensor: MultipleInvalid: expected SensorDeviceClass or one of 
-    # 'date', 'enum', 'timestamp', 'apparent_power', 'aqi', 'area', 'atmospheric_pressure', 'battery', 'blood_glucose_concentration', 
-    # 'carbon_monoxide', 'carbon_dioxide', 'conductivity', 'current', 'data_rate', 'data_size', 'distance', 'duration', 'energy', 
-    # 'energy_distance', 'energy_storage', 'frequency', 'gas', 'humidity', 'illuminance', 'irradiance', 'moisture', 'monetary', 'nitrogen_dioxide', 
-    # 'nitrogen_monoxide', 'nitrous_oxide', 'ozone', 'ph', 'pm1', 'pm10', 'pm25', 'power_factor', 'power', 'precipitation', 'precipitation_intensity',
-    # 'pressure', 'reactive_power', 'signal_strength', 'sound_pressure', 'speed', 'sulphur_dioxide', 'temperature', 'volatile_organic_compounds', 
-    # 'volatile_organic_compounds_parts', 'voltage', 'volume', 'volume_storage', 'volume_flow_rate', 'water', 'weight', 'wind_direction', 
-    # 'wind_speed' for dictionary value @ data['device_class']
-
-    _dev_class=$6 ; _payload_on="" ; _payload_off="" ; _off_delay=""
+    local _dev_class="$6"  _payload_on _payload_off _off_delay
     case "$_dev_class" in
-        temperature*) _icon="thermometer"   ; _unit="°C"    ; _dev_class="temperature" ;; # _unit="\u00b0C"
-        dewpoint) _icon="thermometer"       ; _unit="\u00b0C"   ; _dev_class="temperature" ;; 
+        temperature*) _icon="thermometer"   ; _unit="°C"        ; _dev_class="temperature" ;; # _unit="\u00b0C"
+        dewpoint)   _icon="thermometer"     ; _unit="\u00b0C"   ; _dev_class="temperature" ;; 
         setpoint*)	_icon="thermometer"     ; _unit="%"	        ;;
         humidity)	_icon="water-percent"   ; _unit="%"	        ;;
         rain_*m)	_icon="weather-rainy"   ; _unit=${_dev_class#rain_} ; _state_class="total_increasing" ; _dev_class="precipitation" ;;
@@ -419,13 +416,13 @@ cHassAnnounce() {
 		signal_strength) _icon="signal"     ; _unit="dB"	    ;;
         switch)     _icon="toggle-switch"   ; _component=binary_sensor ; _dev_class=switch ;;
         motion)     _icon="motion-sensor"   ; _component=binary_sensor ;;
-        button01)   _icon="gesture-tap"     ; _component=binary_sensor ; _dev_class="" ; _payload_on=1 ; _payload_off=0 ; _off_delay=3 ;;
+        button01)   _icon="gesture-tap"     ; _component=binary_sensor ; _dev_class="" ; _payload_on=1 ; _off_delay=3 ;;
         button)     _icon="gesture-tap-button" ; _component=binary_sensor ;;
-        buttonN )   _icon="keyboard"        ; _unit="#"    ; _state_class=""  ; _dev_class="" 	;;
+        buttonCode) _icon="keyboard"        ; _state_class=""  ; _dev_class="" 	;;
         dipswitch)  _icon="dip-switch" ;;
         code)       _icon="lock" ;;
-        newbattery) _icon="battery-check"   ; _unit="#"    ; _state_class=""  ;;
-      # battery*)     _unit="B*" ;;  # 1 for "OK" and 0 for "LOW".
+      # newbattery) _icon=""   ; _unit="#"    ; _state_class=""  ;;
+      # battery*)   _unit="B*" ;;  # 1 for "OK" and 0 for "LOW".
         zone)       _icon="vector-intersection" ; _unit="#" ; _dev_class="" ;;
         control)    _icon="cog-outline"     ; _dev_class="" ;; # e.g. "Markisol 433Mhz (Markisol, E-Motion, BOFU, Rollerhouse, BF-30x, BF-415 curtain remote) (191)
         unit)       _icon="group"           ; _unit="#"     ;;
@@ -435,7 +432,8 @@ cHassAnnounce() {
         power)      _icon="power-socket"    ; _unit="W"     ;;
         energy)     _icon="counter"         ; _unit="kWh"   ; _state_class="total" ;;
         battery|batteryVal)	_icon=""        ; _unit="#"	    ; _dev_class=battery ;;
-        battery_ok) _icon=""                ; _component=binary_sensor ; _dev_class=battery ; _payload_on=0 ; _payload_off=1 ;;
+        newbattery) _icon="battery-check"   ; _component=binary_sensor ; _dev_class=""      ; _payload_on=1 ;;
+        battery_ok) _icon=""                ; _component=binary_sensor ; _dev_class=battery ; _payload_on=0 ;;
         cmd)        _icon="hammer"          ; _component=sensor ; _unit="#"; _state_class="" ; _dev_class=""  ;; # e.g. cmd=62
         # cmd)        _icon="command"       ; _state_class="" ;; # e.g. cmd=62
         raw)        _icon="sensor"          ; _dev_class=""  ;;
@@ -443,18 +441,22 @@ cHassAnnounce() {
 		none)		_icon="" ; _dev_class="" ;;
         *)          cLogMore "Notice: special icon and/or unit not defined for '$6'"
     esac
+    [[ $_payload_on ]] && _payload_off=$(( 1 - _payload_on )) # if payload_on is 1, then payload_off is 0, and vice versa
     _icon=${_icon:+,*icon*:*mdi:$_icon*}
     if [[ $_state_class == : ]] ; then
          [[ $_unit && $_unit != "#" ]] && _state_class="measurement" || _state_class=""
     fi
-    set +x
-    _unit=${_unit:+,*unit_of_measurement*:*$_unit*}
+    if [[ $_unit ]] ; then
+        [[ $_unit != null ]] && _unit="*${_unit}*"
+        _unit=",*unit_of_measurement*:$_unit"
+    fi
+    
     _dev_class_l=${_dev_class:+,*device_class*:*$_dev_class*}
     # dbg DEV_CLASS _dev_class=$_dev_class_l
     
     #EXAMPLE: "humidity": { "platform": "sensor", "device_class": "humidity", "unit_of_measurement": "%", "value_template": "{{ value_json.humidity }}",
     # "unique_id": "weather_station_01_humidity","name": "Humidity"     },
-    local _cmp="*_dev_class*: { *platform*: *sensor*$_dev_class_l${_unit}${_value_template_str},*unique_id*:*${sID},*name*:*$_channelname*}"
+    local _cmp="*_dev_class*: { *platform*: *sensor*${_dev_class_l}${_unit}${_value_template_str},*unique_id*:*${sID},*name*:*$_channelname*}"
     aHassComponents+=("$_cmp")
  
     local _configtopicpart=${3,,}
@@ -463,8 +465,9 @@ cHassAnnounce() {
           _configtopicpart="${_configtopicpart^}" # ... also capitalize first letter for readability
     local _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aProtocols[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
     local _msg="*name*:*$_channelname*,*state_topic*:*$_sensortopic*,$_device$_dev_class_l"
-            _msg="$_msg${_payload_on:+,*payload_on*:$_payload_on}${_payload_off:+,*payload_off*:$_payload_off}${_off_delay:+,*off_delay*:$_off_delay}"
-            _msg="$_msg,*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*${_unit}${_value_template_str}${_command_topic_str}$_icon${_state_class:+,*state_class*:*$_state_class*}"
+          _msg="$_msg${_payload_on:+,*payload_on*:*$_payload_on*}${_payload_off:+,*payload_off*:*$_payload_off*}"
+          _msg="$_msg${_off_delay:+,*off_delay*:*$_off_delay*},*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*"
+          _msg="$_msg${_unit}${_value_template_str}${_command_topic_str}$_icon${_state_class:+,*state_class*:*$_state_class*}"
           # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
           # _msg="$_msg,*json_attributes_topic*:*$_sensortopic*" # STILL TO DEBUG
     aAnnouncedTopics[${model_ident:-OTHER}]="$_topic" # remember that we announced this topic
@@ -472,7 +475,8 @@ cHassAnnounce() {
     ifVerbose && (
         # export GREP_COLORS="mt=01;33:ms=01;33:mc=01;33:sl=:cx=:fn=35:ln=32:bn=32:se=36"
         export GREP_COLORS="$yellow"   # for the topic
-        echo "$_topic" "$_msg" | GREPC '^[^ ]*'  # |\{[^}]*}
+        GREPC '^[^ ]*' <<< "$_topic" # |\{[^}]*}
+        jq . <<< "{$(cExpandStarredString "$_msg")}" || echo "{$_msg}"
     )
     cMqttStarred "$_topic" "{$_msg}" -r
     return $?
@@ -572,7 +576,8 @@ cHasJsonKey() { # cHasJsonKey([-v] key [jsonstring]): simplified check to check 
     local S='"' && [[ ${2:-$data} =~ \{[[:space:]]*\* ]] && S='*' # apostrophe is either * or "
     [[ ${2:-$data} =~ [{,][[:space:]]*$S(${1//\./[a-zA-Z0-9]})$S[[:space:]]*: ]] || return 1 # return early if key not found
     local _k=${BASH_REMATCH[1]}
-    [[ $1 =~ \*|\[   ]] && echo "$_k" && return 0   # output the first found key only if multiple fits potentially possible
+    [[ ! $_k =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] && return 1 # also ensure a reduced character set for JSON keys
+    [[ $1  =~ \*|\[   ]] && echo "$_k" && return 0  # output the first found key, only if multiple fits potentially possible
     [[ $_key     ]] && echo "$_k"
     [[ $_verbose ]] && e1
     return 0
@@ -654,9 +659,11 @@ cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata or $d
  
 cComplexExtractJsonVal() {
     local -
-    cHasJsonKey "$1" && jq -r ".$1 // empty" <<< "${2:-$data}"
+    [[ $1 == . ]] || cHasJsonKey "$1" && jq -r --arg key "$1" '.[$key] // empty' <<< "${2:-$data}"
  }
     # XPREP '{"action":"good","battery":100}' ; cComplexExtractJsonVal action && echo yes ; cComplexExtractJsonVal notthere || echo no ; XEXIT
+    # XPREP '{"groupi":{"action":"good","battery":100},"battery":100}' ; cComplexExtractJsonVal groupi && echo yes ; cComplexExtractJsonVal notthere || echo no ; XEXIT
+    # XPREP '{"groupi":{"action":"good","battery":100},"battery":100}' ; cComplexExtractJsonVal . && echo yes ; XEXIT
 
 cExtractJsonVal() { # avoid spawning jq for performance reasons
     # $1 = -n => JSON value must be numeric
@@ -916,10 +923,14 @@ do
             rtl433_opts+=(-f 433.91M) #  -s 256k -f 433.92M for frequency 433... MhZ
         elif [[ $OPTARG =~ ^[1-9] ]] ; then # if the option start with a number, assume it's a frequency
             rtl433_opts+=(-f "$OPTARG")
+        elif [[ $OPTARG =~ ^http$ ]] ; then # 
+            dbg "INFO" "Interpreting -F http as a -F option to rtl_433"
+            rtl433_opts+=(-F "$OPTARG")
         else                             # interpret it as a -F option to rtl_433 otherwise
+            dbg "INFO" "Interpreting -F $OPTARG as a -F option to rtl_433, i.e. as a frequency to hop to (e.g. for a frequency hopper), instead of a base topic for MQTT (which is set with -t)"
             rtl433_opts+=(-F "$OPTARG")
         fi
-        basetopic="$sRtlPrefix/$OPTARG"
+        [[ $OPTARG =~ ^[0-9] ]] && basetopic="$sRtlPrefix/$OPTARG"
         nHopSecs=${nHopSecs:-61} # (60/2)+11 or 60+1 or 60+21 or 7, i.e. should be a proper coprime to 60sec
         nStatsSec=$((10*(nHopSecs-1)))
         ;;
@@ -964,7 +975,7 @@ do
         ;;
     p)  bAnnounceHass=1
         ;;
-    c)  nMinOccurences=$OPTARG # MQTT announcements only after at least $nMinOccurences occurences... (-1 for none)
+    c)  nMinOccurences=$OPTARG # MQTT announcements only after at least $nMinOccurences occurences... (0 for none)
         (( nMinOccurences <= 0 )) && bAnnounceHass=0
         ;;
     E)  nMinSecondsOther=$OPTARG # seconds before repeating any same (=unchanged equal) reading
@@ -1022,6 +1033,7 @@ done
 shift $((OPTIND-1))  # Discard all the options previously processed by getopts, any remaining options will be passed to mosquitto_pub further down on
 
 rtl433_opts+=( ${nHopSecs:+-H $nHopSecs -v} ${nStatsSec:+-M stats:1:$nStatsSec} )
+dbg RTL433OPTS "${rtl433_opts[*]}"
 sMeteoRoundTo=$( cMult10 "$sMeteoRoundTo" )
 ((bMoreVerbose)) && for KEY in "${!aMatchIDs[@]}"; do dbg2 WUPLOAD "aMatchIDs[$KEY] = ${aMatchIDs[$KEY]}" ; done
 
@@ -1137,9 +1149,16 @@ if [[ $fReplayfile =~ ^MQTT: ]] ; then
 elif [[ $fReplayfile == /dev/stdin ]] ; then
     exit 0 # doesn't work correctly, filtered out above at command line parsing
 elif [[ $fReplayfile ]] ; then
-    coproc COPROC ( 
+    coproc COPROC (
         sleep 2
         shopt -s extglob ; export IFS=' '
+
+        # try to save some data the file name, if needed later
+        IFS="_" read -r -a aTopic <<< "${fReplayfile##*/}" # .. split the filename, e.g. "433_IBIS-Beacon_5577"
+        sFnBand=${aTopic[0]}
+        sFnModel=${aTopic[1]}
+        sFnChannelOrId=${aTopic[2]}
+
         # XPREP; : fReplayfile=$fReplayfile 
         while read -t 2 -r line ; _rc=$? ; [[ $_rc == 0 ]] ; do 
             : "line $line" #  e.g.   103256 rtl/433/Ambientweather-F007TH/1 { "protocol":20,"id":44,"channel":1,"freq":433.903,"temperature":19,"humidity":62,"BAND":433,"HOUR":16,"NOTE":"changed"}
@@ -1153,20 +1172,18 @@ elif [[ $fReplayfile ]] ; then
                     sBand=${aTopic[1]}  # extract freq band from topic if non given in message
                     sModel=${aTopic[2]} # extract model from topic if non given in message
                 }
-                if ! [[ $sModel ]] ; then # if still not found ...
-                    IFS="_" read -r -a aTopic <<< "${fReplayfile##*/}" # .. try to determine from the filename, e.g. "433_IBIS-Beacon_5577"
-                    sBand=${aTopic[0]}
-                    sModel=${aTopic[1]}
-                    sChannelOrId=${aTopic[2]}
-                fi
+                [[ ! $sModel ]] && sModel="$sFnModel" # if not in topic, then try to get it from the file name
+                [[ ! $sBand ]] && sBand="$sFnBand"
                 cHasJsonKey sensor_id && sModel="$(cExtractJsonVal sensor_id)"
                 cAddJsonKeyVal model "${sModel:-UNKNOWN}"
                 cAddJsonKeyVal BAND "${sBand:-null}" 
                 # dbg DATAF "$data"
             else
                 : ! cHasJsonKey BAND && : cAddJsonKeyVal BAND "${sBand:-null}"
+                sModel="$(cExtractJsonVal model)"
             fi
-            dbg DATACOFIN "$data"
+            dbg REPLAYIN "$data"
+            ! cHasJsonKey id && ! cHasJsonKey channel && [[ $sFnChannelOrId ]] && cAddJsonKeyVal id "$sFnChannelOrId"
             echo "$data" # ; echo "EMITTING: $data" 1>&2
             sleep 2
         done < "$fReplayfile"
@@ -1394,8 +1411,11 @@ do
         nLastTuneMessage=$(cDate %s) # introduce a delay from 0 to to 1 second for reducing race conditions after a freq hop
         continue
     fi
-    ifVerbose && [[ $datacopy != $data ]] && echo "==========================================" && datacopy=$data
-    ifVerbose && GREP_COLORS=$yellow GREPC ':[^,}]*' <<< "${data// : /:}" # '"[a-zA-Z0-9_]*":'
+    ifVerbose && [[ $datacopy != "$data" ]] && echo "==========================================" && datacopy=$data
+    if ifVerbose ; then
+        # output it nicely, either as formatted JSON or colored with GREPC   
+        jq -c . <<< "$data" 1>/dev/null 2>&1 && jq -c . <<< "$data" || GREP_COLORS=$green GREPC ':[^,}]*' <<< "${data// : /:}"
+    fi
     data=${data//\" : /\":} # remove any space around (hopefully JSON-like) colons
     nReceivedCount+=1
 
@@ -1581,6 +1601,7 @@ do
         _bHasPower2=$(    [[ $(cExtractJsonVal -n power2_W)   ]] && e1 ) # power in W, also power_mW
         _bHasPower3=$(    [[ $(cExtractJsonVal -n power3_W)   ]] && e1 ) # power in W, also power_mW
         _bHasEnergy=$(    [[ $(cExtractJsonVal -p energy_kWh) ]] && e1 ) # energy in Wh, also energy_kWh
+        _bHasButtonCode=$( [[ $(cExtractJsonVal -p button_code) ]] && e1 ) # {"protocol":312, "model":"MIC6SC2-CarRemote", "encrypted":55555555, "button_code":0, "button_str":"?", "sequence":0}
         _bHasZone=$(   cHasJsonKey -v zone)    #   {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasUnit=$(   cHasJsonKey -v unit)    #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
         _bHasLearn=$(  cHasJsonKey -v learn)   #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
@@ -1720,7 +1741,7 @@ do
             : Checking for announcement types - For now, only the following certain types of sensors are announced: "$vTemperature,$vHumidity,$_sHasRain,$vPressure_kPa,$_bHasCmd,$_bHasRaw,$_bHasData,$_bHasCode,$_bHasButton,$_bHasButton01,$_bHasButtonN,$_bHasButtonR,$_bHasDipSwitch,$_bHasCounter,$_bHasControl,$_bHasParts25,$_bHasParts10,$_sHasPct"
             if (( ${#vTemperature} || ${#_sHasRain} || _bHasWindMaxMs || _bHasWindAvgKmh || _bHasWindAvgMs || ${#vPressure_kPa} || 
                         _bHasCmd || _bHasCommand || _bHasRaw || _bHasValue || _bHasData ||_bHasCode || _bHasButton || _bHasButton01 || _bHasButtonN || _bHasButtonR || _bHasDipSwitch ||
-                        _bHasPower1 || _bHasPower2 || _bHasPower3 || _bHasEnergy ||
+                        _bHasPower1 || _bHasPower2 || _bHasPower3 || _bHasEnergy || _bHasButtonCode ||
                         _bHasCounter || _bHasControl || _bHasParts25 || _bHasParts10 || ${#_sHasPct} )) ; then
                 [[ $protocol    ]] && _name=${aProtocols["$protocol"]:-$model} || _name=$model # fallback
                 # if the sensor has any one of the above attributes, announce all the attributes it has ...:
@@ -1750,6 +1771,7 @@ do
                 (( _bHasPower2     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Power2"    .power2_W  power
                 (( _bHasPower3     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Power3"    .power3_W  power
                 (( _bHasEnergy     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Energy"    .energy_kWh energy
+                (( _bHasButtonCode )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }ButtonCode" .button_code  buttonCode
                 (( _bHasCommand    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Command"   .command  command
                 (( _bHasValue      )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Value"     .value    value
                 (( _bHasData       )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Data"      .data     data
@@ -1760,7 +1782,7 @@ do
                 (( _bHasCode       )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Code"       .code     code
                 (( _bHasButton     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Button"     .button   button
                 (( _bHasButton01   )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Button01"   .button   button01
-                (( _bHasButtonN    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }ButtonN"    .buttonN  buttonN
+                (( _bHasButtonN    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }ButtonN"    .buttonN  buttonCode
                 (( _bHasButtonR    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }ButtonR"    .buttonr  button
                 (( _bHasDipSwitch  )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }DipSwitch"  .dipswitch   dipswitch
                 (( _bHasNewBattery )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }NewBattery" .newbattery newbattery
@@ -1875,11 +1897,11 @@ do
             fi
         else
             nSuppressedCount+=1
-            dbg DUPLICATE "Suppressed duplicate... (total: $nSuppressedCount)"
+            dbg DUPLICATE "Suppressed duplicate from $model_ident ... (total: $nSuppressedCount)"
         fi
     else
-        dbg2 DUPLICATE "Suppressed a duplicate.... (total: $nSuppressedCount)"
         nSuppressedCount+=1
+        dbg2 DUPLICATE "Suppressed a duplicate from $model_ident ... (total: $nSuppressedCount)"
     fi
     nReadings=${#aPrevReadings[@]}
     data="" # reset data to "" to cater for read return code <> 0 and an unchanged variable $data
