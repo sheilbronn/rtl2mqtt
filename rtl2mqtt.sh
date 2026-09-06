@@ -25,8 +25,9 @@ e1()  { echo 1 ; }
 alias cX="local - && set +x" # stop any verbosity locally
 [[ $1 == "-x" ]] && alias cX='local - && set +x && echo == ${1:+1=$1}${2:+ 2=$2} === 1>&2' # used when debugging
 alias sX="set -x"
-XPREP() { data="$1" ; echo DATA: "$data" 1>&2 ; set -x ; } # prepare the $data for debugging purposes, e.g. with the content of a JSON message, and output it to stderr
-alias XEXIT='set +x ; [[ "$data" ]] && echo DATA="$data" 1>&2 ; trap - EXIT ; exit' # stop verbosity and exit with the code given as argument, but first output the content of $data for debugging purposes
+cStdErr() { cX ; printf '%s\n' "$*" >&2 ; }
+XPREP() { data="$1" ; cStdErr "DATA: $data" ; set -x ; } # prepare the $data for debugging purposes, e.g. with the content of a JSON message, and output it to stderr
+alias XEXIT='set +x ; [[ "$data" ]] && cStdErr "DATA: $data" ; trap - EXIT ; exit' # stop verbosity and exit with the code given as argument, but first output the content of $data for debugging purposes
 # XPREP '{"one":1}' ; data="..." ; XEXIT
 # XEXIT() { set +x ; [[ "$data" ]] && echo DATA="$data" 1>&2 ; exit $1 ; }
 
@@ -50,7 +51,7 @@ sStartDate=$(cDate "$sDateFormat") # start date of the script
 sHostname=$(hostname)
 basetopic=""                  # default MQTT topic prefix
 rtl433_command="rtl_433"
-rtl433_command=$(command -v $rtl433_command) || { echo "$sName: $rtl433_command not found..." 1>&2 ; exit 126 ; }
+rtl433_command=$(command -v $rtl433_command) || { cStdErr "$sName: $rtl433_command not found..." ; exit 126 ; }
 rtl433_version=$($rtl433_command -V 2>&1 | awk -- '$2 ~ /version/ { print $3 ; exit }' ) || exit 126
 declare -a rtl433_opts=( -M protocol -M noise:900 -M level -C si )  # generic options in all settings, e.g. -M level
 # rtl433_opts+=( $([ -r "$HOME/.$sName" ] && tr -c -d '[:alnum:]_. -' < "$HOME/.$sName" ) ) # FIXME: protect from expansion!
@@ -260,7 +261,7 @@ cLogMore() { # log to syslog logging facility, too.
 
 dbg() { # output args to stderr, if bVerbose is set
 	cX
-     ifVerbose && { [[ $2 ]] && echo "$1:" "${@:2:$#}" 1>&2 || echo "DEBUG: $1" ; } 1>&2
+     ifVerbose && { [[ $2 ]] && cStdErr "$1:" "${@:2:$#}" || cStdErr "DEBUG: $1" ; }
 	}
     # XPREP; dbg ONE TWO || echo ok to fail... ; XEXIT
     # XPREP; bVerbose=1 ; dbg MANY MORE OF IT ; dbg "ALL TOGETHER" ; XEXIT
@@ -311,6 +312,7 @@ cMqttStarred() {		# options: ( [expandableTopic ,] starred_message, moreMosquitt
     _arguments=( ${sMID:+-i $sMID} ${sUserName:+-u "$sUserName"} ${sUserPass:+-P "$sUserPass"} -t "$_topic" -m "$(cExpandStarredString "$1")" "${@:2}" ) # ... append further arguments
     [[ ${#hMqtt[@]} == 0 ]] && mosquitto_pub "${_arguments[@]}"
     for host in "${hMqtt[@]}" ; do
+        # dbg2 "MQTT" "Publishing: ${_arguments[@]}"
         mosquitto_pub ${host:+-h $host} "${_arguments[@]}"
         _rc=$?
         (( _rc == 0 && ! bEveryBroker )) && return 0 # stop after first successful publishing
@@ -837,11 +839,15 @@ cRound() {
 
 [ -r "$rtl2mqtt_optfile" ] && _moreopts="$(sed -e 's/#.*//'  < "$rtl2mqtt_optfile" | tr -c -d '[:space:][:alnum:]_., -' | uniq )" && dbg "Read _moreopts from $rtl2mqtt_optfile"
 
+[[ " $*" =~ " -v"      ]] && bVerbose=1 && _moreopts=${_moreopts//-v} # -v on command line restarts gathering any -v options
 [[ " $*" =~ \ -F\ [0-9]* ]] && _moreopts=${_moreopts//-F [0-9][0-9][0-9]}  && _moreopts=${_moreopts//-F [0-9][0-9]} # one or more -F on the command line invalidate any other -F options from the config file
-[[ " $*" =~ " -R ++"     ]] && _moreopts=${_moreopts//-R -[0-9][0-9][0-9]} && _moreopts=${_moreopts//-R -[0-9][0-9]} # -R ++ on command line removes any protocol excludes
-[[ " $*" =~ " -v"      ]] && _moreopts=${_moreopts//-v} # -v on command line restarts gathering -v options
+# -R -- on command line removes any protocol excludes:
+[[ " $*" =~ " -R --" ]] && { _moreopts=${_moreopts//-R -[0-9][0-9][0-9]} ; _moreopts=${_moreopts//-R -[0-9][0-9]} ; dbg OPTREMV "-R --" ;}
+# -R ++ on command line removes any protocol includes:
+[[ " $*" =~ " -R ++" ]] && { _moreopts=${_moreopts//-R +[0-9][0-9][0-9]} ; _moreopts=${_moreopts//-R +[0-9][0-9]} ; dbg OPTREMV "-R ++" ;}
 cLogMore "Gathered options: $_moreopts $*"
 [[ " $*" =~ " -?" ]] && _moreopts="" # any -? on the command line invalidates any other options from the config file"
+bVerbose= # reset for now
 
 while getopts "?qh:pPt:S:drLl:f:F:M:X:H:AR:Y:Oij:JI:N:B:w:c:as:W:T:E:29vx" opt $_moreopts "$@"
 do
@@ -895,7 +901,7 @@ do
         ;;
     f)  # HELP:
         if [[ $OPTARG == "-" || $OPTARG == /dev/stdin ]] ; then
-            echo "ERROR: reading input from stdin currently not supported" 1>&2
+            cStdErr "ERROR: reading input from stdin currently not supported"
             exit 1
         elif [[ $OPTARG == MQTT || $OPTARG =~ MQTT: ]] ; then # syntax: -f MQTT:brokerhost:topicprefixforlistening
             fReplayfile=MQTT:
@@ -1009,7 +1015,7 @@ do
     T)  # HELP: # ask rtl_433 to exit after given time (e.g. seconds, also 12:34 or 1h23m45s)
         rtl433_opts+=(-T "$OPTARG")
         ;;
-    a)  # HELP: 
+    a)  # HELP: emit every received signal and make HASS announcements immediately
         bAlways=1
         nMinOccurences=1
         ;;
@@ -1041,7 +1047,7 @@ do
         else
             log "$sName: -W $OPTARG has invalid company name $_company (WU)..." ; exit 2
         fi
-     ;;
+        ;;
     2)  # HELP: for debugging alternatives within code
         bTryAlternate=1 # ease coding experiments (not to be used in production)
         ;;
@@ -1049,8 +1055,9 @@ do
         bEveryBroker=1
         ;;
     v)  # HELP: increase verbosity
-        if  ifVerbose ; then
-            bMoreVerbose=1 && rtl433_opts=( "-M noise:60" "${rtl433_opts[@]}" -v )
+        if ifVerbose ; then
+            bMoreVerbose=1
+            rtl433_opts=( "-M noise:60" "${rtl433_opts[@]}" -v )
             dbg2() { cX ; ((bMoreVerbose)) && dbg "$@" ; }
         else
             bVerbose=1
@@ -1418,7 +1425,7 @@ do
         log "Non-JSON: $data"
         continue
     elif ! [[ $data ]] ; then
-        dbg EMPTYLINE
+        dbg EMPTYLINE.
         continue # skip empty lines quietly and early
     fi
     # cPidDelta 0ED
@@ -1688,6 +1695,7 @@ do
             (( bRewrite && bMoreVerbose && ! bQuiet )) && cEchoIfNotDuplicate "CLEANED: $model_ident=$( GREPC '.*' <<< "$data")" # resulting message for MQTT
             ! [[ $model_ident =~ $sSensorMatch ]] && continue # however, skip if no fit
         fi
+
         sDataPrev=$data
         nTimeStampPrev=$nTimeStamp # support ignoring any incoming duplicates within a few seconds
         sReadPrev=${aPrevReadings[$model_ident]}
