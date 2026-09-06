@@ -1485,6 +1485,7 @@ do
     id=$( ! cExtractJsonVal id && [[ $fReplayfile ]] && echo "$id" ) # when replaying preserve the previous id as long as there is no id in the JSON
     model="" && { cHasJsonKey model || cHasJsonKey since ; } && model=$(cExtractJsonVal model)
     model_ident=""
+    topicext=DEBUG
     if [[ $model ]] ; then
         if [[ $sProtExcludes && $protocol =~ ^$sProtExcludes ]] ; then
             dbg EXCLUDING "$protocol"
@@ -1616,14 +1617,15 @@ do
                     fi
                 fi
             fi
-            [[ $vTemperature && ! $vHumidity ]] && echo "DEBUG1: $data" 1>&2 && cMqttStarred "$basetopic/$topicext" "$data" && [[ $sDoLog == dir ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
+            [[ $vTemperature && ! $vHumidity ]] && dbg2 DEBUG1 "$data" 1>&2 && cMqttStarred "$basetopic/$topicext" "$data" && [[ $sDoLog == dir ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
 
             if ((bRewriteMore)) ; then
+                # dbg2 "DELETE" "JSON keys test transmit...."
                 cDeleteJsonKeys "transmit test"
                 _k=$( cHasJsonKey "unknown.*" ) && [[ $(cExtractJsonVal "$_k") == 0 ]] && cDeleteSimpleJsonKey "$_k" # delete first key "unknown* == 0"
                 (( bSkipLine = nHumidity > 100 || nHumidity < 0 || nTemperature10 < -300 ))  # sanitize=skip non-plausible readings
             fi
-            [[ $vTemperature && ! $vHumidity ]] && echo "DEBUG2: $data" 1>&2 && cMqttStarred "$basetopic/$topicext" "$data" && [[ $sDoLog == dir ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
+            # [[ $vTemperature && ! $vHumidity ]] && dbg2 DEBUG2 "$data" 1>&2 && cMqttStarred "$basetopic/$topicext" "$data" && [[ $sDoLog == dir ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
             ifVerbose && ! cHasJsonKey BAND && cAddJsonKeyVal BAND "$sBand"  # add BAND here to ensure it also goes into the logfile for all data lines
             (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append the HOUR value explicitly if readings are to be sent retained
             [[ $sDoLog == dir ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
