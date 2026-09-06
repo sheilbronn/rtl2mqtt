@@ -1579,7 +1579,8 @@ do
             # sample: {"id":20,"channel":1,"battery_ok":1,"temperature":18,"humidity":55,"mod":"ASK","freq":433.931,"rssi":-0.261,"snr":24.03,"noise":-24.291}
             _delkeys+=" mod snr noise mic" && (( ! bVerbose || ! bQuiet  )) && _delkeys+=" freq freq1 freq2" # other stuff: subtype channel
             [[ ${aPrevReadings[$model_ident]} && ( -z $nTemperature10 || $nTemperature10 -lt 500 ) ]] && _delkeys+=" model protocol rssi${id:+ channel}" # remove protocol after first sight  and when not unusual
-            dbg2 DELETEKEYS "$_delkeys"
+            [[ $(cExtractJsonVal "test") == "No" ]] && delkeys+="test"
+            dbg2 DELETEKEYS "$_delkeys" 
             cDeleteJsonKeys "$_delkeys"
             cRemoveQuotesFromNumbers
             _dewpoint_c="$( cExtractJsonVal -n dewpoint_C )" && [[ $_dewpoint_c ]] && cAddJsonKeyVal dewpoint "$( cRound "$_dewpoint_c" )"
