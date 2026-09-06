@@ -963,8 +963,9 @@ do
     A)  # HELP: pass option -A to rtl_433
         rtl433_opts+=(-A)
         ;;
-    R)  # HELP:
-        [[ $OPTARG == "++" ]] && { dbg "INFO" "Ignoring any protocol excludes from config file" ; continue ; }
+    R)  # HELP: include/exclude a protocol from decoding
+        [[ $OPTARG == "++" ]] && { dbg "INFO" "Ignored any protocol includes from config file" ; continue ; }
+        [[ $OPTARG == "--" ]] && { dbg "INFO" "Ignored any protocol excludes from config file" ; continue ; }
         rtl433_opts+=(-R "$OPTARG")
         if [[ $OPTARG =~ ^[0-9-] ]] ; then
             [[ ${OPTARG:0:1} != "-" ]] && dbg "WARNING" "Are you sure you didn't want to exclude protocol $OPTARG?!"
