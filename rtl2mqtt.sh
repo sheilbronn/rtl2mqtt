@@ -58,7 +58,6 @@ declare -a rtl433_opts=( -M protocol -M noise:900 -M level -C si )  # generic op
 sSensorMatch=".*" # any sensor name to be considered will have to match this regex (to be used during debugging)
 sMeteoRoundTo=0.5 # temperatures will be rounded to this x and humidity to 4*x (but see option -w below)
 sWuBaseUrl="https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php" # This is stable for years
-sWhatsappBaseUrl="https://api.callmebot.com/whatsapp.php" # This is stable for years
 sJsonNumPattern='^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$' # regex pattern for a JSON number
 
 # xx=( one "*.log" ) && xx=( "${printf "%($*)T"nlaxx[@]}" ten )  ; for x in "${xx[@]}"  ; do echo "$x" ; done  ; XEXIT
@@ -361,7 +360,7 @@ cHassAnnounce() {
     local _dev_class=${6#none} # don't want "none" as string for dev_class
 	local _state_class=\: # see https://developers.home-assistant.io/docs/core/entity/sensor/#available-state-classes
     local _component=sensor # default
-    local _jsonpath="${5//value_json.}"
+    local _jsonpath="$5" # "${5//value_json.}"
     local _jsonpath_red="${_jsonpath//[^a-zA-Z0-9]/}" # "${_jsonpath//[ \/_-]/}" # cleaned and reduced, needed in unique id's
     # if $2 doesnt start with $_devid, then append it to $2 for better readability, but only if $2 is not empty and not already containing $_devid
     if [[ $2 && $2 == $_devid* ]] ; then
@@ -418,9 +417,10 @@ cHassAnnounce() {
 		signal_strength) _icon="signal"     ; _unit="dB"	    ;;
         switch)     _icon="toggle-switch"   ; _component=binary_sensor ; _dev_class=switch ;;
         motion)     _icon="motion-sensor"   ; _component=binary_sensor ;;
-        button01)   _icon="gesture-tap"     ; _component=binary_sensor ; _dev_class="" ; _payload_on=1 ; _off_delay=3 ;;
+        button01)   _icon="gesture-tap"     ; _component=binary_sensor ; _dev_class="" ; _payload_on=1 ; _off_delay=2 ;;
         button)     _icon="gesture-tap-button" ; _component=binary_sensor ;;
-        buttonCode) _icon="keyboard"        ; _state_class=""  ; _dev_class="" 	;;
+        buttonCode) _icon="remote" ; _state_class=""  ; _dev_class="" 	;;
+        buttonStr)  _icon="remote" ; _component=binary_sensor ; _state_class=""  ; _dev_class="" ; _payload_on=1 ; _off_delay=2 ;;
         dipswitch)  _icon="dip-switch" ;;
         code)       _icon="lock" ;;
       # newbattery) _icon=""   ; _unit="#"    ; _state_class=""  ;;
@@ -469,7 +469,7 @@ cHassAnnounce() {
     local _device="*device*:{*name*:*$_devname*,*manufacturer*:*$sManufacturer*,*model*:*$2 ${protocol:+(${aProtocols[$protocol]}) ($protocol) }with id $_devid*,*identifiers*:[*${sID}${_configtopicpart}*],*sw_version*:*rtl_433 $rtl433_version*}"
     local _msg="*name*:*$_channelname*,*state_topic*:*$_sensortopic*,$_device$_dev_class_l"
           _msg="$_msg${_payload_on:+,*payload_on*:*$_payload_on*}${_payload_off:+,*payload_off*:*$_payload_off*}"
-          _msg="$_msg${_off_delay:+,*off_delay*:*$_off_delay*},*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*"
+          _msg="$_msg${_off_delay:+,*off_delay*:$_off_delay},*unique_id*:*${sID}${_configtopicpart}${_jsonpath_red^[a-z]*}*"
           _msg="$_msg${_unit}${_value_template_str}${_command_topic_str}$_icon${_state_class:+,*state_class*:*$_state_class*}"
           # _msg="$_msg,*availability*:[{*topic*:*$basetopic/bridge/state*}]" # STILL TO DEBUG
           # _msg="$_msg,*json_attributes_topic*:*$_sensortopic*" # STILL TO DEBUG
@@ -1121,8 +1121,9 @@ else
     sdr_freq=$(awk '/^.*Tuned to / { gsub(/.*Tuned to /, ""); gsub(/MHz\.$/, ""); print; exit }' <<< "$_output") # matches "Tuned to 433.900MHz."
     conf_files=$( awk -F \" -- '/^Trying conf/ { print $2 }' <<< "$_output" | xargs ls -1 2>/dev/null ) # try to find an existing config file
     sBand=$( cMapFreqToBand $(cExtractJsonVal sdr_freq) )
+    [[ $sBand == "" ]] && sBand="UNKNOWN"
 fi
-basetopic="$sRtlPrefix/$sBand" # intial setting for basetopic
+basetopic="$sRtlPrefix/$sBand" # initial setting for basetopic
 
 # Enumerate the supported protocols and their names, put them into array aProtocols, e.g. ....
 # ...
@@ -1649,6 +1650,7 @@ do
         _bHasPower3=$(    [[ $(cExtractJsonVal -n power3_W)   ]] && e1 ) # power in W, also power_mW
         _bHasEnergy=$(    [[ $(cExtractJsonVal -p energy_kWh) ]] && e1 ) # energy in Wh, also energy_kWh
         _bHasButtonCode=$( [[ $(cExtractJsonVal -p button_code) ]] && e1 ) # {"protocol":312, "model":"MIC6SC2-CarRemote", "encrypted":55555555, "button_code":0, "button_str":"?", "sequence":0}
+        _bHasButtonStr=$( [[ $(cExtractJsonVal button_str) != "?" ]] && e1 )
         _bHasZone=$(   cHasJsonKey -v zone)    #   {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasUnit=$(   cHasJsonKey -v unit)    #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
         _bHasLearn=$(  cHasJsonKey -v learn)   #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
@@ -1900,19 +1902,6 @@ do
             else
                 : "aWuUrls[$model_ident] or aMatchIDs[wunderground.$model_ident.$id] | aMatchIDs[wunderground.$model_ident.] are empty"
             fi
-
-            # if [[ ${aWhUrls["OTHER"]} || ( ${aWhUrls[$model_ident]} && ( ${aMatchIDs[whatsapp.$model_ident.$id]} || ${aMatchIDs[whatsapp.$model_ident]} ) ) ]] &&
-            #         [[ $bVerbose || ! $vTemperature || $(( ${aCounts[$model_ident]} % 10 )) == 1 ]]; then
-            #     # perform any Whatsapp upload. If with temperature: Only every 10th reading is uploaded, to avoid flooding the Whatsapp channel
-            #     URL2="text=$(urlencode "$model_ident: $( cDeleteJsonKeys "id freq rssi" "$data" )")"
-            #     [[ -z ${aWhUrls[$model_ident]} ]] && URL1="${aWhUrls["OTHER"]}" || URL1="${aWhUrls[$model_ident]}"
-            #     retcurl="$( curl --silent "$sWhatsappBaseUrl?$URL1&$URL2" 2>&1 )"
-            #     log "WHATSAPP" "$URL2: $retcurl (device=$model_ident,#${aCounts[${model_ident:-OTHER}]})"
-            #     [[ $retcurl =~ You\ will\ receive ]] || log "WHATSAPP2" "$sWhatsappBaseUrl?$URL1&$URL2"
-            #     # (( bMoreVerbose )) && log "WHATSAPP" "$URL1&$URL2"
-            # else
-            #     : "Skipped Whatsapp upload for $model_ident"
-            # fi
 
             if ((bRewrite)) ; then # optimize (rewrite) the JSON content
                 # cAddJsonKeyVal -n rssi "$rssi" # put rssi back in
