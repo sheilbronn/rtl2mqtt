@@ -391,7 +391,13 @@ cHassAnnounce() {
     # if $5 is not empty and only a word then prepend "value_json." to it
     local _value_template_str=""
     [[ $_jsonpath =~ ^\.[a-zA-Z_][a-zA-Z0-9_]*$ ]] && _jsonpath="value_json$5"
-    _value_template_str="${_jsonpath:+,*value_template*:*{{ $_jsonpath \}\}*}" #   generated something like: ... "value_template":"{{ value_json.battery_ok }}" ...
+    if [[ $_jsonpath ]] ; then
+        if [[ $_jsonpath =~ ^value_json. ]] ; then
+            _value_template_str=",*value_template*:*{{ $_jsonpath }}*" #   generated something like: ... "value_template":"{{ value_json.battery_ok }}" ...
+        else
+            _value_template_str=",*value_template*:*$_jsonpath*" # generated something like: ... "value_template":"{ ... }"
+        fi
+    fi
     # other syntax for non-JSON is: local _value_template_str="${5:+,*value_template*:*{{ value|float|round(1) \}\}*}"
 
     # Openhab discovery only allow for these device_class'es:
