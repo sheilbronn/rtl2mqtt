@@ -379,9 +379,9 @@ cHassAnnounce() {
     fi
 
     if [[ $_dev_class ]] ; then
-        local _channelname="$_devname ${_dev_class^}"
+        local _channelname="$_devname ${_dev_class^}" # derived from $6, if given
     else
-        local _channelname="$_devname $4" # take something meaningful
+        local _channelname="$_devname $4" # derived from $4
     fi
     local _sensortopic="${1:+$1/}$_topicpart"
 	# local *friendly_name*:*${2:+$2 }$4*,
@@ -1227,7 +1227,7 @@ elif [[ $fReplayfile ]] ; then
                 : ! cHasJsonKey BAND && : cAddJsonKeyVal BAND "${sBand:-null}"
                 sModel="$(cExtractJsonVal model)"
             fi
-            dbg REPLAYIN "$data"
+            dbg REPLAY "$data"
             ! cHasJsonKey id && ! cHasJsonKey channel && [[ $sFnChannelOrId ]] && cAddJsonKeyVal id "$sFnChannelOrId"
             echo "$data" # ; echo "EMITTING: $data" 1>&2
             sleep 2
@@ -1543,7 +1543,7 @@ do
         fi
     fi
     rssi=$( cExtractJsonVal -n rssi )
-    vTemperature="" && nTemperature10="" && nTemperature10Diff=""
+    vTemperature="" && nTemperature10="" && nTemperature10Diff="" && temperatureF=""
     _val="$( cExtractJsonVal -n temperature_C || cExtractJsonVal -n temperature || cExtractJsonVal -n temperature )" && vTemperature=$_val && _val=$(cMult10 "$_val") &&
         nTemperature10=${_val/.*} &&
         : echo 1 "model_ident=$model_ident" &&
@@ -1631,8 +1631,7 @@ do
             (( bRetained )) && cAddJsonKeyVal HOUR $nHour # Append the HOUR value explicitly if readings are to be sent retained
             [[ $sDoLog == dir ]] && echo "$(cDate "%d %H:%M:%S") $data" >> "$dModel/${sBand}_$model_ident"
         fi
-        vPressure_kPa=$(cExtractJsonVal -p pressure_kPa)
-        [[ $vPressure_kPa =~ ^[0-9.]+$ ]] || vPressure_kPa="" # cAssureJsonVal pressure_kPa "<= 9999", at least match a number
+        vPressure_kPa=$(       cExtractJsonVal -p pressure_kPa)# cAssureJsonVal pressure_kPa "<= 9999", at least match a number
         _bHasParts25=$(   [[ $(cExtractJsonVal -p pm2_5_ug_m3     ) ]] && e1 ) # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
         _bHasParts10=$(   [[ $(cExtractJsonVal -p estimated_pm10_0_ug_m3 ) ]] && e1 ) # e.g. "pm2_5_ug_m3":0, "estimated_pm10_0_ug_m3":0
         _sHasRain=$(           cHasJsonKey -k "rain_.*m" )
@@ -1886,21 +1885,24 @@ do
                 cAddJsonKeyVal -b BAND -n dewpoint "$vDewptc" # add dewpoint in front of the BAND key
             fi
 
-            dbg2 "CHECK WUPLOAD" "aWuUrls[$model_ident]=${aWuUrls[$model_ident]} , aMatchIDs[wunderground.$model_ident.$id]=${aMatchIDs[wunderground.$model_ident.$id]} , aMatchIDs[wunderground.$model_ident.]=${aMatchIDs[wunderground.$model_ident.]}"
-            # ifVerbose && for key in "${!aMatchIDs[@]}"; do dbg2 UPLOAD "aMatchIDs[$key] = ${aMatchIDs[$key]}" ; done
-            # ifVerbose && for key in "${!aWuUrls[@]}"  ; do dbg2 UPLOAD   "aWuUrls[$key] = ${aWuUrls[$key]}"   ; done
-            if [[ ${aWuUrls[$model_ident]} && ( ${aMatchIDs[wunderground.$model_ident.$id]} || ${aMatchIDs[wunderground.$model_ident.]} ) ]] ; then # perform any Weather Underground upload
-                # wind_speed="10", # precipitation="0"
-                [[ $baromin ]] && (( baromin=$(cMult10 "$(cMult10 "$(cMult10 vPressure_kPa)" )" ) / 3386  )) # 3.3863886666667
-                # https://blog.meteodrenthe.nl/2021/12/27/uploading-to-the-weather-underground-api/
-                # https://support.weather.com/s/article/PWS-Upload-Protocol
-                URL2="${aWuPos[$model_ident]}tempf=$temperatureF${vHumidity:+&${aWuPos[$model_ident]}&humidity=$vHumidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}${vDewptf:+&${aWuPos[$model_ident]}dewptf=$vDewptf}"
-                retcurl="$(curl --silent "${aWuUrls[$model_ident]}&$URL2" 2>&1)" && [[ $retcurl == success ]] && nUploads+=1 && aWuLastUploadTime[$model_ident]=$nTimeStamp
+            if [[ $temperatureF || $vHumidity ]] ; then
+                dbg2 "CHECK WUPLOAD" "aWuUrls[$model_ident]=${aWuUrls[$model_ident]}, aMatchIDs[wunderground.$model_ident.$id]=${aMatchIDs[wunderground.$model_ident.$id]} , aMatchIDs[wunderground.$model_ident.]=${aMatchIDs[wunderground.$model_ident.]}"
+                # ifVerbose && for key in "${!aMatchIDs[@]}"; do dbg2 UPLOAD "aMatchIDs[$key] = ${aMatchIDs[$key]}" ; done
+                # ifVerbose && for key in "${!aWuUrls[@]}"  ; do dbg2 UPLOAD   "aWuUrls[$key] = ${aWuUrls[$key]}"   ; done
+                if [[ ${aWuUrls[$model_ident]} && ( ${aMatchIDs[wunderground.$model_ident.$id]} || ${aMatchIDs[wunderground.$model_ident.]} ) ]] ; then 
+                    # perform any Weather Underground upload
+                    # wind_speed="10", # precipitation="0"
+                    [[ $baromin ]] && (( baromin=$(cMult10 "$(cMult10 "$(cMult10 $vPressure_kPa)" )" ) / 3386  )) # 3.3863886666667
+                    # https://blog.meteodrenthe.nl/2021/12/27/uploading-to-the-weather-underground-api/
+                    # https://support.weather.com/s/article/PWS-Upload-Protocol
+                    URL2="${aWuPos[$model_ident]}tempf=$temperatureF${vHumidity:+&${aWuPos[$model_ident]}&humidity=$vHumidity}${baromin:+&baromin=$baromin}${rainin:+&rainin=$rainin}${dailyrainin:+&dailyrainin=$dailyrainin}${vDewptf:+&${aWuPos[$model_ident]}dewptf=$vDewptf}"
+                    retcurl="$(curl --silent "${aWuUrls[$model_ident]}&$URL2" 2>&1)" && [[ $retcurl == success ]] && nUploads+=1 && aWuLastUploadTime[$model_ident]=$nTimeStamp
 
-                log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, device=$model_ident)"
-                (( bMoreVerbose )) && log "WUNDERGROUND2" "${aWuUrls[$model_ident]}&$URL2"
-            else
-                : "aWuUrls[$model_ident] or aMatchIDs[wunderground.$model_ident.$id] | aMatchIDs[wunderground.$model_ident.] are empty"
+                    log "WUNDERGROUND" "$URL2: $retcurl (nUploads=$nUploads, device=$model_ident)"
+                    (( bMoreVerbose )) && log "WUNDERGROUND2" "${aWuUrls[$model_ident]}&$URL2"
+                else
+                    : "aWuUrls[$model_ident] or aMatchIDs[wunderground.$model_ident.$id] | aMatchIDs[wunderground.$model_ident.] are empty"
+                fi
             fi
 
             if ((bRewrite)) ; then # optimize (rewrite) the JSON content
