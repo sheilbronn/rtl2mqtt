@@ -1204,7 +1204,7 @@ elif [[ $fReplayfile ]] ; then
         sleep 2
         shopt -s extglob ; export IFS=' '
 
-        # try to save some data the file name, if needed later
+        # try to save some data from the file name, if needed later
         IFS="_" read -r -a aTopic <<< "${fReplayfile##*/}" # .. split the filename, e.g. "433_IBIS-Beacon_5577"
         sFnBand=${aTopic[0]}
         sFnModel=${aTopic[1]}
@@ -1216,6 +1216,17 @@ elif [[ $fReplayfile ]] ; then
             : "FRONT ${line%%{+(?)}" 1>&2
             data=${line##*([!{])} # data starts with first curly bracket...
             read -r -a aFront <<< "${line%%{+(?)}" # remove anything before an opening curly brace from the line read from the replay file
+            if ! cHasJsonKey time && [[ ${aFront[1]} =~ ^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$ ]] ; then
+                if [[ ${aFront[0]} =~ ^[0-9]{1,2}$ ]]; then
+                    # assuning the month and year to be the current year:
+                    _replayTime=$(date -d "$(date +%Y-%m)-${aFront[0]} ${aFront[1]}" \
+                        "+$sDateFormat" 2>/dev/null) 
+                elif [[ ${aFront[0]} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+                    # if the line starts with a full date, just use it with the time
+                    _replayTime=$(date -d "${aFront[0]} ${aFront[1]}" "+$sDateFormat" 2>/dev/null) 
+                fi # add day and the time back into the json, if it was successfully parsed
+                [[ $_replayTime ]] && cAddJsonKeyVal time "$_replayTime"
+            fi
             if ! cHasJsonKey model && ! cHasJsonKey since ; then # ... then try to determine "model" either from an MQTT topic or from the file name, but not from JSON with key "since"
                 : frontpart="${aFront[-1]}"
                 IFS='/' read -r -a aTopic <<< "${aFront[-1]}" # MQTT topic might be preceded by timestamps that are to be removed
@@ -1485,7 +1496,8 @@ do
     n=${_time:(-8):2} && nHour=${n#0}
     n=${_time:(-5):2} && nMinute=${n#0}
     n=${_time:(-2):2} && nSecond=${n#0}
-    _delkeys="time ${aSuppressAttrs[*]}"
+    _delkeys="${aSuppressAttrs[*]}"
+    [[ ! $fReplayfile ]] && _delkeys="time $_delkeys"
     ((bMoreVerbose)) && cEchoIfNotDuplicate "PREPROCESSED: $data"
     channel=$( ! cExtractJsonVal channel && [[ $fReplayfile ]] && echo "$channel" ) # when replaying preserve the channel as long as there is no channel in the JSON
     protocol=$(cExtractJsonVal -p protocol) && protocol=${protocol//[^A-Za-z 0-9]} # Avoid arbitrary command execution vulnerability in indexes for arrays
