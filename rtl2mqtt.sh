@@ -41,7 +41,7 @@ cDate() { cX ; a=$1 ; shift ; printf "%($a)T" "$@"; } # avoid a separate process
 
 commandArgs=$*
 dLog="/var/log/$sMID" # /var/log/rtl2mqtt is default, but will be changed to /tmp if not useable
-aSignalsOther=( URG XCPU XFSZ PROF WINCH PWR SYS USR1 ) # signals that will be logged, but ignored or treated
+aSignalsOther=( XCPU XFSZ PROF WINCH PWR SYS ) # signals that will be logged, but ignored or treated
 sManufacturer="RTL"
 sHassPrefix="homeassistant"
 sRtlPrefix="rtl"                        # base topic
@@ -104,6 +104,7 @@ declare -i nLoops=0
 declare -l bAnnounceHass=1 # default is yes for now
 declare -i bRetained=0 # 1=make the value publishing retained or not (-r flag passed to mosquitto_pub)
 declare -i bLogTempHumidity=0 # 1=log the values
+declare -i bEveryMessage=0 # 1=process every message, 0=process selectively
 declare -i _n # helper integer var
 declare -A aWuUrls
 declare -Ai aWuLastUploadTime
@@ -1107,7 +1108,7 @@ fi
 # XPREP; log "test" ; XEXIT
 
 # trap and ignore signals to avoid any interruption until the real traps are defined further down
-trap '' INT TRAP USR2 VTALRM
+trap '' INT TRAP URG USR1 USR2 VTALRM
 
 # command -v jq > /dev/null || { _msg="$sName: jq might be necessary!" ; log "$_msg" ; echo "$_msg" 1>&2 ; }
 command -v iwgetid > /dev/null || { _msg="$sName: iwgetid not found" ; log "$_msg" ; echo "$_msg" 1>&2 ; alias iwgetid : ; }
@@ -1381,22 +1382,33 @@ trap_vtalrm() { # VTALRM: re-emit all dewpoint calcs and recorded sensor reading
         exit 12 # possibly restart the whole script, if systemd allows it
     fi
   }
-trap "trap_vtalrm" VTALRM
+trap "trap_vtalrm" VTALRM || :
 
 trap_other() {   # other signals: log appearance of other signals (see $aSignalsOther below)
     _msg="received other signal ..."
     log "$sName $_msg"
     cMqttLog "{*event*:*debug*,*message*:*$_msg*}"
   }
-trap 'trap_other' "${aSignalsOther[@]}" || trap_other # STOP TSTP CONT HUP QUIT ABRT PIPE TERM
+trap 'trap_other' "${aSignalsOther[@]}" || : # STOP TSTP CONT HUP QUIT ABRT PIPE TERM
 
-trap_usr1() {   # dont reduce the number of MQTT messages
-    bEveryMessage=$( ((bEveryMessage)) || e1 ) # toggle chatter
-    _msg="Signal USR1: toggled bEveryMessage to ${bEveryMessage:-no}"
+# trap_usr1() {   # dont reduce the number of MQTT messages
+#     bEveryMessage=$( ((bEveryMessage)) || e1 ) # toggle chatter
+#     _msg="Signal USR1: toggled bEveryMessage to ${bEveryMessage:-no}"
+#     log "$sName $_msg"
+#     cMqttLog "{*event*:*debug*,*message*:*$_msg*}"
+#   }
+# trap 'trap_usr1' USR1 || :
+
+trap_usr1() {   # send USR1 to rtl_433 process to make it hop to the next frequency
+    _msg="Signal USR1: request rtl_433 (PID=$_pidrtl) to hop from current band=${sBand:-UNSET}."
+    if [[ $_pidrtl ]] ; then
+        kill -USR1 "$_pidrtl" || _msg+=" FAILED ($?)"
+    fi
     log "$sName $_msg"
     cMqttLog "{*event*:*debug*,*message*:*$_msg*}"
+    trap 'trap_usr1' USR1
   }
-trap 'trap_usr1' USR1 || trap_usr1 # USR1 signal
+trap 'trap_usr1' USR1 || :
 
 trap_term() {   # TERM: log appearance of TERM signal (esp. when being stopped by systemd)
     _msg="received SIGTERM (INVOCATION_ID=$INVOCATION_ID)..."
@@ -1405,9 +1417,9 @@ trap_term() {   # TERM: log appearance of TERM signal (esp. when being stopped b
     cMqttLog "{*event*:*debug*,*message*:*$_msg*}"
     exit 0
   }
-trap 'trap_term' "TERM" || trap_term # TERM signal
+trap 'trap_term' "TERM"
 
-[[ $* =~ ^y ]] && trap_exit && trap_int && trap_trap && trap_usr2 && trap_vtalrm && trap_other # fake call of all trap functions to avoid shellcheck warnings about non-reachable code
+[[ $* =~ ^y ]] && trap_exit && trap_int && trap_trap && trap_usr1 && trap_usr2 && trap_term && trap_vtalrm && trap_other # fake call of all trap functions to avoid shellcheck warnings about non-reachable code
 
 while read -r data <&"${COPROC[0]}" ; _rc=$? ; (( _rc==0  || _rc==27 || ( bVerbose && _rc==1111 ) ))      # ... and go through the loop
 do
