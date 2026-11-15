@@ -1205,12 +1205,12 @@ elif [[ $fReplayfile ]] ; then
         sleep 2
         shopt -s extglob ; export IFS=' '
 
-        # try to save some data from the file name, if needed later
+        # try to save some data from the file name, might be needed later
         IFS="_" read -r -a aTopic <<< "${fReplayfile##*/}" # .. split the filename, e.g. "433_IBIS-Beacon_5577"
         sFnBand=${aTopic[0]}
         sFnModel=${aTopic[1]}
         sFnChannelOrId=${aTopic[2]}
-
+        _yearmonth=$(date +%Y-%m) # calculate once the current year and month for replay time parsing
         # XPREP; : fReplayfile=$fReplayfile
         while read -t 2 -r line ; _rc=$? ; [[ $_rc == 0 ]] ; do
             : "line $line" #  e.g.   103256 rtl/433/Ambientweather-F007TH/1 { "protocol":20,"id":44,"channel":1,"freq":433.903,"temperature":19,"humidity":62,"BAND":433,"HOUR":16,"NOTE":"changed"}
@@ -1219,14 +1219,13 @@ elif [[ $fReplayfile ]] ; then
             read -r -a aFront <<< "${line%%{+(?)}" # remove anything before an opening curly brace from the line read from the replay file
             if ! cHasJsonKey time && [[ ${aFront[1]} =~ ^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$ ]] ; then
                 if [[ ${aFront[0]} =~ ^[0-9]{1,2}$ ]]; then
-                    # assuning the month and year to be the current year:
-                    _replayTime=$(date -d "$(date +%Y-%m)-${aFront[0]} ${aFront[1]}" \
-                        "+$sDateFormat" 2>/dev/null) 
+                    # assuming the month and year to be the current year:
+                    _replayTime=$(date -d "$_yearmonth-${aFront[0]} ${aFront[1]}" "+$sDateFormat" 2>/dev/null) 
                 elif [[ ${aFront[0]} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
                     # if the line starts with a full date, just use it with the time
                     _replayTime=$(date -d "${aFront[0]} ${aFront[1]}" "+$sDateFormat" 2>/dev/null) 
                 fi # add day and the time back into the json, if it was successfully parsed
-                [[ $_replayTime ]] && cAddJsonKeyVal time "$_replayTime"
+                [[ $_replayTime ]] && cAddJsonKeyVal time "$_replayTime" && _replayTime=""
             fi
             if ! cHasJsonKey model && ! cHasJsonKey since ; then # ... then try to determine "model" either from an MQTT topic or from the file name, but not from JSON with key "since"
                 : frontpart="${aFront[-1]}"
@@ -1248,7 +1247,7 @@ elif [[ $fReplayfile ]] ; then
             dbg REPLAY "$data"
             ! cHasJsonKey id && ! cHasJsonKey channel && [[ $sFnChannelOrId ]] && cAddJsonKeyVal id "$sFnChannelOrId"
             echo "$data" # ; echo "EMITTING: $data" 1>&2
-            sleep 2
+            # sleep 1
         done < "$fReplayfile"
         dbg INFO "Replay file ended, last rc=$_rc."
         sleep 3 ; # echo "COPROC EXITING." 1>&2
