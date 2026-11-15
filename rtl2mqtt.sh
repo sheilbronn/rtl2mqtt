@@ -441,7 +441,7 @@ cHassAnnounce() {
         energy)     _icon="counter"         ; _unit="kWh"   ; _state_class="total" ;;
         battery|batteryVal)	_icon=""        ; _unit="#"	    ; _dev_class=battery ;;
         newbattery) _icon="battery-check"   ; _component=binary_sensor ; _dev_class=""      ; _payload_on=1 ;;
-        battery_ok) _icon=""                ; _component=binary_sensor ; _dev_class=battery ; _payload_on=0 ;;
+        battery_ok) _icon="" ; _component=binary_sensor ; _dev_class=battery ; _payload_on=0 ; _channelname="$_devname Battery Low" ;;
         cmd)        _icon="hammer"          ; _component=sensor ; _unit="#"; _state_class="" ; _dev_class=""  ;; # e.g. cmd=62
         # cmd)        _icon="command"       ; _state_class="" ;; # e.g. cmd=62
         raw)        _icon="sensor"          ; _dev_class=""  ;;
@@ -638,7 +638,7 @@ cDeleteSimpleJsonKey() { # cDeleteSimpleJsonKey "key" "jsondata" (assume $data i
     # XPREP '{"one":"a", "beta":22.1 }' ; cDeleteSimpleJsonKey "one" ; echo "$data" ; XEXIT ; cDeleteSimpleJsonKey beta ; echo "$data" ; cDeleteSimpleJsonKey two '{"alpha":"a","two":"xx"}' ; XEXIT
     # XPREP; cDeleteSimpleJsonKey three '{ "three":"xxx" }' ; XEXIT
     # XPREP '{"one" : 1,"beta":22}' ; cDeleteSimpleJsonKey one "$data" ; cDeleteSimpleJsonKey two '{"two":-2,"beta":22}' ; cDeleteSimpleJsonKey three '{"three":3.3,"beta":2}' ; XEXIT
-    # XPREP '{"id":2,"channel":2,"battery_ok":0,"temperature_C":-12.5,"freq":433.902,"rssi":-11.295}' ; cDeleteSimpleJsonKey temperature_C ; cDeleteSimpleJsonKey freq ; XEXIT
+    # XPREP '{"id":2,"channel":2,"battery_ok":1,"temperature_C":-12.5,"freq":433.902,"rssi":-11.295}' ; cDeleteSimpleJsonKey temperature_C ; cDeleteSimpleJsonKey freq ; XEXIT
     # XPREP '{"event":"debug","message":{"center_frequency":433910000, "other":"zzzzz"}}' ; cDeleteSimpleJsonKey message ; cCheckExit
     # XPREP '{"event":"debug","message":{"center_frequency":433910000, "frequencies":[433910000, 868300000, 433910000, 868300000, 433910000, 915000000], "hop_times":[61]}}' ; cDeleteSimpleJsonKey hop_times ; cDeleteSimpleJsonKey frequencies ; cCheckExit
 
@@ -662,7 +662,7 @@ cDeleteJsonKeys() { # cDeleteJsonKeys "key1 key2" ... "jsondata" (jsondata or $d
     # _r="$(jq -c "del (${_d#,  })" <<< "${@:$#}")"   # expands to: "del(.xxx, .yyy, ...)"
     (($#>1)) && echo "$_r" || data=$_r
  }
-    # XPREP; cDeleteJsonKeys 'time mic' '{"time" : "2022-10-18 16:57:47", "protocol" : 19, "model" : "Nexus-TH", "id" : 240, "channel" : 1, "battery_ok" : 1, "temperature_C" : 21.600, "humidity" : 20}' ; XEXIT
+    # XPREP; cDeleteJsonKeys 'time mic' '{"time" : "2022-10-18 16:57:47", "protocol" : 19, "model" : "Nexus-TH", "id" : 240, "channel" : 1, "battery_ok":1, "temperature_C" : 21.600, "humidity":20}' ; XEXIT
     # XPREP; cDeleteJsonKeys five "one" "two" ".four five six" "*_special*" '{"one":"1", "two":2  ,"three":3,"four":"4", "five":5, "_special":"*?+","_special2":"aa*?+bb"}' ;  XEXIT
     # XPREP; cDeleteJsonKeys "eins" '{"eins":"1","zwei":2}'  ;  XEXIT
 
@@ -1659,7 +1659,7 @@ do
         _bHasWindDirDeg=$([[ $(cExtractJsonVal -p wind_dir_deg ) ]] && e1 )
         _bHasUVI=$(       [[ $(cExtractJsonVal -p uvi          ) ]] && e1 )
         _battok=$(             cExtractJsonVal -p battery_ok)
-        _bHasBatteryOK=$( [[ $_battok =~ ^[01]$ ]] && e1 ) # 0=LOW;1=HIGH from https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
+        _bHasBatteryOK=$( [[ $_battok =~ ^[01]$ ]] && e1 ) # 0=LOW;1=HIGH/OK from https://triq.org/rtl_433/DATA_FORMAT.html#common-device-data
         _bHasBatteryOKVal=$( [[ $_battok =~ ^[01]\\.[0-9]+$ ]] && e1 ) # or some value in between
         _bHasBatteryV=$(  [[ $(cExtractJsonVal -n battery_V)  ]] && e1 ) # voltage, also battery_mV
         _bHasPower1=$(    [[ $(cExtractJsonVal -n power1_W)   ]] && e1 ) # power in W, also power_mW
@@ -1682,7 +1682,7 @@ do
         _bHasCode=$(   cHasJsonKey -v code  )   #  {"counter":432661,"code":"800210003e915ce000000000000000000000000000069a150fa0d0dd"}
         _bHasRssi=$(   cHasJsonKey -v rssi)
         _bHasButton="" ; _bHasButton01="" ; _bHasButtonN=""
-        _s="$(cExtractJsonVal button)"  # { "protocol":3, "model":"Prologue-TH", "subtype":9, "id":16, "channel":1, "battery_ok":0, "button":0, "rssi":-6.763,"temperature":18.5,"humidity":0.255}
+        _s="$(cExtractJsonVal button)"  # { "protocol":3, "model":"Prologue-TH", "subtype":9, "id":16, "channel":1, "battery_ok":1, "button":0, "rssi":-6.763,"temperature":18.5,"humidity":0.255}
         if [[ $_s =~ ^[01]$ ]] ; then
             _bHasButton01=1
         elif [[ $_s =~ ^[0-9]+$ ]] ; then
@@ -1946,7 +1946,7 @@ do
                 if (( bAnnounceHass && ! aAnnounced[$model_ident] )); then
                     cAddJsonKeyVal -b BEGINNING "SENSOR" "$model_ident"
                     cMqttStarred notannounced "$data"
-                    # rtl/bridge/notannounced { "battery_ok":0,"temperature":10.5,"humidity":0.58,"dewpoint":2.5,"BAND":433,
+                    # rtl/bridge/notannounced { "battery_ok":1,"temperature":10.5,"humidity":0.58,"dewpoint":2.5,"BAND":433,
                     #    "DELTADEW":0.4,"ORIGTEMP":10.700,"NOTE":"1ST(79/52) 2ND(c=2,s=79/52,IsDiff3=1)","SDELTA":"0:0"}
                 fi
             else
