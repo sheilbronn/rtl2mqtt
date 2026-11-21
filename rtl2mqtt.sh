@@ -1678,7 +1678,7 @@ do
         _bHasPower3=$(    [[ $(cExtractJsonVal -n power3_W)   ]] && e1 ) # power in W, also power_mW
         _bHasEnergy=$(    [[ $(cExtractJsonVal -p energy_kWh) ]] && e1 ) # energy in Wh, also energy_kWh
         _bHasButtonCode=$( [[ $(cExtractJsonVal -p button_code) ]] && e1 ) # {"protocol":312, "model":"MIC6SC2-CarRemote", "encrypted":55555555, "button_code":0, "button_str":"?", "sequence":0}
-        _bHasButtonStr=$( [[ $(cExtractJsonVal button_str) != "?" ]] && e1 )
+        _bHasButtonStr=$( [[ "$(cExtractJsonVal button_str)" =~ ^[^?]+$ ]] && e1 ) # non-empty string except "?"
         _bHasZone=$(   cHasJsonKey -v zone)    #   {"id":256,"control":"Limit (0)","channel":0,"zone":1}
         _bHasUnit=$(   cHasJsonKey -v unit)    #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
         _bHasLearn=$(  cHasJsonKey -v learn)   #   {"id":25612,"unit":15,"learn":0,"code":"7c818f"}
@@ -1798,7 +1798,7 @@ do
 
         ((_nSecDelta = nTimeStamp - aLastPub[$model_ident] ))
         if ifVerbose ; then
-            echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_sHasRain, hasCmd=$_bHasCmd, hasCommand=$_bHasCommand, _bHasRaw=$_bHasRaw, hasValue=$_bHasValue, hasButton=$_bHasButton, hasButton01=$_bHasButton01, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl, hasBatteryOK=$_bHasBatteryOK, hasBatteryOKVal=$_bHasBatteryOKVal, hasBatteryV=$_bHasBatteryV"
+            echo "nMinSeconds=$nMinSeconds, announceReady=$_bAnnounceReady, nTemperature10=$nTemperature10, vHumidity=$vHumidity, nHumidity=$nHumidity, hasRain=$_sHasRain, hasCmd=$_bHasCmd, hasCommand=$_bHasCommand, _bHasRaw=$_bHasRaw, hasValue=$_bHasValue, hasButton=$_bHasButton, _bHasButtonStr=$_bHasButtonStr, hasButton01=$_bHasButton01, hasButtonR=$_bHasButtonR, hasDipSwitch=$_bHasDipSwitch, hasNewBattery=$_bHasNewBattery, hasControl=$_bHasControl, hasBatteryOK=$_bHasBatteryOK, hasBatteryOKVal=$_bHasBatteryOKVal, hasBatteryV=$_bHasBatteryV"
             echo "Counts=${aCounts[$model_ident]} _nSecDelta=$_nSecDelta #aDewpointsCalc=${#aDewpointsCalc[@]}"
             (( !bMoreVerbose )) &&
                 GREPC 'model_ident=[^, ]*|\{[^}]*}' <<< "model_ident=$model_ident  READ=${aPrevReadings[$model_ident]}
@@ -1850,6 +1850,7 @@ do
                 (( _bHasPower3     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Power3"    .power3_W  power
                 (( _bHasEnergy     )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Energy"    .energy_kWh energy
                 (( _bHasButtonCode )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }ButtonCode" .button_code  buttonCode
+                (( _bHasButtonStr  )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }ButtonStr" "{% if value_json.button_str == 'Start' %}1{% else %}0{% endif %}" buttonStr
                 (( _bHasCommand    )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Command"   .command  command
                 (( _bHasValue      )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Value"     .value    value
                 (( _bHasData       )) && cHassAnnounce "$basetopic" "${_modeln}" "$topicext" "${ident:+($ident) }Data"      .data     data
